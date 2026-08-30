@@ -341,7 +341,7 @@ def safe_batch_download(
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
 
-  tickers = [
+    tickers = [
         "AAPL", "MSFT", "NVDA", "AMZN", "META",
         "GOOGL", "TSLA", "AVGO", "AMD", "NFLX",
         "CRM", "ORCL", "ADBE", "QCOM", "MU",
@@ -351,10 +351,10 @@ def get_sp500_tickers():
         "LLY", "UNH", "ABBV", "MRK", "AMGN",
         "JNJ", "PFE", "GILD", "ISRG", "TMO",
         "XOM", "CVX", "COP", "CAT", "GE",
-        "BA", "WMT", "COST", "HD", "DIS" 
+        "BA", "WMT", "COST", "HD", "DIS"
     ]
-    return tickers
 
+    return tickers
 
 # =========================================================
 # TECHNICAL CALCULATION
