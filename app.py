@@ -341,27 +341,17 @@ def safe_batch_download(
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
 
-    tickers = [
-        "AAPL",
-        "MSFT",
-        "NVDA",
-        "AMZN",
-        "META",
-        "GOOGL",
-        "TSLA",
-        "AVGO",
-        "AMD",
-        "NFLX",
-        "CRM",
-        "ORCL",
-        "ADBE",
-        "QCOM",
-        "MU",
-        "INTC",
-        "PANW",
-        "CRWD",
-        "NOW",
-        "PLTR"
+  tickers = [
+        "AAPL", "MSFT", "NVDA", "AMZN", "META",
+        "GOOGL", "TSLA", "AVGO", "AMD", "NFLX",
+        "CRM", "ORCL", "ADBE", "QCOM", "MU",
+        "INTC", "PANW", "CRWD", "NOW", "PLTR",
+        "JPM", "BAC", "WFC", "GS", "MS",
+        "V", "MA", "AXP", "PYPL", "COIN",
+        "LLY", "UNH", "ABBV", "MRK", "AMGN",
+        "JNJ", "PFE", "GILD", "ISRG", "TMO",
+        "XOM", "CVX", "COP", "CAT", "GE",
+        "BA", "WMT", "COST", "HD", "DIS","CRCL"
     ]
     return tickers
 
