@@ -341,28 +341,28 @@ def safe_batch_download(
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
 
-    url = (
-        "https://en.wikipedia.org/wiki/"
-        "List_of_S%26P_500_companies"
-    )
-
-    tables = pd.read_html(
-        url
-    )
-
-    df = tables[0]
-
-    tickers = (
-        df["Symbol"]
-        .astype(str)
-        .str.replace(
-            ".",
-            "-",
-            regex=False
-        )
-        .tolist()
-    )
-
+    tickers = [
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "AMZN",
+        "META",
+        "GOOGL",
+        "TSLA",
+        "AVGO",
+        "AMD",
+        "NFLX",
+        "CRM",
+        "ORCL",
+        "ADBE",
+        "QCOM",
+        "MU",
+        "INTC",
+        "PANW",
+        "CRWD",
+        "NOW",
+        "PLTR"
+    ]
     return tickers
 
 
