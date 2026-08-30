@@ -341,17 +341,44 @@ def safe_batch_download(
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
 
-    tickers = [
+tickers = [
+        # Mega-cap / AI / Technology
         "AAPL", "MSFT", "NVDA", "AMZN", "META",
         "GOOGL", "TSLA", "AVGO", "AMD", "NFLX",
-        "CRM", "ORCL", "ADBE", "QCOM", "MU",
-        "INTC", "PANW", "CRWD", "NOW", "PLTR",
+        "ORCL", "IBM", "DELL", "HPE", "SMCI",
+
+        # Software / Cloud / Cybersecurity
+        "CRM", "ADBE", "NOW", "PLTR", "PATH",
+        "CRWD", "PANW", "FTNT", "DDOG", "NET",
+        "SNOW", "MDB", "ZS", "OKTA", "TEAM",
+
+        # Semiconductor
+        "QCOM", "MU", "INTC", "ARM", "MRVL",
+        "AMAT", "LRCX", "KLAC", "ON", "MCHP",
+
+        # Fintech / Financial
         "JPM", "BAC", "WFC", "GS", "MS",
         "V", "MA", "AXP", "PYPL", "COIN",
+        "HOOD", "SOFI", "XYZ", "NU", "IBKR",
+
+        # Healthcare / Biotech
         "LLY", "UNH", "ABBV", "MRK", "AMGN",
         "JNJ", "PFE", "GILD", "ISRG", "TMO",
+        "TEM", "VEEV", "REGN", "VRTX", "DXCM",
+
+        # Industrial / Energy
         "XOM", "CVX", "COP", "CAT", "GE",
-        "BA", "WMT", "COST", "HD", "DIS"
+        "BA", "RTX", "LMT", "ETN", "VRT",
+        "PLUG", "FCX", "SLB", "FSLR", "CEG",
+
+        # Consumer / Growth / Communication
+        "WMT", "COST", "HD", "DIS", "UBER",
+        "ABNB", "DASH", "BKNG", "SHOP", "MELI",
+        "RBLX", "SPOT", "ROKU", "DUOL", "RDDT",
+
+        # High-growth / Momentum
+        "CRCL", "APP", "RKLB", "ASTS", "IONQ",
+        "RGTI", "SOUN", "HIMS", "CAVA", "CVNA"
     ]
 
     return tickers
