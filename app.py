@@ -341,7 +341,7 @@ def safe_batch_download(
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
 
-tickers = [
+    tickers = [
         # Mega-cap / AI / Technology
         "AAPL", "MSFT", "NVDA", "AMZN", "META",
         "GOOGL", "TSLA", "AVGO", "AMD", "NFLX",
