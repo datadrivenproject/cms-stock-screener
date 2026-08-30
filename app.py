@@ -351,7 +351,7 @@ def get_sp500_tickers():
         "LLY", "UNH", "ABBV", "MRK", "AMGN",
         "JNJ", "PFE", "GILD", "ISRG", "TMO",
         "XOM", "CVX", "COP", "CAT", "GE",
-        "BA", "WMT", "COST", "HD", "DIS","CRCL"
+        "BA", "WMT", "COST", "HD", "DIS"
     ]
     return tickers
 
