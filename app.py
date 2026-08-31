@@ -1898,31 +1898,35 @@ with tab2:
                 hide_index=True,
                 use_container_width=True
             )
-# =================================================
-# DOWNLOAD TODAY'S RESULTS
-# =================================================
 
-           save_df = top_df.copy()
 
-          scan_date = datetime.now().strftime("%Y-%m-%d")
+            # =================================================
+            # DOWNLOAD TODAY'S RESULTS
+            # =================================================
 
-         save_df.insert(
-             0,
-            "Scan Date",
-             scan_date
-         )
+            save_df = top_df.copy()
 
-        csv_data = save_df.to_csv(
-            index=False
-        ).encode("utf-8-sig")
+            scan_date = datetime.now().strftime("%Y-%m-%d")
 
-        st.download_button(
-            label="💾 Download Today's Top Results",
-            data=csv_data,
-            file_name=f"CMS_Top_{actual_n}_{scan_date}.csv",
-            mime="text/csv",
-            key="download_top_results"
-        )
+            save_df.insert(
+                0,
+                "Scan Date",
+                scan_date
+            )
+
+            csv_data = save_df.to_csv(
+                index=False
+            ).encode("utf-8-sig")
+
+            st.download_button(
+                label="💾 Download Today's Top Results",
+                data=csv_data,
+                file_name=f"CMS_Top_{actual_n}_{scan_date}.csv",
+                mime="text/csv",
+                key="download_top_results"
+            )
+
+
             # =================================================
             # ACTIONABLE
             # =================================================
