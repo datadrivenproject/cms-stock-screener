@@ -11,15 +11,15 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V3",
+    page_title="CMS-100 Stock Screener V3.1",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V3")
+st.title("📈 CMS-100 Stock Screener V3.1")
 
 st.caption(
-    "Experimental Edition | Catalyst + Momentum + Setup + Relative Strength"
+    "Catalyst + Momentum + Setup + Relative Strength + Trade Plan"
 )
 
 
@@ -29,9 +29,7 @@ st.caption(
 
 BATCH_SIZE = 40
 MAX_RETRIES = 3
-
 RETRY_WAIT = [5, 15, 30]
-
 BATCH_PAUSE = 1.5
 
 
@@ -151,14 +149,8 @@ def safe_download_single(ticker, period="1y"):
 
             if df is not None and not df.empty:
 
-                if isinstance(
-                    df.columns,
-                    pd.MultiIndex
-                ):
-                    df.columns = (
-                        df.columns
-                        .get_level_values(0)
-                    )
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
 
                 return df.dropna(how="all")
 
@@ -166,9 +158,7 @@ def safe_download_single(ticker, period="1y"):
             pass
 
         if attempt < MAX_RETRIES - 1:
-            time.sleep(
-                RETRY_WAIT[attempt]
-            )
+            time.sleep(RETRY_WAIT[attempt])
 
     return None
 
@@ -179,11 +169,7 @@ def safe_download_single(ticker, period="1y"):
 
 def split_chunks(items, size):
 
-    for i in range(
-        0,
-        len(items),
-        size
-    ):
+    for i in range(0, len(items), size):
         yield items[i:i + size]
 
 
@@ -193,9 +179,7 @@ def safe_batch_download(
     period="1y"
 ):
 
-    tickers = list(
-        tickers_tuple
-    )
+    tickers = list(tickers_tuple)
 
     all_data = {}
 
@@ -225,15 +209,9 @@ def safe_batch_download(
 
                 if df is not None and not df.empty:
 
-                    if isinstance(
-                        df.columns,
-                        pd.MultiIndex
-                    ):
+                    if isinstance(df.columns, pd.MultiIndex):
 
-                        level0 = (
-                            df.columns
-                            .get_level_values(0)
-                        )
+                        level0 = df.columns.get_level_values(0)
 
                         for ticker in chunk:
 
@@ -249,12 +227,9 @@ def safe_batch_download(
 
                                     if (
                                         not temp.empty
-                                        and "Close"
-                                        in temp.columns
+                                        and "Close" in temp.columns
                                     ):
-                                        all_data[
-                                            ticker
-                                        ] = temp
+                                        all_data[ticker] = temp
 
                                 except Exception:
                                     pass
@@ -264,9 +239,7 @@ def safe_batch_download(
                         ticker = chunk[0]
 
                         if "Close" in df.columns:
-                            all_data[
-                                ticker
-                            ] = df.copy()
+                            all_data[ticker] = df.copy()
 
                     break
 
@@ -274,14 +247,10 @@ def safe_batch_download(
                 pass
 
             if attempt < MAX_RETRIES - 1:
-                time.sleep(
-                    RETRY_WAIT[attempt]
-                )
+                time.sleep(RETRY_WAIT[attempt])
 
         if chunk_number < len(chunks) - 1:
-            time.sleep(
-                BATCH_PAUSE
-            )
+            time.sleep(BATCH_PAUSE)
 
     return all_data
 
@@ -294,41 +263,33 @@ def safe_batch_download(
 def get_sp500_tickers():
 
     tickers = [
-        # Mega-cap / AI / Technology
         "AAPL", "MSFT", "NVDA", "AMZN", "META",
         "GOOGL", "TSLA", "AVGO", "AMD", "NFLX",
         "ORCL", "IBM", "DELL", "HPE", "SMCI",
 
-        # Software / Cloud / Cybersecurity
         "CRM", "ADBE", "NOW", "PLTR", "PATH",
         "CRWD", "PANW", "FTNT", "DDOG", "NET",
         "SNOW", "MDB", "ZS", "OKTA", "TEAM",
 
-        # Semiconductor
         "QCOM", "MU", "INTC", "ARM", "MRVL",
         "AMAT", "LRCX", "KLAC", "ON", "MCHP",
 
-        # Fintech / Financial
         "JPM", "BAC", "WFC", "GS", "MS",
         "V", "MA", "AXP", "PYPL", "COIN",
         "HOOD", "SOFI", "XYZ", "NU", "IBKR",
 
-        # Healthcare / Biotech
         "LLY", "UNH", "ABBV", "MRK", "AMGN",
         "JNJ", "PFE", "GILD", "ISRG", "TMO",
         "TEM", "VEEV", "REGN", "VRTX", "DXCM",
 
-        # Industrial / Energy
         "XOM", "CVX", "COP", "CAT", "GE",
         "BA", "RTX", "LMT", "ETN", "VRT",
         "PLUG", "FCX", "SLB", "FSLR", "CEG",
 
-        # Consumer / Growth
         "WMT", "COST", "HD", "DIS", "UBER",
         "ABNB", "DASH", "BKNG", "SHOP", "MELI",
         "RBLX", "SPOT", "ROKU", "DUOL", "RDDT",
 
-        # High-growth / Momentum
         "CRCL", "APP", "RKLB", "ASTS", "IONQ",
         "RGTI", "SOUN", "HIMS", "CAVA", "CVNA"
     ]
@@ -347,10 +308,7 @@ def calculate_technical(
 
     try:
 
-        if (
-            df is None
-            or len(df) < 200
-        ):
+        if df is None or len(df) < 200:
             return None
 
         close = (
@@ -380,33 +338,23 @@ def calculate_technical(
             return None
 
 
-        price = float(
-            close.iloc[-1]
-        )
+        price = float(close.iloc[-1])
 
         ma20 = float(
-            close.rolling(20)
-            .mean()
-            .iloc[-1]
+            close.rolling(20).mean().iloc[-1]
         )
 
         ma50 = float(
-            close.rolling(50)
-            .mean()
-            .iloc[-1]
+            close.rolling(50).mean().iloc[-1]
         )
 
         ma200 = float(
-            close.rolling(200)
-            .mean()
-            .iloc[-1]
+            close.rolling(200).mean().iloc[-1]
         )
 
 
         avg_vol20 = float(
-            volume.rolling(20)
-            .mean()
-            .iloc[-1]
+            volume.rolling(20).mean().iloc[-1]
         )
 
         today_vol = float(
@@ -449,9 +397,7 @@ def calculate_technical(
         )
 
 
-        previous_close = (
-            close.shift(1)
-        )
+        previous_close = close.shift(1)
 
 
         true_range = pd.concat(
@@ -473,7 +419,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # Trend Score - Max 20
+        # TREND SCORE - MAX 20
         # =====================================================
 
         trend_score = 0
@@ -492,7 +438,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V3 Breakout Score - Max 20
+        # BREAKOUT SCORE - MAX 20
         # =====================================================
 
         if (
@@ -521,7 +467,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # Volume Score - Max 15
+        # VOLUME SCORE - MAX 15
         # =====================================================
 
         volume_score = score_volume(
@@ -530,7 +476,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # Stop / R:R
+        # STOP
         # =====================================================
 
         stop = min(
@@ -548,6 +494,10 @@ def calculate_technical(
             price - stop
         )
 
+
+        # =====================================================
+        # TARGETS
+        # =====================================================
 
         recent_range = max(
             resistance - recent_low20,
@@ -577,6 +527,62 @@ def calculate_technical(
 
 
         # =====================================================
+        # TRADE PLAN / ENTRY ZONE
+        # =====================================================
+
+        entry_low = max(
+            resistance,
+            price - 0.50 * atr14
+        )
+
+        entry_high = (
+            price + 0.50 * atr14
+        )
+
+
+        if entry_low > entry_high:
+
+            entry_low = price
+
+            entry_high = (
+                price
+                + 0.25 * atr14
+            )
+
+
+        breakout_extension = (
+            (price - resistance) / atr14
+            if atr14 > 0
+            else np.nan
+        )
+
+
+        if price < resistance:
+
+            entry_status = (
+                "WAIT FOR BREAKOUT"
+            )
+
+        elif breakout_extension <= 0.50:
+
+            entry_status = (
+                "ENTRY ZONE"
+            )
+
+        elif breakout_extension <= 1.00:
+
+            entry_status = (
+                "EXTENDED"
+            )
+
+        else:
+
+            entry_status = (
+                "DO NOT CHASE"
+            )
+
+
+        # =====================================================
         # DATA QUALITY CHECK
         # =====================================================
 
@@ -589,42 +595,62 @@ def calculate_technical(
         return {
 
             "Ticker": ticker,
-
             "Price": price,
 
             "MA20": ma20,
-
             "MA50": ma50,
-
             "MA200": ma200,
 
             "RVOL": rvol,
-
             "20D Return": ret20,
 
-            "Dollar Volume": dollar_volume,
+            "Dollar Volume":
+                dollar_volume,
 
-            "Resistance": resistance,
+            "Resistance":
+                resistance,
 
-            "ATR14": atr14,
+            "ATR14":
+                atr14,
 
-            "Stop": stop,
+            "Entry Low":
+                entry_low,
 
-            "TP1": tp1,
+            "Entry High":
+                entry_high,
 
-            "TP2": tp2,
+            "Entry Status":
+                entry_status,
 
-            "R/R": rr,
+            "Breakout Extension":
+                breakout_extension,
 
-            "Trend Score": trend_score,
+            "Stop":
+                stop,
 
-            "Breakout Score": breakout_score,
+            "TP1":
+                tp1,
 
-            "Volume Score": volume_score,
+            "TP2":
+                tp2,
 
-            "R/R Score": rr_score,
+            "R/R":
+                rr,
 
-            "Data Check": data_check
+            "Trend Score":
+                trend_score,
+
+            "Breakout Score":
+                breakout_score,
+
+            "Volume Score":
+                volume_score,
+
+            "R/R Score":
+                rr_score,
+
+            "Data Check":
+                data_check
         }
 
 
@@ -713,7 +739,7 @@ def get_company_info(ticker):
 
 
 # =========================================================
-# NEWS SCORE - V3 MAX 10
+# NEWS SCORE - MAX 10
 # =========================================================
 
 @st.cache_data(ttl=3600)
@@ -878,9 +904,7 @@ def get_news_score(ticker):
 def get_benchmark_returns():
 
     data = safe_batch_download(
-        tuple(
-            BENCHMARK_TICKERS
-        ),
+        tuple(BENCHMARK_TICKERS),
         "3mo"
     )
 
@@ -897,9 +921,7 @@ def get_benchmark_returns():
 
             if len(close) >= 21:
 
-                results[
-                    ticker
-                ] = float(
+                results[ticker] = float(
                     close.iloc[-1]
                     / close.iloc[-21]
                     - 1
@@ -912,7 +934,7 @@ def get_benchmark_returns():
 
 
 # =========================================================
-# SECTOR SCORE - V3 MAX 5
+# SECTOR SCORE - MAX 5
 # =========================================================
 
 def get_sector_score(
@@ -974,7 +996,7 @@ def get_sector_score(
 
 
 # =========================================================
-# FINAL CMS V3
+# FINAL CMS
 # =========================================================
 
 def build_final_score(
@@ -1003,7 +1025,7 @@ def build_final_score(
 
 
     # =====================================================
-    # RELATIVE STRENGTH SCORE - MAX 15
+    # RELATIVE STRENGTH - MAX 15
     # =====================================================
 
     spy_return = benchmark_returns.get(
@@ -1023,7 +1045,6 @@ def build_final_score(
     ):
 
         relative_strength = np.nan
-
         relative_strength_score = 7
 
     else:
@@ -1066,7 +1087,7 @@ def build_final_score(
 
 
     # =====================================================
-    # TOTAL CMS
+    # CMS TOTAL
     # =====================================================
 
     total_score = int(
@@ -1097,7 +1118,7 @@ def build_final_score(
 
 
     # =====================================================
-    # V3 GRADE
+    # GRADE
     # =====================================================
 
     if total_score >= 88:
@@ -1117,7 +1138,7 @@ def build_final_score(
 
 
     # =====================================================
-    # V3 SIGNAL
+    # SIGNAL
     # =====================================================
 
     if (
@@ -1192,13 +1213,17 @@ def build_final_score(
 
     result.update({
 
-        "Company": company,
+        "Company":
+            company,
 
-        "Sector": sector,
+        "Sector":
+            sector,
 
-        "Market Cap": market_cap,
+        "Market Cap":
+            market_cap,
 
-        "Sector Score": sector_score,
+        "Sector Score":
+            sector_score,
 
         "Sector Relative":
             sector_relative,
@@ -1212,13 +1237,17 @@ def build_final_score(
         "Relative Strength Score":
             relative_strength_score,
 
-        "CMS": total_score,
+        "CMS":
+            total_score,
 
-        "Grade": grade,
+        "Grade":
+            grade,
 
-        "Signal": signal,
+        "Signal":
+            signal,
 
-        "Headlines": headlines
+        "Headlines":
+            headlines
     })
 
 
@@ -1302,8 +1331,7 @@ with tab1:
         "输入股票代码",
         value="TEM",
         placeholder=(
-            "TEM / PATH / "
-            "NVDA / PLTR"
+            "TEM / PATH / NVDA / PLTR"
         )
     )
 
@@ -1334,18 +1362,15 @@ with tab1:
                     f"{r['CMS']}/100"
                 )
 
-
                 c2.metric(
                     "Grade",
                     r["Grade"]
                 )
 
-
                 c3.metric(
                     "Signal",
                     r["Signal"]
                 )
-
 
                 c4.metric(
                     "RVOL",
@@ -1353,45 +1378,8 @@ with tab1:
                 )
 
 
-                if r["Signal"] == "STRONG BUY":
-
-                    st.success(
-                        "⭐ STRONG BUY"
-                    )
-
-                elif r["Signal"] == "BUY SETUP":
-
-                    st.success(
-                        "🟢 BUY SETUP"
-                    )
-
-                elif r["Signal"] == "READY":
-
-                    st.warning(
-                        "🟡 READY"
-                    )
-
-                elif r["Signal"] == "EARLY WATCH":
-
-                    st.info(
-                        "🔵 EARLY WATCH"
-                    )
-
-                else:
-
-                    st.error(
-                        "🔴 PASS"
-                    )
-
-
                 st.subheader(
-                    f"{r['Company']} "
-                    f"({r['Ticker']})"
-                )
-
-
-                st.write(
-                    f"Sector: {r['Sector']}"
+                    f"{r['Company']} ({r['Ticker']})"
                 )
 
 
@@ -1439,124 +1427,90 @@ with tab1:
                 )
 
 
-                prices = pd.DataFrame(
-                    [
-                        {
-                            "Price":
-                                r["Price"],
-
-                            "MA20":
-                                r["MA20"],
-
-                            "MA50":
-                                r["MA50"],
-
-                            "MA200":
-                                r["MA200"],
-
-                            "Resistance":
-                                r["Resistance"],
-
-                            "RVOL":
-                                r["RVOL"],
-
-                            "20D Return":
-                                r["20D Return"],
-
-                            "Relative Strength":
-                                r["Relative Strength"],
-
-                            "Stop":
-                                r["Stop"],
-
-                            "TP1":
-                                r["TP1"],
-
-                            "TP2":
-                                r["TP2"],
-
-                            "R/R":
-                                r["R/R"],
-
-                            "Data Check":
-                                r["Data Check"]
-                        }
-                    ]
-                )
-
-
                 st.subheader(
-                    "交易区间"
+                    "🎯 Trade Plan"
                 )
 
 
-                st.dataframe(
-                    prices.style.format(
-                        {
-                            "Price":
-                                "{:.2f}",
-
-                            "MA20":
-                                "{:.2f}",
-
-                            "MA50":
-                                "{:.2f}",
-
-                            "MA200":
-                                "{:.2f}",
-
-                            "Resistance":
-                                "{:.2f}",
-
-                            "RVOL":
-                                "{:.2f}",
-
-                            "20D Return":
-                                "{:.1%}",
-
-                            "Relative Strength":
-                                "{:.1%}",
-
-                            "Stop":
-                                "{:.2f}",
-
-                            "TP1":
-                                "{:.2f}",
-
-                            "TP2":
-                                "{:.2f}",
-
-                            "R/R":
-                                "{:.2f}"
-                        }
-                    ),
-
-                    hide_index=True,
-
-                    use_container_width=True
+                c1, c2, c3, c4 = (
+                    st.columns(4)
                 )
 
 
-                st.subheader(
-                    "近期 Catalyst"
+                c1.metric(
+                    "Current Price",
+                    f"${r['Price']:.2f}"
+                )
+
+                c2.metric(
+                    "Entry Zone",
+                    f"${r['Entry Low']:.2f} – "
+                    f"${r['Entry High']:.2f}"
+                )
+
+                c3.metric(
+                    "Stop",
+                    f"${r['Stop']:.2f}"
+                )
+
+                c4.metric(
+                    "R/R",
+                    f"{r['R/R']:.2f}"
                 )
 
 
-                if r["Headlines"]:
+                c5, c6, c7 = (
+                    st.columns(3)
+                )
 
-                    for headline in (
-                        r["Headlines"]
-                    ):
 
-                        st.write(
-                            "•",
-                            headline
-                        )
+                c5.metric(
+                    "TP1",
+                    f"${r['TP1']:.2f}"
+                )
+
+                c6.metric(
+                    "TP2",
+                    f"${r['TP2']:.2f}"
+                )
+
+                c7.metric(
+                    "Entry Status",
+                    r["Entry Status"]
+                )
+
+
+                if (
+                    r["Entry Status"]
+                    == "ENTRY ZONE"
+                ):
+
+                    st.success(
+                        "🟢 ENTRY ZONE"
+                    )
+
+                elif (
+                    r["Entry Status"]
+                    == "WAIT FOR BREAKOUT"
+                ):
+
+                    st.warning(
+                        "🟡 WAIT FOR BREAKOUT"
+                    )
+
+                elif (
+                    r["Entry Status"]
+                    == "EXTENDED"
+                ):
+
+                    st.warning(
+                        "🟠 EXTENDED"
+                    )
 
                 else:
 
-                    st.write(
-                        "暂时没有抓到近期新闻。"
+                    st.error(
+                        "🔴 DO NOT CHASE"
                     )
 
 
@@ -1575,17 +1529,6 @@ with tab2:
 
     st.subheader(
         "🚀 CMS Universe 100 Scanner"
-    )
-
-
-    st.info(
-        """
-V3 先批量扫描100只候选股，
-然后只对技术面最强的一小部分执行完整 CMS 分析。
-
-V3 更强调：
-趋势、突破、相对强度和风险收益。
-"""
     )
 
 
@@ -1619,21 +1562,17 @@ V3 更强调：
 
 
             st.write(
-                f"准备扫描 "
-                f"{len(tickers)} "
-                f"只股票..."
+                f"准备扫描 {len(tickers)} 只股票..."
             )
 
 
-            progress = st.progress(
-                0
-            )
+            progress = st.progress(0)
 
             status = st.empty()
 
 
             # =================================================
-            # STEP 1 - DOWNLOAD
+            # STEP 1
             # =================================================
 
             status.write(
@@ -1654,27 +1593,22 @@ V3 更强调：
             )
 
 
-            progress.progress(
-                35
-            )
+            progress.progress(35)
 
 
             # =================================================
-            # STEP 2 - TECHNICAL FILTER
+            # STEP 2
             # =================================================
 
             status.write(
-                "② 正在计算趋势、"
-                "RVOL、突破和R/R..."
+                "② 正在计算趋势、突破和成交量..."
             )
 
 
             technical_results = []
 
 
-            for ticker, df in (
-                market_data.items()
-            ):
+            for ticker, df in market_data.items():
 
                 r = calculate_technical(
                     ticker,
@@ -1695,7 +1629,7 @@ V3 更强调：
             if not technical_results:
 
                 st.warning(
-                    "今天没有股票通过基础筛选。"
+                    "没有股票通过基础筛选。"
                 )
 
                 st.stop()
@@ -1706,20 +1640,17 @@ V3 更强调：
             )
 
 
-            progress.progress(
-                55
-            )
+            progress.progress(55)
 
 
             st.write(
                 f"基础筛选后剩余 "
-                f"{len(quick_df)} "
-                f"只股票。"
+                f"{len(quick_df)} 只股票。"
             )
 
 
             # =================================================
-            # STEP 3 - QUICK RANK
+            # STEP 3
             # =================================================
 
             quick_df[
@@ -1773,26 +1704,12 @@ V3 更强调：
             )
 
 
-            progress.progress(
-                65
-            )
-
-
-            st.write(
-                f"进入完整 CMS 的候选股："
-                f"{len(finalists)} 只"
-            )
+            progress.progress(65)
 
 
             # =================================================
-            # STEP 4 - BENCHMARK
+            # STEP 4
             # =================================================
-
-            status.write(
-                "③ 正在计算 SPY "
-                "和行业相对表现..."
-            )
-
 
             benchmark_returns = (
                 get_benchmark_returns()
@@ -1800,7 +1717,7 @@ V3 更强调：
 
 
             # =================================================
-            # STEP 5 - FINAL CMS
+            # STEP 5
             # =================================================
 
             cms_results = []
@@ -1821,10 +1738,8 @@ V3 更强调：
 
 
                 status.write(
-                    f"④ CMS分析 "
-                    f"{ticker} "
-                    f"({position}/"
-                    f"{total_finalists})"
+                    f"CMS分析 {ticker} "
+                    f"({position}/{total_finalists})"
                 )
 
 
@@ -1840,32 +1755,24 @@ V3 更强调：
                         final
                     )
 
-
                 except Exception:
                     continue
 
 
-                progress_value = (
-                    65
-                    + int(
-                        30
-                        * position
-                        / total_finalists
-                    )
-                )
-
-
                 progress.progress(
                     min(
-                        progress_value,
+                        65
+                        + int(
+                            30
+                            * position
+                            / total_finalists
+                        ),
                         95
                     )
                 )
 
 
-                time.sleep(
-                    0.75
-                )
+                time.sleep(0.75)
 
 
             status.empty()
@@ -1893,6 +1800,7 @@ V3 更强调：
                         "Trend Score",
                         "RVOL"
                     ],
+
                     ascending=[
                         False,
                         False,
@@ -1908,18 +1816,15 @@ V3 更强调：
             result_df[
                 "Rank"
             ] = (
-                result_df.index
-                + 1
+                result_df.index + 1
             )
 
 
-            progress.progress(
-                100
-            )
+            progress.progress(100)
 
 
             st.success(
-                "✅ CMS Universe 100 扫描完成"
+                "✅ 扫描完成"
             )
 
 
@@ -1946,6 +1851,7 @@ V3 更强调：
                 "Relative Strength Score",
                 "Catalyst Score",
                 "R/R",
+                "Entry Status",
                 "Stop",
                 "TP1",
                 "TP2",
@@ -1971,52 +1877,37 @@ V3 更强调：
 
 
             st.subheader(
-                f"🏆 Top {actual_n} "
-                f"CMS Candidates"
+                f"🏆 Top {actual_n} CMS Candidates"
             )
 
 
             st.dataframe(
                 top_df.style.format(
                     {
-                        "Price":
-                            "{:.2f}",
-
-                        "RVOL":
-                            "{:.2f}",
-
-                        "20D Return":
-                            "{:.1%}",
-
-                        "Relative Strength":
-                            "{:.1%}",
-
-                        "R/R":
-                            "{:.2f}",
-
-                        "Stop":
-                            "{:.2f}",
-
-                        "TP1":
-                            "{:.2f}",
-
-                        "TP2":
-                            "{:.2f}"
+                        "Price": "{:.2f}",
+                        "RVOL": "{:.2f}",
+                        "20D Return": "{:.1%}",
+                        "Relative Strength": "{:.1%}",
+                        "R/R": "{:.2f}",
+                        "Stop": "{:.2f}",
+                        "TP1": "{:.2f}",
+                        "TP2": "{:.2f}"
                     }
                 ),
 
                 hide_index=True,
-
                 use_container_width=True
             )
 
 
             # =================================================
-            # ACTIONABLE SETUPS
+            # ACTIONABLE
             # =================================================
 
             actionable_df = result_df[
-                result_df["Signal"].isin(
+                result_df[
+                    "Signal"
+                ].isin(
                     [
                         "STRONG BUY",
                         "BUY SETUP"
@@ -2033,8 +1924,7 @@ V3 更强调：
             if actionable_df.empty:
 
                 st.info(
-                    "今天没有股票达到 "
-                    "BUY SETUP 或 STRONG BUY。"
+                    "今天没有 BUY SETUP 或 STRONG BUY。"
                 )
 
             else:
@@ -2044,45 +1934,182 @@ V3 更强调：
                         display_columns
                     ].style.format(
                         {
-                            "Price":
-                                "{:.2f}",
-
-                            "RVOL":
-                                "{:.2f}",
-
-                            "20D Return":
-                                "{:.1%}",
-
-                            "Relative Strength":
-                                "{:.1%}",
-
-                            "R/R":
-                                "{:.2f}",
-
-                            "Stop":
-                                "{:.2f}",
-
-                            "TP1":
-                                "{:.2f}",
-
-                            "TP2":
-                                "{:.2f}"
+                            "Price": "{:.2f}",
+                            "RVOL": "{:.2f}",
+                            "20D Return": "{:.1%}",
+                            "Relative Strength": "{:.1%}",
+                            "R/R": "{:.2f}",
+                            "Stop": "{:.2f}",
+                            "TP1": "{:.2f}",
+                            "TP2": "{:.2f}"
                         }
                     ),
 
                     hide_index=True,
-
                     use_container_width=True
                 )
 
 
+                # =================================================
+                # TRADE PLANS
+                # =================================================
+
+                st.subheader(
+                    "🎯 Trade Plans"
+                )
+
+
+                for _, r in actionable_df.iterrows():
+
+                    with st.expander(
+                        f"{r['Ticker']} | "
+                        f"{r['Signal']} | "
+                        f"CMS {int(r['CMS'])}"
+                    ):
+
+                        c1, c2, c3, c4 = (
+                            st.columns(4)
+                        )
+
+
+                        c1.metric(
+                            "Current Price",
+                            f"${r['Price']:.2f}"
+                        )
+
+
+                        c2.metric(
+                            "Entry Zone",
+                            f"${r['Entry Low']:.2f} – "
+                            f"${r['Entry High']:.2f}"
+                        )
+
+
+                        c3.metric(
+                            "Stop",
+                            f"${r['Stop']:.2f}"
+                        )
+
+
+                        c4.metric(
+                            "R/R",
+                            f"{r['R/R']:.2f}"
+                        )
+
+
+                        c5, c6, c7 = (
+                            st.columns(3)
+                        )
+
+
+                        c5.metric(
+                            "TP1",
+                            f"${r['TP1']:.2f}"
+                        )
+
+
+                        c6.metric(
+                            "TP2",
+                            f"${r['TP2']:.2f}"
+                        )
+
+
+                        c7.metric(
+                            "RVOL",
+                            f"{r['RVOL']:.2f}x"
+                        )
+
+
+                        status_value = (
+                            r["Entry Status"]
+                        )
+
+
+                        if (
+                            status_value
+                            == "ENTRY ZONE"
+                        ):
+
+                            st.success(
+                                "🟢 ENTRY ZONE — "
+                                "价格接近理想突破区域。"
+                            )
+
+
+                        elif (
+                            status_value
+                            == "WAIT FOR BREAKOUT"
+                        ):
+
+                            st.warning(
+                                "🟡 WAIT FOR BREAKOUT — "
+                                "等待价格正式突破阻力位。"
+                            )
+
+
+                        elif (
+                            status_value
+                            == "EXTENDED"
+                        ):
+
+                            st.warning(
+                                "🟠 EXTENDED — "
+                                "股票很强，但已经偏离突破位。"
+                            )
+
+
+                        else:
+
+                            st.error(
+                                "🔴 DO NOT CHASE — "
+                                "当前价格离突破位过远。"
+                            )
+
+
+                        st.markdown(
+                            "**Why it qualified**"
+                        )
+
+
+                        st.write(
+                            f"✓ CMS: "
+                            f"{int(r['CMS'])}/100"
+                        )
+
+                        st.write(
+                            f"✓ Trend: "
+                            f"{int(r['Trend Score'])}/20"
+                        )
+
+                        st.write(
+                            f"✓ Breakout: "
+                            f"{int(r['Breakout Score'])}/20"
+                        )
+
+                        st.write(
+                            f"✓ RVOL: "
+                            f"{r['RVOL']:.2f}x"
+                        )
+
+                        st.write(
+                            f"✓ Relative Strength vs SPY: "
+                            f"{r['Relative Strength']:.1%}"
+                        )
+
+                        st.write(
+                            f"✓ Risk / Reward: "
+                            f"{r['R/R']:.2f}"
+                        )
+
+
             # =================================================
-            # READY LIST
+            # READY
             # =================================================
 
             ready_df = result_df[
-                result_df["Signal"]
-                == "READY"
+                result_df[
+                    "Signal"
+                ] == "READY"
             ]
 
 
@@ -2104,34 +2131,18 @@ V3 更强调：
                         display_columns
                     ].style.format(
                         {
-                            "Price":
-                                "{:.2f}",
-
-                            "RVOL":
-                                "{:.2f}",
-
-                            "20D Return":
-                                "{:.1%}",
-
-                            "Relative Strength":
-                                "{:.1%}",
-
-                            "R/R":
-                                "{:.2f}",
-
-                            "Stop":
-                                "{:.2f}",
-
-                            "TP1":
-                                "{:.2f}",
-
-                            "TP2":
-                                "{:.2f}"
+                            "Price": "{:.2f}",
+                            "RVOL": "{:.2f}",
+                            "20D Return": "{:.1%}",
+                            "Relative Strength": "{:.1%}",
+                            "R/R": "{:.2f}",
+                            "Stop": "{:.2f}",
+                            "TP1": "{:.2f}",
+                            "TP2": "{:.2f}"
                         }
                     ),
 
                     hide_index=True,
-
                     use_container_width=True
                 )
 
@@ -2147,13 +2158,12 @@ V3 更强调：
 {e}
 
 如果出现 403，请不要连续点击 Scan。
-等待一段时间后再试。
 """
             )
 
 
 # =========================================================
-# CACHE CONTROL
+# CACHE
 # =========================================================
 
 st.divider()
@@ -2180,8 +2190,8 @@ with col1:
 with col2:
 
     st.caption(
-        "平常不要清除缓存。"
-        "缓存可以降低 Yahoo Finance 请求次数。"
+        "平常不要清除缓存，"
+        "缓存可以降低 Yahoo 请求次数。"
     )
 
 
@@ -2190,14 +2200,11 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V3 是实验性股票筛选与研究工具，不构成投资建议。
+CMS-100 V3.1 为实验性股票筛选工具，不构成投资建议。
 
-Signal 含义：
-EARLY WATCH = 开始值得关注
-READY = 已接近交易机会
-BUY SETUP = 交易条件已经形成
-STRONG BUY = 多项技术条件同时非常强
+CMS Signal 判断股票质量；
+Entry Status 判断当前价格是否适合追入。
 
-V3 仍需要通过历史回测和实际跟踪验证。
+BUY SETUP 不等同于立即买入。
 """
 )
