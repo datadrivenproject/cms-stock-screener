@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.1.2 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.1.3 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.1.2 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.1.3 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -693,7 +693,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.1.2 EARLY ENGINE EXECUTION UPGRADE
+        # V4.1.3 EARLY ENGINE EXECUTION UPGRADE
         # =====================================================
 
         # -----------------------------------------------------
@@ -811,10 +811,46 @@ def calculate_technical(
         )
 
         # -----------------------------------------------------
+        # CURRENT-PRICE R/R
+        # -----------------------------------------------------
+        # If current price is below the preferred Early Buy Zone,
+        # buying cheaper can improve R/R. This is used for the
+        # ATR-aware Near Early Entry status.
+
+        current_risk = (
+            price - early_stop
+        )
+
+        current_reward = (
+            early_tp1 - price
+        )
+
+        current_rr = (
+            current_reward / current_risk
+            if current_risk > 0
+            else np.nan
+        )
+
+        # Distance from current price to the lower edge of the
+        # preferred Early Buy Zone, expressed in ATR units.
+        near_entry_distance_atr = (
+            (early_buy_low - price) / atr14
+            if atr14 > 0
+            else np.nan
+        )
+
+
+        # -----------------------------------------------------
         # BUY STATUS
         # -----------------------------------------------------
-        # First gate by setup quality.
-        # BUILDING/PASS cannot produce a true buy signal.
+        # Setup Quality is the first gate.
+        # BUILDING/PASS cannot produce a true entry signal.
+        #
+        # V4.1.3 improvement:
+        # A stock slightly BELOW the Preferred Early Buy Zone
+        # is no longer forced to WAIT. If it is within 0.25 ATR
+        # and current-price R/R is acceptable, it becomes
+        # NEAR EARLY ENTRY.
 
         if early_setup_status == "PASS":
 
@@ -822,7 +858,7 @@ def calculate_technical(
 
         elif early_setup_status == "BUILDING":
 
-            buy_status = "WATCH"
+            buy_status = "WATCH - BUILDING"
 
         else:
 
@@ -861,7 +897,34 @@ def calculate_technical(
 
                 elif price < early_buy_low:
 
-                    buy_status = "WAIT"
+                    if (
+                        not pd.isna(near_entry_distance_atr)
+                        and near_entry_distance_atr <= 0.25
+                        and not pd.isna(current_rr)
+                        and current_rr >= 1.5
+                    ):
+
+                        if (
+                            early_setup_status
+                            == "PRIME EARLY SETUP"
+                            and current_rr >= 2.0
+                        ):
+
+                            buy_status = (
+                                "STRONG NEAR EARLY ENTRY"
+                            )
+
+                        else:
+
+                            buy_status = (
+                                "NEAR EARLY ENTRY"
+                            )
+
+                    else:
+
+                        buy_status = (
+                            "WAIT - BELOW ENTRY ZONE"
+                        )
 
                 else:
 
@@ -1021,6 +1084,12 @@ def calculate_technical(
 
             "Potential R/R":
                 potential_rr,
+
+            "Current R/R":
+                current_rr,
+
+            "Near Entry Distance ATR":
+                near_entry_distance_atr,
 
             "Breakout R/R":
                 breakout_rr,
@@ -2552,6 +2621,8 @@ with tab2:
                     "Early TP1",
                     "Early TP2",
                     "Potential R/R",
+                    "Current R/R",
+                    "Near Entry Distance ATR",
                     "Resistance",
                     "Distance to Resistance",
                     "CMS",
@@ -2577,7 +2648,7 @@ with tab2:
                 )
 
                 st.caption(
-                    "V4.1.2 执行优先：Buy Status → Price → Early Buy Zone → "
+                    "V4.1.3 执行优先：Buy Status → Price → Early Buy Zone → "
                     "Breakout Buy Zone → Stop → TP1 → TP2 → Potential R/R；"
                     "BUILDING 只显示 WATCH，PASS 显示 NO ENTRY。"
                 )
@@ -2590,6 +2661,8 @@ with tab2:
                             "Early TP1": "{:.2f}",
                             "Early TP2": "{:.2f}",
                             "Potential R/R": "{:.2f}",
+                            "Current R/R": "{:.2f}",
+                            "Near Entry Distance ATR": "{:.2f}",
                             "Resistance": "{:.2f}",
                             "Distance to Resistance": "{:.1%}",
                             "RSI14": "{:.1f}",
@@ -2732,7 +2805,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.1.2 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.1.3 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
