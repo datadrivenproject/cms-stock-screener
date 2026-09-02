@@ -3,7 +3,14 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except ImportError:
+    gspread = None
+    Credentials = None
 
 
 # =========================================================
@@ -11,12 +18,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.1.4 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.2 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.1.4 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.2 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -693,7 +700,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.1.4 EARLY ENGINE EXECUTION UPGRADE
+        # V4.2 EARLY ENGINE EXECUTION UPGRADE
         # =====================================================
 
         # -----------------------------------------------------
@@ -846,7 +853,7 @@ def calculate_technical(
         # Setup Quality is the first gate.
         # BUILDING/PASS cannot produce a true entry signal.
         #
-        # V4.1.4 improvement:
+        # V4.2 improvement:
         # A stock slightly BELOW the Preferred Early Buy Zone
         # is no longer forced to WAIT. If it is within 0.25 ATR
         # and current-price R/R is acceptable, it becomes
@@ -1023,7 +1030,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.1.4 ACTION PRIORITY + DISTANCE TO ENTRY
+        # V4.2 ACTION PRIORITY + DISTANCE TO ENTRY
         # =====================================================
         priority_map = {
             "STRONG EARLY ENTRY": (1, "P1 - STRONG EARLY ENTRY"),
@@ -1889,6 +1896,338 @@ def analyze_single_stock(ticker):
 
 
 # =========================================================
+# GOOGLE SHEETS PERFORMANCE TRACKER — V4.2
+# =========================================================
+
+TRACKER_WORKSHEET = "Tracker"
+
+TRACKER_HEADERS = [
+    "Scan Date", "Scan Time", "Ticker", "Company",
+    "Action Priority", "Buy Status", "Signal Price",
+    "Distance to Entry $", "Distance to Entry %",
+    "Early Buy Zone", "Early Stop", "Early TP1", "Early TP2",
+    "Potential R/R", "Current R/R",
+    "Early Setup Score", "Early Setup Status",
+    "CMS", "Signal", "Sector", "RSI14", "MACD Histogram",
+    "MA20 Slope 5D", "Volume Build Ratio", "Compression Ratio", "RVOL",
+    "5D Date", "5D Price", "5D Return",
+    "10D Date", "10D Price", "10D Return",
+    "20D Date", "20D Price", "20D Return",
+    "Last Updated"
+]
+
+
+def _cell_value(value):
+    """Convert pandas/numpy values into Google-Sheets-safe values."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    return value
+
+
+def get_tracker_worksheet():
+    """Connect to the permanent Google Sheet configured in Streamlit Secrets."""
+    if gspread is None or Credentials is None:
+        raise RuntimeError(
+            "Google Sheets libraries are missing. Add gspread and google-auth "
+            "to requirements.txt, then reboot the Streamlit app."
+        )
+
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError("Streamlit Secret [gcp_service_account] was not found.")
+
+    if "tracker" not in st.secrets or "sheet_name" not in st.secrets["tracker"]:
+        raise RuntimeError("Streamlit Secret [tracker].sheet_name was not found.")
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    service_info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(service_info, scopes=scopes)
+    client = gspread.authorize(creds)
+
+    sheet_name = st.secrets["tracker"]["sheet_name"]
+    book = client.open(sheet_name)
+
+    try:
+        ws = book.worksheet(TRACKER_WORKSHEET)
+    except gspread.WorksheetNotFound:
+        ws = book.add_worksheet(
+            title=TRACKER_WORKSHEET,
+            rows=2000,
+            cols=max(40, len(TRACKER_HEADERS) + 5),
+        )
+
+    current_headers = ws.row_values(1)
+    if not current_headers:
+        ws.append_row(TRACKER_HEADERS, value_input_option="USER_ENTERED")
+    elif current_headers != TRACKER_HEADERS:
+        # V4.2 owns the Tracker worksheet schema. Preserve data where possible
+        # by only filling missing headers to the right, rather than deleting rows.
+        missing = [h for h in TRACKER_HEADERS if h not in current_headers]
+        if missing:
+            new_headers = current_headers + missing
+            ws.update(
+                range_name=f"A1:{gspread.utils.rowcol_to_a1(1, len(new_headers))}",
+                values=[new_headers],
+            )
+
+    return ws
+
+
+def tracker_records_df(ws):
+    values = ws.get_all_records(default_blank="")
+    if not values:
+        return pd.DataFrame(columns=TRACKER_HEADERS)
+    return pd.DataFrame(values)
+
+
+def save_snapshot_to_google_sheet(tracker_snapshot):
+    """
+    Permanently save today's Engine-2 snapshot.
+    Same Scan Date + Ticker is updated rather than duplicated.
+    Existing 5D/10D/20D performance fields are preserved.
+    """
+    ws = get_tracker_worksheet()
+    all_values = ws.get_all_values()
+
+    if not all_values:
+        ws.append_row(TRACKER_HEADERS, value_input_option="USER_ENTERED")
+        all_values = [TRACKER_HEADERS]
+
+    headers = all_values[0]
+    header_pos = {h: i for i, h in enumerate(headers)}
+
+    # Ensure every V4.2 field exists.
+    missing_headers = [h for h in TRACKER_HEADERS if h not in header_pos]
+    if missing_headers:
+        headers = headers + missing_headers
+        ws.update(
+            range_name=f"A1:{gspread.utils.rowcol_to_a1(1, len(headers))}",
+            values=[headers],
+        )
+        header_pos = {h: i for i, h in enumerate(headers)}
+        all_values = ws.get_all_values()
+
+    existing = {}
+    for row_num, row in enumerate(all_values[1:], start=2):
+        scan_date = row[header_pos["Scan Date"]] if len(row) > header_pos["Scan Date"] else ""
+        ticker = row[header_pos["Ticker"]] if len(row) > header_pos["Ticker"] else ""
+        if scan_date and ticker:
+            existing[(str(scan_date), str(ticker).upper())] = (row_num, row)
+
+    saved = 0
+    updated = 0
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for _, r in tracker_snapshot.iterrows():
+        record = {
+            "Scan Date": r.get("Scan Date", ""),
+            "Scan Time": r.get("Scan Time", ""),
+            "Ticker": r.get("Ticker", ""),
+            "Company": r.get("Company", ""),
+            "Action Priority": r.get("Action Priority", ""),
+            "Buy Status": r.get("Buy Status", ""),
+            "Signal Price": r.get("Price", ""),
+            "Distance to Entry $": r.get("Distance to Entry $", ""),
+            "Distance to Entry %": r.get("Distance to Entry %", ""),
+            "Early Buy Zone": r.get("Early Buy Zone", ""),
+            "Early Stop": r.get("Early Stop", ""),
+            "Early TP1": r.get("Early TP1", ""),
+            "Early TP2": r.get("Early TP2", ""),
+            "Potential R/R": r.get("Potential R/R", ""),
+            "Current R/R": r.get("Current R/R", ""),
+            "Early Setup Score": r.get("Early Setup Score", ""),
+            "Early Setup Status": r.get("Early Setup Status", ""),
+            "CMS": r.get("CMS", ""),
+            "Signal": r.get("Signal", ""),
+            "Sector": r.get("Sector", ""),
+            "RSI14": r.get("RSI14", ""),
+            "MACD Histogram": r.get("MACD Histogram", ""),
+            "MA20 Slope 5D": r.get("MA20 Slope 5D", ""),
+            "Volume Build Ratio": r.get("Volume Build Ratio", ""),
+            "Compression Ratio": r.get("Compression Ratio", ""),
+            "RVOL": r.get("RVOL", ""),
+            "Last Updated": now_text,
+        }
+
+        key = (str(record["Scan Date"]), str(record["Ticker"]).upper())
+
+        if key in existing:
+            row_num, old_row = existing[key]
+            # Pad old row, then update signal fields only. Performance remains intact.
+            row_out = list(old_row) + [""] * (len(headers) - len(old_row))
+            for field, value in record.items():
+                if field in header_pos:
+                    row_out[header_pos[field]] = _cell_value(value)
+
+            end_cell = gspread.utils.rowcol_to_a1(row_num, len(headers))
+            ws.update(
+                range_name=f"A{row_num}:{end_cell}",
+                values=[row_out[:len(headers)]],
+                value_input_option="USER_ENTERED",
+            )
+            updated += 1
+        else:
+            row_out = [""] * len(headers)
+            for field, value in record.items():
+                if field in header_pos:
+                    row_out[header_pos[field]] = _cell_value(value)
+            ws.append_row(row_out, value_input_option="USER_ENTERED")
+            saved += 1
+
+    return saved, updated
+
+
+def _close_series_for_ticker(ticker, start_date, end_date):
+    """Download adjusted daily closes for tracker performance calculations."""
+    try:
+        df = yf.download(
+            ticker,
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if df is None or df.empty:
+            return pd.Series(dtype=float)
+
+        if isinstance(df.columns, pd.MultiIndex):
+            # yfinance can return either (Price, Ticker) or ticker-grouped columns.
+            if "Close" in df.columns.get_level_values(0):
+                close = df["Close"]
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+            elif ticker in df.columns.get_level_values(0):
+                close = df[ticker]["Close"]
+            else:
+                return pd.Series(dtype=float)
+        else:
+            close = df["Close"]
+
+        close = pd.to_numeric(close, errors="coerce").dropna()
+        close.index = pd.to_datetime(close.index).tz_localize(None)
+        return close
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def update_google_tracker_performance():
+    """
+    Fill missing 5D/10D/20D prices and returns using the 5th, 10th and 20th
+    trading day AFTER the saved Scan Date. Existing completed fields are retained.
+    """
+    ws = get_tracker_worksheet()
+    all_values = ws.get_all_values()
+    if len(all_values) <= 1:
+        return 0, 0
+
+    headers = all_values[0]
+    hp = {h: i for i, h in enumerate(headers)}
+    required = [
+        "Scan Date", "Ticker", "Signal Price",
+        "5D Date", "5D Price", "5D Return",
+        "10D Date", "10D Price", "10D Return",
+        "20D Date", "20D Price", "20D Return", "Last Updated"
+    ]
+    missing = [h for h in required if h not in hp]
+    if missing:
+        raise RuntimeError("Tracker is missing columns: " + ", ".join(missing))
+
+    pending_rows = []
+    ticker_min_date = {}
+
+    for row_num, row in enumerate(all_values[1:], start=2):
+        row_pad = list(row) + [""] * (len(headers) - len(row))
+        scan_date_text = row_pad[hp["Scan Date"]]
+        ticker = str(row_pad[hp["Ticker"]]).upper().strip()
+        signal_price_text = row_pad[hp["Signal Price"]]
+
+        if not scan_date_text or not ticker or signal_price_text in ("", None):
+            continue
+
+        try:
+            scan_date = pd.to_datetime(scan_date_text).normalize()
+            signal_price = float(str(signal_price_text).replace(",", ""))
+        except Exception:
+            continue
+
+        horizons_needed = []
+        for n in (5, 10, 20):
+            if row_pad[hp[f"{n}D Return"]] in ("", None):
+                horizons_needed.append(n)
+
+        if not horizons_needed:
+            continue
+
+        pending_rows.append((row_num, row_pad, scan_date, ticker, signal_price, horizons_needed))
+        if ticker not in ticker_min_date or scan_date < ticker_min_date[ticker]:
+            ticker_min_date[ticker] = scan_date
+
+    if not pending_rows:
+        return 0, 0
+
+    today = pd.Timestamp.today().normalize()
+    price_cache = {}
+
+    for ticker, min_date in ticker_min_date.items():
+        # Include enough calendar buffer before/after trading-day horizons.
+        start = (min_date + pd.Timedelta(days=1)).to_pydatetime()
+        end = (today + pd.Timedelta(days=2)).to_pydatetime()
+        price_cache[ticker] = _close_series_for_ticker(ticker, start, end)
+        time.sleep(0.25)
+
+    rows_updated = 0
+    fields_filled = 0
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for row_num, row_pad, scan_date, ticker, signal_price, horizons_needed in pending_rows:
+        close = price_cache.get(ticker, pd.Series(dtype=float))
+        if close.empty:
+            continue
+
+        # Strictly AFTER the scan date.
+        future = close[close.index.normalize() > scan_date]
+        changed = False
+
+        for n in horizons_needed:
+            if len(future) >= n:
+                target_date = future.index[n - 1]
+                target_price = float(future.iloc[n - 1])
+                target_return = target_price / signal_price - 1.0
+
+                row_pad[hp[f"{n}D Date"]] = target_date.strftime("%Y-%m-%d")
+                row_pad[hp[f"{n}D Price"]] = round(target_price, 4)
+                row_pad[hp[f"{n}D Return"]] = round(target_return, 6)
+                fields_filled += 1
+                changed = True
+
+        if changed:
+            row_pad[hp["Last Updated"]] = now_text
+            end_cell = gspread.utils.rowcol_to_a1(row_num, len(headers))
+            ws.update(
+                range_name=f"A{row_num}:{end_cell}",
+                values=[row_pad[:len(headers)]],
+                value_input_option="USER_ENTERED",
+            )
+            rows_updated += 1
+
+    return rows_updated, fields_filled
+
+
+# =========================================================
 # TABS
 # =========================================================
 
@@ -2696,7 +3035,7 @@ with tab2:
                 )
 
                 st.caption(
-                    "V4.1.4：按 Action Priority 优先排序；"
+                    "V4.2：按 Action Priority 优先排序；"
                     "执行信息前置：Buy Status → Price → Distance to Entry → "
                     "Early Buy Zone → Stop → TP1 → R/R。"
                 )
@@ -2747,7 +3086,7 @@ with tab2:
                         index=False
                     ).encode("utf-8-sig"),
                     file_name=(
-                        f"CMS_V4_1_4_Early_Top_{early_actual_n}_"
+                        f"CMS_V4_2_Early_Top_{early_actual_n}_"
                         f"{scan_date}.csv"
                     ),
                     mime="text/csv",
@@ -2755,10 +3094,8 @@ with tab2:
                 )
 
                 # =================================================
-                # V4.1.4 PERFORMANCE TRACKER
+                # V4.2 PERMANENT GOOGLE SHEETS PERFORMANCE TRACKER
                 # =================================================
-                # Session-based storage is intentionally used here.
-                # Download the tracker CSV before the Streamlit session resets.
                 tracker_columns = [
                     "Ticker", "Company", "Action Priority", "Buy Status",
                     "Price", "Distance to Entry $", "Distance to Entry %",
@@ -2781,51 +3118,97 @@ with tab2:
                     1, "Scan Time", datetime.now().strftime("%H:%M:%S")
                 )
 
-                if "performance_history" not in st.session_state:
-                    st.session_state.performance_history = pd.DataFrame()
+                st.markdown("#### 📊 Permanent Performance Tracker")
+                st.caption(
+                    "Save writes permanently to Google Sheets. "
+                    "5D/10D/20D are the 5th/10th/20th trading-day closes "
+                    "after the Scan Date, compared with the saved Signal Price."
+                )
 
-                if st.button(
-                    "📌 Save Current Early Results to Tracker",
-                    key="save_early_tracker"
-                ):
-                    st.session_state.performance_history = pd.concat(
-                        [
-                            st.session_state.performance_history,
-                            tracker_snapshot
-                        ],
-                        ignore_index=True
-                    ).drop_duplicates(
-                        subset=["Scan Date", "Ticker", "Buy Status"],
-                        keep="last"
-                    )
+                t1, t2, t3 = st.columns(3)
 
-                    st.success(
-                        "Saved. Download the tracker CSV to keep a durable copy."
-                    )
+                with t1:
+                    if st.button(
+                        "☁️ Save Today's Results to Google Sheet",
+                        key="save_early_tracker_google"
+                    ):
+                        try:
+                            with st.spinner("Saving permanently to Google Sheets..."):
+                                saved_count, updated_count = save_snapshot_to_google_sheet(
+                                    tracker_snapshot
+                                )
+                            st.success(
+                                f"Saved permanently: {saved_count} new rows, "
+                                f"{updated_count} same-day rows updated."
+                            )
+                        except Exception as e:
+                            st.error(f"Google Sheet save failed: {e}")
 
-                if not st.session_state.performance_history.empty:
-                    history_csv = (
-                        st.session_state.performance_history
-                        .to_csv(index=False)
-                        .encode("utf-8-sig")
-                    )
+                with t2:
+                    if st.button(
+                        "🔄 Update 5D / 10D / 20D",
+                        key="update_google_tracker"
+                    ):
+                        try:
+                            with st.spinner("Checking later trading-day prices..."):
+                                rows_updated, fields_filled = update_google_tracker_performance()
+                            if fields_filled > 0:
+                                st.success(
+                                    f"Updated {rows_updated} tracker rows; "
+                                    f"filled {fields_filled} performance horizons."
+                                )
+                            else:
+                                st.info(
+                                    "No new 5D/10D/20D results are due yet, "
+                                    "or all eligible results are already filled."
+                                )
+                        except Exception as e:
+                            st.error(f"Performance update failed: {e}")
 
-                    st.download_button(
-                        label="📊 Download Performance Tracker CSV",
-                        data=history_csv,
-                        file_name=(
-                            "CMS_Performance_Tracker_"
-                            + datetime.now().strftime("%Y-%m-%d")
-                            + ".csv"
-                        ),
-                        mime="text/csv",
-                        key="download_performance_tracker"
-                    )
+                with t3:
+                    if st.button(
+                        "📖 Load Tracker History",
+                        key="load_google_tracker"
+                    ):
+                        try:
+                            ws = get_tracker_worksheet()
+                            hist = tracker_records_df(ws)
+                            st.session_state["google_tracker_history"] = hist
+                            st.success(f"Loaded {len(hist)} permanent tracker rows.")
+                        except Exception as e:
+                            st.error(f"Tracker load failed: {e}")
 
-                    st.caption(
-                        f"Tracker: {len(st.session_state.performance_history)} rows "
-                        "saved in the current Streamlit session."
-                    )
+                if "google_tracker_history" in st.session_state:
+                    hist = st.session_state["google_tracker_history"]
+                    if hist is not None and not hist.empty:
+                        show_cols = [
+                            "Scan Date", "Ticker", "Company", "Buy Status",
+                            "Signal Price", "Early Setup Score", "CMS",
+                            "5D Return", "10D Return", "20D Return",
+                            "Last Updated"
+                        ]
+                        show_cols = [c for c in show_cols if c in hist.columns]
+
+                        display_hist = hist[show_cols].copy()
+                        for col in ["5D Return", "10D Return", "20D Return"]:
+                            if col in display_hist.columns:
+                                display_hist[col] = pd.to_numeric(
+                                    display_hist[col], errors="coerce"
+                                )
+
+                        st.dataframe(
+                            display_hist.tail(100).iloc[::-1].style.format(
+                                {
+                                    "Signal Price": "{:.2f}",
+                                    "5D Return": "{:+.2%}",
+                                    "10D Return": "{:+.2%}",
+                                    "20D Return": "{:+.2%}",
+                                },
+                                na_rep=""
+                            ),
+                            hide_index=True,
+                            use_container_width=True
+                        )
 
                 prime_df = early_result_df[
                     early_result_df[
@@ -2928,7 +3311,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.1.4 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.2 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
