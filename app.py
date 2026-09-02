@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.1 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.1.1 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.1 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.1.1 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -693,6 +693,72 @@ def calculate_technical(
 
 
         # =====================================================
+        # V4.1.1 EARLY ENGINE ENTRY PLAN
+        # =====================================================
+
+        # Early Buy Zone: pre-breakout area near the current price,
+        # while respecting MA20 as a support reference.
+        early_buy_low = max(
+            ma20,
+            price - 0.50 * atr14
+        )
+
+        early_buy_high = min(
+            resistance,
+            price + 0.10 * atr14
+        )
+
+        if early_buy_low > early_buy_high:
+            early_buy_low = min(price, resistance)
+            early_buy_high = min(
+                resistance,
+                price + 0.10 * atr14
+            )
+
+        # Breakout Buy Zone: confirmation zone after resistance breaks.
+        breakout_buy_low = resistance
+        breakout_buy_high = resistance + 0.50 * atr14
+
+        # Risk control for the Early Engine.
+        early_stop = min(
+            ma20,
+            price - 1.50 * atr14
+        )
+
+        if early_stop >= price:
+            early_stop = price - 1.50 * atr14
+
+        # Targets anchored to resistance so they do not move too much
+        # between pre-breakout and immediate post-breakout states.
+        early_target_range = max(
+            resistance - recent_low20,
+            2.0 * atr14
+        )
+
+        early_tp1 = resistance + early_target_range
+        early_tp2 = resistance + 1.50 * early_target_range
+
+        # Current execution status.
+        if price < early_buy_low:
+            buy_status = "WAIT"
+
+        elif price <= early_buy_high:
+            buy_status = "EARLY ENTRY"
+
+        elif price < resistance:
+            buy_status = "WAIT FOR BREAKOUT"
+
+        elif price <= breakout_buy_high:
+            buy_status = "BREAKOUT ENTRY"
+
+        elif price <= resistance + 1.0 * atr14:
+            buy_status = "EXTENDED"
+
+        else:
+            buy_status = "DO NOT CHASE"
+
+
+        # =====================================================
         # TRADE PLAN / ENTRY ZONE
         # =====================================================
 
@@ -808,6 +874,30 @@ def calculate_technical(
 
             "Early Setup Status":
                 early_setup_status,
+
+            "Buy Status":
+                buy_status,
+
+            "Early Buy Low":
+                early_buy_low,
+
+            "Early Buy High":
+                early_buy_high,
+
+            "Breakout Buy Low":
+                breakout_buy_low,
+
+            "Breakout Buy High":
+                breakout_buy_high,
+
+            "Early Stop":
+                early_stop,
+
+            "Early TP1":
+                early_tp1,
+
+            "Early TP2":
+                early_tp2,
 
             "Entry Low":
                 entry_low,
@@ -2305,24 +2395,28 @@ with tab2:
                     "Rank",
                     "Ticker",
                     "Company",
-                    "Sector",
                     "Early Setup Score",
                     "Early Setup Status",
-                    "CMS",
-                    "Signal",
+                    "Buy Status",
                     "Price",
+                    "Early Buy Low",
+                    "Early Buy High",
+                    "Breakout Buy Low",
+                    "Breakout Buy High",
+                    "Early Stop",
+                    "Early TP1",
+                    "Early TP2",
                     "Resistance",
                     "Distance to Resistance",
+                    "CMS",
+                    "Signal",
+                    "Sector",
                     "RSI14",
                     "MACD Histogram",
                     "MA20 Slope 5D",
                     "Volume Build Ratio",
                     "Compression Ratio",
                     "RVOL",
-                    "Entry Status",
-                    "Stop",
-                    "TP1",
-                    "TP2",
                     "Data Check"
                 ]
 
@@ -2337,14 +2431,21 @@ with tab2:
                 )
 
                 st.caption(
-                    "这张表不是按 CMS 排名，而是专门寻找接近阻力位、"
-                    "短期均线向上、动能改善、成交量 buildup 和价格压缩的股票。"
+                    "执行信息放在前面：Buy Status → Price → Early Buy Zone → "
+                    "Breakout Buy Zone → Stop → TP1 → TP2；后面再显示技术指标。"
                 )
 
                 st.dataframe(
                     early_top_df.style.format(
                         {
                             "Price": "{:.2f}",
+                            "Early Buy Low": "{:.2f}",
+                            "Early Buy High": "{:.2f}",
+                            "Breakout Buy Low": "{:.2f}",
+                            "Breakout Buy High": "{:.2f}",
+                            "Early Stop": "{:.2f}",
+                            "Early TP1": "{:.2f}",
+                            "Early TP2": "{:.2f}",
                             "Resistance": "{:.2f}",
                             "Distance to Resistance": "{:.1%}",
                             "RSI14": "{:.1f}",
@@ -2379,7 +2480,7 @@ with tab2:
                         index=False
                     ).encode("utf-8-sig"),
                     file_name=(
-                        f"CMS_V4_Early_Top_{early_actual_n}_"
+                        f"CMS_V4_1_1_Early_Top_{early_actual_n}_"
                         f"{scan_date}.csv"
                     ),
                     mime="text/csv",
@@ -2487,7 +2588,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.1 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.1.1 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
