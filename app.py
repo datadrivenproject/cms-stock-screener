@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.0",
+    page_title="CMS-100 Stock Screener V4.1 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.0")
+st.title("📈 CMS-100 Stock Screener V4.1 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -885,6 +885,47 @@ def passes_quick_filter(r):
         r["Dollar Volume"]
         < 20_000_000
     ):
+        return False
+
+    return True
+
+
+# =========================================================
+# V4 EARLY ENGINE FILTER
+# =========================================================
+
+def passes_early_filter(r):
+
+    if r is None:
+        return False
+
+    if r["Price"] < 5:
+        return False
+
+    # Early engine is intentionally looser than the CMS engine.
+    # We want stocks that are strengthening before the formal breakout.
+    if r["Price"] <= r["MA20"]:
+        return False
+
+    if r["Price"] < r["MA50"] * 0.98:
+        return False
+
+    if r["Price"] < r["MA200"] * 0.98:
+        return False
+
+    if pd.isna(r.get("MA20 Slope 5D")) or r["MA20 Slope 5D"] <= 0:
+        return False
+
+    if pd.isna(r.get("Distance to Resistance")):
+        return False
+
+    if not (0 <= r["Distance to Resistance"] <= 0.05):
+        return False
+
+    if pd.isna(r["RVOL"]) or r["RVOL"] < 0.60:
+        return False
+
+    if r["Dollar Volume"] < 20_000_000:
         return False
 
     return True
@@ -1768,26 +1809,40 @@ with tab1:
 with tab2:
 
     st.subheader(
-        "🚀 CMS Universe 100 Scanner"
+        "🚀 CMS V4 Dual-Engine Scanner"
     )
 
-
-    candidate_limit = st.slider(
-        "进入完整 CMS 分析的股票数量",
-        min_value=10,
-        max_value=30,
-        value=15,
-        step=5
+    st.caption(
+        "Engine 1 = 已经形成趋势/突破的 CMS 候选；"
+        "Engine 2 = 可能在突破前启动的 Early Setup 候选。"
     )
 
+    c_limit1, c_limit2 = st.columns(2)
+
+    with c_limit1:
+        candidate_limit = st.slider(
+            "CMS Engine：进入完整分析的股票数量",
+            min_value=10,
+            max_value=30,
+            value=15,
+            step=5
+        )
+
+    with c_limit2:
+        early_candidate_limit = st.slider(
+            "Early Engine：进入完整分析的股票数量",
+            min_value=10,
+            max_value=30,
+            value=15,
+            step=5
+        )
 
     top_n = st.slider(
-        "显示 Top N",
+        "每个引擎显示 Top N",
         min_value=5,
         max_value=20,
         value=10
     )
-
 
     if st.button(
         "🚀 Scan CMS Universe 100",
@@ -1796,57 +1851,44 @@ with tab2:
 
         try:
 
-            tickers = (
-                get_sp500_tickers()
-            )
-
+            tickers = get_sp500_tickers()
 
             st.write(
                 f"准备扫描 {len(tickers)} 只股票..."
             )
 
-
             progress = st.progress(0)
-
             status = st.empty()
 
-
             # =================================================
-            # STEP 1
+            # STEP 1 - MARKET DATA
             # =================================================
 
             status.write(
                 "① 正在批量下载市场数据..."
             )
 
-
             market_data = safe_batch_download(
                 tuple(tickers),
                 "1y"
             )
 
-
             st.write(
-                f"成功取得 "
-                f"{len(market_data)} "
-                f"只股票的数据。"
+                f"成功取得 {len(market_data)} 只股票的数据。"
             )
 
-
-            progress.progress(35)
-
+            progress.progress(30)
 
             # =================================================
-            # STEP 2
+            # STEP 2 - TWO DIFFERENT FILTERS
             # =================================================
 
             status.write(
-                "② 正在计算趋势、突破和成交量..."
+                "② 正在运行 CMS Engine 和 Early Engine..."
             )
 
-
-            technical_results = []
-
+            cms_technical_results = []
+            early_technical_results = []
 
             for ticker, df in market_data.items():
 
@@ -1855,225 +1897,189 @@ with tab2:
                     df
                 )
 
+                if r is None:
+                    continue
 
-                if (
-                    r is not None
-                    and passes_quick_filter(r)
-                ):
+                if passes_quick_filter(r):
+                    cms_technical_results.append(r)
 
-                    technical_results.append(
-                        r
-                    )
+                if passes_early_filter(r):
+                    early_technical_results.append(r)
 
-
-            if not technical_results:
-
+            if (
+                not cms_technical_results
+                and not early_technical_results
+            ):
                 st.warning(
-                    "没有股票通过基础筛选。"
+                    "两个引擎都没有找到候选股票。"
                 )
-
                 st.stop()
 
-
-            quick_df = pd.DataFrame(
-                technical_results
-            )
-
-
-            progress.progress(55)
-
-
             st.write(
-                f"基础筛选后剩余 "
-                f"{len(quick_df)} 只股票。"
+                f"CMS Engine 初筛：{len(cms_technical_results)} 只；"
+                f" Early Engine 初筛：{len(early_technical_results)} 只。"
             )
 
+            progress.progress(50)
 
             # =================================================
-            # STEP 3
+            # STEP 3 - CMS ENGINE RANK
             # =================================================
 
-            quick_df[
-                "Return Rank"
-            ] = (
-                quick_df[
-                    "20D Return"
-                ]
-                .rank(
-                    pct=True
+            if cms_technical_results:
+
+                quick_df = pd.DataFrame(
+                    cms_technical_results
                 )
-            )
 
-
-            quick_df[
-                "RVOL Rank"
-            ] = (
-                quick_df[
-                    "RVOL"
-                ]
-                .rank(
-                    pct=True
+                quick_df["Return Rank"] = (
+                    quick_df["20D Return"]
+                    .rank(pct=True)
                 )
-            )
 
-
-            quick_df[
-                "Technical Rank"
-            ] = (
-                quick_df[
-                    "Return Rank"
-                ] * 0.60
-
-                +
-
-                quick_df[
-                    "RVOL Rank"
-                ] * 0.40
-            )
-
-
-            finalists = (
-                quick_df
-                .sort_values(
-                    "Technical Rank",
-                    ascending=False
+                quick_df["RVOL Rank"] = (
+                    quick_df["RVOL"]
+                    .rank(pct=True)
                 )
-                .head(
-                    candidate_limit
+
+                quick_df["Technical Rank"] = (
+                    quick_df["Return Rank"] * 0.60
+                    + quick_df["RVOL Rank"] * 0.40
                 )
-            )
 
+                finalists = (
+                    quick_df
+                    .sort_values(
+                        "Technical Rank",
+                        ascending=False
+                    )
+                    .head(candidate_limit)
+                )
 
-            progress.progress(65)
-
+            else:
+                finalists = pd.DataFrame()
 
             # =================================================
-            # STEP 4
+            # STEP 4 - EARLY ENGINE RANK
             # =================================================
 
-            benchmark_returns = (
-                get_benchmark_returns()
-            )
+            if early_technical_results:
 
+                early_quick_df = pd.DataFrame(
+                    early_technical_results
+                )
+
+                # Rank by true early characteristics, not CMS momentum.
+                early_finalists = (
+                    early_quick_df
+                    .sort_values(
+                        [
+                            "Early Setup Score",
+                            "Distance to Resistance",
+                            "Volume Build Ratio",
+                            "MA20 Slope 5D"
+                        ],
+                        ascending=[
+                            False,
+                            True,
+                            False,
+                            False
+                        ]
+                    )
+                    .head(early_candidate_limit)
+                )
+
+            else:
+                early_finalists = pd.DataFrame()
+
+            progress.progress(60)
+
+            benchmark_returns = get_benchmark_returns()
 
             # =================================================
-            # STEP 5
+            # STEP 5 - FULL CMS ENGINE ANALYSIS
             # =================================================
 
             cms_results = []
 
-            total_finalists = len(
-                finalists
-            )
+            if not finalists.empty:
 
+                total_finalists = len(finalists)
 
-            for position, (_, row) in enumerate(
-                finalists.iterrows(),
-                start=1
-            ):
+                for position, (_, row) in enumerate(
+                    finalists.iterrows(),
+                    start=1
+                ):
 
-                ticker = row[
-                    "Ticker"
-                ]
+                    ticker = row["Ticker"]
 
-
-                status.write(
-                    f"CMS分析 {ticker} "
-                    f"({position}/{total_finalists})"
-                )
-
-
-                try:
-
-                    final = build_final_score(
-                        row.to_dict(),
-                        benchmark_returns
+                    status.write(
+                        f"CMS Engine：{ticker} "
+                        f"({position}/{total_finalists})"
                     )
 
+                    try:
+                        final = build_final_score(
+                            row.to_dict(),
+                            benchmark_returns
+                        )
+                        cms_results.append(final)
+                    except Exception:
+                        continue
 
-                    cms_results.append(
-                        final
-                    )
-
-                except Exception:
-                    continue
-
-
-                progress.progress(
-                    min(
-                        65
-                        + int(
-                            30
-                            * position
-                            / total_finalists
-                        ),
-                        95
-                    )
-                )
-
-
-                time.sleep(0.75)
-
-
-            status.empty()
-
-
-            if not cms_results:
-
-                st.warning(
-                    "没有完成完整 CMS 分析。"
-                )
-
-                st.stop()
-
-
-            result_df = pd.DataFrame(
-                cms_results
-            )
-
-
-            result_df = (
-                result_df
-                .sort_values(
-                    [
-                        "CMS",
-                        "Trend Score",
-                        "RVOL"
-                    ],
-
-                    ascending=[
-                        False,
-                        False,
-                        False
-                    ]
-                )
-                .reset_index(
-                    drop=True
-                )
-            )
-
-
-            result_df[
-                "Rank"
-            ] = (
-                result_df.index + 1
-            )
-
-
-            progress.progress(100)
-
-
-            st.success(
-                "✅ 扫描完成"
-            )
-
+                    time.sleep(0.50)
 
             # =================================================
-            # TOP N
+            # STEP 6 - FULL EARLY ENGINE ANALYSIS
+            # =================================================
+
+            early_results = []
+
+            if not early_finalists.empty:
+
+                total_early = len(early_finalists)
+
+                for position, (_, row) in enumerate(
+                    early_finalists.iterrows(),
+                    start=1
+                ):
+
+                    ticker = row["Ticker"]
+
+                    status.write(
+                        f"Early Engine：{ticker} "
+                        f"({position}/{total_early})"
+                    )
+
+                    try:
+                        final = build_final_score(
+                            row.to_dict(),
+                            benchmark_returns
+                        )
+                        early_results.append(final)
+                    except Exception:
+                        continue
+
+                    time.sleep(0.50)
+
+            status.empty()
+            progress.progress(100)
+
+            if not cms_results and not early_results:
+                st.warning(
+                    "两个引擎都没有完成完整分析。"
+                )
+                st.stop()
+
+            st.success(
+                "✅ V4 Dual-Engine 扫描完成"
+            )
+
+            # =================================================
+            # SHARED DISPLAY COLUMNS
             # =================================================
 
             display_columns = [
-
                 "Rank",
                 "Ticker",
                 "Company",
@@ -2102,132 +2108,213 @@ with tab2:
                 "Data Check"
             ]
 
+            # =================================================
+            # ENGINE 1 - CMS TOP LIST
+            # =================================================
 
-            actual_n = min(
-                top_n,
-                len(result_df)
-            )
+            if cms_results:
 
+                result_df = pd.DataFrame(cms_results)
 
-            top_df = (
-                result_df[
-                    display_columns
+                result_df = (
+                    result_df
+                    .sort_values(
+                        ["CMS", "Trend Score", "RVOL"],
+                        ascending=[False, False, False]
+                    )
+                    .reset_index(drop=True)
+                )
+
+                result_df["Rank"] = result_df.index + 1
+
+                actual_n = min(top_n, len(result_df))
+
+                top_df = (
+                    result_df[display_columns]
+                    .head(top_n)
+                    .copy()
+                )
+
+                st.subheader(
+                    f"🏆 Engine 1 — Top {actual_n} CMS Candidates"
+                )
+
+                st.caption(
+                    "这张表寻找已经形成趋势、突破和动量的股票。"
+                )
+
+                st.dataframe(
+                    top_df.style.format(
+                        {
+                            "Price": "{:.2f}",
+                            "RVOL": "{:.2f}",
+                            "20D Return": "{:.1%}",
+                            "Relative Strength": "{:.1%}",
+                            "RSI14": "{:.1f}",
+                            "Distance to Resistance": "{:.1%}",
+                            "R/R": "{:.2f}",
+                            "Stop": "{:.2f}",
+                            "TP1": "{:.2f}",
+                            "TP2": "{:.2f}"
+                        }
+                    ),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                scan_date = datetime.now().strftime(
+                    "%Y-%m-%d"
+                )
+
+                cms_save_df = top_df.copy()
+                cms_save_df.insert(
+                    0,
+                    "Scan Date",
+                    scan_date
+                )
+
+                st.download_button(
+                    label="💾 Download CMS Top Results",
+                    data=cms_save_df.to_csv(
+                        index=False
+                    ).encode("utf-8-sig"),
+                    file_name=(
+                        f"CMS_V4_CMS_Top_{actual_n}_"
+                        f"{scan_date}.csv"
+                    ),
+                    mime="text/csv",
+                    key="download_cms_results"
+                )
+
+                actionable_df = result_df[
+                    result_df["Signal"].isin(
+                        ["STRONG BUY", "BUY SETUP"]
+                    )
                 ]
-                .head(
-                    top_n
+
+                st.subheader(
+                    "🟢 CMS Actionable Setups"
                 )
-                .copy()
-            )
 
+                if actionable_df.empty:
+                    st.info(
+                        "今天没有 BUY SETUP 或 STRONG BUY。"
+                    )
+                else:
+                    st.dataframe(
+                        actionable_df[
+                            display_columns
+                        ].style.format(
+                            {
+                                "Price": "{:.2f}",
+                                "RVOL": "{:.2f}",
+                                "20D Return": "{:.1%}",
+                                "Relative Strength": "{:.1%}",
+                                "RSI14": "{:.1f}",
+                                "Distance to Resistance": "{:.1%}",
+                                "R/R": "{:.2f}",
+                                "Stop": "{:.2f}",
+                                "TP1": "{:.2f}",
+                                "TP2": "{:.2f}"
+                            }
+                        ),
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
-            st.subheader(
-                f"🏆 Top {actual_n} CMS Candidates"
-            )
+                ready_df = result_df[
+                    result_df["Signal"] == "READY"
+                ]
 
-
-            st.dataframe(
-                top_df.style.format(
-                    {
-                        "Price": "{:.2f}",
-                        "RVOL": "{:.2f}",
-                        "20D Return": "{:.1%}",
-                        "Relative Strength": "{:.1%}",
-                        "RSI14": "{:.1f}",
-                        "Distance to Resistance": "{:.1%}",
-                        "R/R": "{:.2f}",
-                        "Stop": "{:.2f}",
-                        "TP1": "{:.2f}",
-                        "TP2": "{:.2f}"
-                    }
-                ),
-
-                hide_index=True,
-                use_container_width=True
-            )
-
-
-            # =================================================
-            # DOWNLOAD TODAY'S RESULTS
-            # =================================================
-
-            save_df = top_df.copy()
-
-            scan_date = datetime.now().strftime("%Y-%m-%d")
-
-            save_df.insert(
-                0,
-                "Scan Date",
-                scan_date
-            )
-
-            csv_data = save_df.to_csv(
-                index=False
-            ).encode("utf-8-sig")
-
-            st.download_button(
-                label="💾 Download Today's Top Results",
-                data=csv_data,
-                file_name=f"CMS_V4_Top_{actual_n}_{scan_date}.csv",
-                mime="text/csv",
-                key="download_top_results"
-            )
-
-
-            # =================================================
-            # V4 EARLY SETUP CANDIDATES
-            # =================================================
-
-            early_df = result_df[
-                result_df[
-                    "Early Setup Status"
-                ].isin(
-                    [
-                        "PRIME EARLY SETUP",
-                        "EARLY SETUP"
-                    ]
+                st.subheader(
+                    "🟡 CMS READY Candidates"
                 )
-            ].copy()
 
-            early_df = (
-                early_df
-                .sort_values(
-                    [
-                        "Early Setup Score",
-                        "CMS",
-                        "RVOL"
-                    ],
-                    ascending=[
-                        False,
-                        False,
-                        False
-                    ]
-                )
-            )
-
-            st.subheader(
-                "⚡ V4 Early Setup Candidates"
-            )
-
-            if early_df.empty:
-
-                st.info(
-                    "当前没有 PRIME EARLY SETUP 或 EARLY SETUP。"
-                )
+                if ready_df.empty:
+                    st.write(
+                        "目前没有 READY 股票。"
+                    )
+                else:
+                    st.dataframe(
+                        ready_df[
+                            display_columns
+                        ].style.format(
+                            {
+                                "Price": "{:.2f}",
+                                "RVOL": "{:.2f}",
+                                "20D Return": "{:.1%}",
+                                "Relative Strength": "{:.1%}",
+                                "RSI14": "{:.1f}",
+                                "Distance to Resistance": "{:.1%}",
+                                "R/R": "{:.2f}",
+                                "Stop": "{:.2f}",
+                                "TP1": "{:.2f}",
+                                "TP2": "{:.2f}"
+                            }
+                        ),
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
             else:
+                st.info(
+                    "CMS Engine 今天没有完成候选分析。"
+                )
+
+            st.divider()
+
+            # =================================================
+            # ENGINE 2 - TRUE EARLY SETUP TOP LIST
+            # =================================================
+
+            if early_results:
+
+                early_result_df = pd.DataFrame(
+                    early_results
+                )
+
+                early_result_df = (
+                    early_result_df
+                    .sort_values(
+                        [
+                            "Early Setup Score",
+                            "Distance to Resistance",
+                            "Volume Build Ratio",
+                            "MA20 Slope 5D"
+                        ],
+                        ascending=[
+                            False,
+                            True,
+                            False,
+                            False
+                        ]
+                    )
+                    .reset_index(drop=True)
+                )
+
+                early_result_df["Rank"] = (
+                    early_result_df.index + 1
+                )
+
+                early_actual_n = min(
+                    top_n,
+                    len(early_result_df)
+                )
 
                 early_columns = [
+                    "Rank",
                     "Ticker",
                     "Company",
                     "Sector",
-                    "CMS",
-                    "Signal",
                     "Early Setup Score",
                     "Early Setup Status",
+                    "CMS",
+                    "Signal",
                     "Price",
                     "Resistance",
                     "Distance to Resistance",
                     "RSI14",
+                    "MACD Histogram",
                     "MA20 Slope 5D",
                     "Volume Build Ratio",
                     "Compression Ratio",
@@ -2239,15 +2326,29 @@ with tab2:
                     "Data Check"
                 ]
 
+                early_top_df = (
+                    early_result_df[early_columns]
+                    .head(top_n)
+                    .copy()
+                )
+
+                st.subheader(
+                    f"⚡ Engine 2 — Top {early_actual_n} Early Setup Candidates"
+                )
+
+                st.caption(
+                    "这张表不是按 CMS 排名，而是专门寻找接近阻力位、"
+                    "短期均线向上、动能改善、成交量 buildup 和价格压缩的股票。"
+                )
+
                 st.dataframe(
-                    early_df[
-                        early_columns
-                    ].style.format(
+                    early_top_df.style.format(
                         {
                             "Price": "{:.2f}",
                             "Resistance": "{:.2f}",
                             "Distance to Resistance": "{:.1%}",
                             "RSI14": "{:.1f}",
+                            "MACD Histogram": "{:.3f}",
                             "MA20 Slope 5D": "{:.1%}",
                             "Volume Build Ratio": "{:.2f}",
                             "Compression Ratio": "{:.2f}",
@@ -2261,257 +2362,77 @@ with tab2:
                     use_container_width=True
                 )
 
-
-            # =================================================
-            # ACTIONABLE
-            # =================================================
-
-            actionable_df = result_df[
-                result_df[
-                    "Signal"
-                ].isin(
-                    [
-                        "STRONG BUY",
-                        "BUY SETUP"
-                    ]
-                )
-            ]
-
-
-            st.subheader(
-                "🟢 Actionable Setups"
-            )
-
-
-            if actionable_df.empty:
-
-                st.info(
-                    "今天没有 BUY SETUP 或 STRONG BUY。"
+                scan_date = datetime.now().strftime(
+                    "%Y-%m-%d"
                 )
 
-            else:
+                early_save_df = early_top_df.copy()
+                early_save_df.insert(
+                    0,
+                    "Scan Date",
+                    scan_date
+                )
 
-                st.dataframe(
-                    actionable_df[
-                        display_columns
-                    ].style.format(
-                        {
-                            "Price": "{:.2f}",
-                            "RVOL": "{:.2f}",
-                            "20D Return": "{:.1%}",
-                            "Relative Strength": "{:.1%}",
-                            "RSI14": "{:.1f}",
-                            "Distance to Resistance": "{:.1%}",
-                            "R/R": "{:.2f}",
-                            "Stop": "{:.2f}",
-                            "TP1": "{:.2f}",
-                            "TP2": "{:.2f}"
-                        }
+                st.download_button(
+                    label="💾 Download Early Setup Results",
+                    data=early_save_df.to_csv(
+                        index=False
+                    ).encode("utf-8-sig"),
+                    file_name=(
+                        f"CMS_V4_Early_Top_{early_actual_n}_"
+                        f"{scan_date}.csv"
                     ),
-
-                    hide_index=True,
-                    use_container_width=True
+                    mime="text/csv",
+                    key="download_early_results"
                 )
 
-
-                # =================================================
-                # TRADE PLANS
-                # =================================================
+                prime_df = early_result_df[
+                    early_result_df[
+                        "Early Setup Status"
+                    ].isin(
+                        [
+                            "PRIME EARLY SETUP",
+                            "EARLY SETUP"
+                        ]
+                    )
+                ]
 
                 st.subheader(
-                    "🎯 Trade Plans"
+                    "🔥 Highest-Priority Early Setups"
                 )
 
-
-                for _, r in actionable_df.iterrows():
-
-                    with st.expander(
-                        f"{r['Ticker']} | "
-                        f"{r['Signal']} | "
-                        f"CMS {int(r['CMS'])}"
-                    ):
-
-                        c1, c2, c3, c4 = (
-                            st.columns(4)
-                        )
-
-
-                        c1.metric(
-                            "Current Price",
-                            f"${r['Price']:.2f}"
-                        )
-
-
-                        c2.metric(
-                            "Entry Zone",
-                            f"${r['Entry Low']:.2f} – "
-                            f"${r['Entry High']:.2f}"
-                        )
-
-
-                        c3.metric(
-                            "Stop",
-                            f"${r['Stop']:.2f}"
-                        )
-
-
-                        c4.metric(
-                            "R/R",
-                            f"{r['R/R']:.2f}"
-                        )
-
-
-                        c5, c6, c7 = (
-                            st.columns(3)
-                        )
-
-
-                        c5.metric(
-                            "TP1",
-                            f"${r['TP1']:.2f}"
-                        )
-
-
-                        c6.metric(
-                            "TP2",
-                            f"${r['TP2']:.2f}"
-                        )
-
-
-                        c7.metric(
-                            "RVOL",
-                            f"{r['RVOL']:.2f}x"
-                        )
-
-
-                        status_value = (
-                            r["Entry Status"]
-                        )
-
-
-                        if (
-                            status_value
-                            == "ENTRY ZONE"
-                        ):
-
-                            st.success(
-                                "🟢 ENTRY ZONE — "
-                                "价格接近理想突破区域。"
-                            )
-
-
-                        elif (
-                            status_value
-                            == "WAIT FOR BREAKOUT"
-                        ):
-
-                            st.warning(
-                                "🟡 WAIT FOR BREAKOUT — "
-                                "等待价格正式突破阻力位。"
-                            )
-
-
-                        elif (
-                            status_value
-                            == "EXTENDED"
-                        ):
-
-                            st.warning(
-                                "🟠 EXTENDED — "
-                                "股票很强，但已经偏离突破位。"
-                            )
-
-
-                        else:
-
-                            st.error(
-                                "🔴 DO NOT CHASE — "
-                                "当前价格离突破位过远。"
-                            )
-
-
-                        st.markdown(
-                            "**Why it qualified**"
-                        )
-
-
-                        st.write(
-                            f"✓ CMS: "
-                            f"{int(r['CMS'])}/100"
-                        )
-
-                        st.write(
-                            f"✓ Trend: "
-                            f"{int(r['Trend Score'])}/20"
-                        )
-
-                        st.write(
-                            f"✓ Breakout: "
-                            f"{int(r['Breakout Score'])}/20"
-                        )
-
-                        st.write(
-                            f"✓ RVOL: "
-                            f"{r['RVOL']:.2f}x"
-                        )
-
-                        st.write(
-                            f"✓ Relative Strength vs SPY: "
-                            f"{r['Relative Strength']:.1%}"
-                        )
-
-                        st.write(
-                            f"✓ Risk / Reward: "
-                            f"{r['R/R']:.2f}"
-                        )
-
-
-            # =================================================
-            # READY
-            # =================================================
-
-            ready_df = result_df[
-                result_df[
-                    "Signal"
-                ] == "READY"
-            ]
-
-
-            st.subheader(
-                "🟡 READY Candidates"
-            )
-
-
-            if ready_df.empty:
-
-                st.write(
-                    "目前没有 READY 股票。"
-                )
+                if prime_df.empty:
+                    st.info(
+                        "目前没有 PRIME EARLY SETUP 或 EARLY SETUP。"
+                    )
+                else:
+                    st.dataframe(
+                        prime_df[
+                            early_columns
+                        ].style.format(
+                            {
+                                "Price": "{:.2f}",
+                                "Resistance": "{:.2f}",
+                                "Distance to Resistance": "{:.1%}",
+                                "RSI14": "{:.1f}",
+                                "MACD Histogram": "{:.3f}",
+                                "MA20 Slope 5D": "{:.1%}",
+                                "Volume Build Ratio": "{:.2f}",
+                                "Compression Ratio": "{:.2f}",
+                                "RVOL": "{:.2f}",
+                                "Stop": "{:.2f}",
+                                "TP1": "{:.2f}",
+                                "TP2": "{:.2f}"
+                            }
+                        ),
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
             else:
-
-                st.dataframe(
-                    ready_df[
-                        display_columns
-                    ].style.format(
-                        {
-                            "Price": "{:.2f}",
-                            "RVOL": "{:.2f}",
-                            "20D Return": "{:.1%}",
-                            "Relative Strength": "{:.1%}",
-                            "RSI14": "{:.1f}",
-                            "Distance to Resistance": "{:.1%}",
-                            "R/R": "{:.2f}",
-                            "Stop": "{:.2f}",
-                            "TP1": "{:.2f}",
-                            "TP2": "{:.2f}"
-                        }
-                    ),
-
-                    hide_index=True,
-                    use_container_width=True
+                st.info(
+                    "Early Engine 今天没有完成候选分析。"
                 )
-
 
         except Exception as e:
 
@@ -2566,7 +2487,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.0 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.1 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
