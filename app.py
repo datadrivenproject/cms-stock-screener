@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.1.1 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.1.2 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.1.1 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.1.2 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -693,69 +693,204 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.1.1 EARLY ENGINE ENTRY PLAN
+        # V4.1.2 EARLY ENGINE EXECUTION UPGRADE
         # =====================================================
 
-        # Early Buy Zone: pre-breakout area near the current price,
-        # while respecting MA20 as a support reference.
+        # -----------------------------------------------------
+        # STRUCTURE-BASED EARLY BUY ZONE
+        # -----------------------------------------------------
+        # This zone is anchored to Resistance + ATR + MA20,
+        # rather than following the current price each day.
+        #
+        # Upper edge sits just below resistance.
+        # Lower edge is roughly 0.75 ATR below resistance,
+        # but MA20 can act as a higher structural support floor.
+
+        early_buy_high = resistance - 0.10 * atr14
+
+        structural_low = resistance - 0.75 * atr14
+
         early_buy_low = max(
             ma20,
-            price - 0.50 * atr14
+            structural_low
         )
 
-        early_buy_high = min(
-            resistance,
-            price + 0.10 * atr14
-        )
+        # Safety fallback if MA20 is already too close to/above resistance.
+        if early_buy_low >= early_buy_high:
+            early_buy_low = resistance - 0.75 * atr14
+            early_buy_high = resistance - 0.10 * atr14
 
-        if early_buy_low > early_buy_high:
-            early_buy_low = min(price, resistance)
-            early_buy_high = min(
-                resistance,
-                price + 0.10 * atr14
-            )
+        # -----------------------------------------------------
+        # BREAKOUT BUY ZONE
+        # -----------------------------------------------------
 
-        # Breakout Buy Zone: confirmation zone after resistance breaks.
         breakout_buy_low = resistance
-        breakout_buy_high = resistance + 0.50 * atr14
 
-        # Risk control for the Early Engine.
-        early_stop = min(
-            ma20,
-            price - 1.50 * atr14
+        breakout_buy_high = (
+            resistance + 0.50 * atr14
         )
 
-        if early_stop >= price:
-            early_stop = price - 1.50 * atr14
+        # -----------------------------------------------------
+        # STOP
+        # -----------------------------------------------------
+        # Use a structural stop below MA20 / ATR support.
 
-        # Targets anchored to resistance so they do not move too much
-        # between pre-breakout and immediate post-breakout states.
+        early_stop = min(
+            ma20 - 0.25 * atr14,
+            resistance - 1.50 * atr14
+        )
+
+        # Keep stop safely below the Early Buy Zone.
+        if early_stop >= early_buy_low:
+            early_stop = early_buy_low - 0.75 * atr14
+
+        # -----------------------------------------------------
+        # TARGETS
+        # -----------------------------------------------------
+        # Anchor targets to resistance so they remain relatively stable
+        # while the stock is still in the pre-breakout phase.
+
         early_target_range = max(
             resistance - recent_low20,
             2.0 * atr14
         )
 
-        early_tp1 = resistance + early_target_range
-        early_tp2 = resistance + 1.50 * early_target_range
+        early_tp1 = (
+            resistance + early_target_range
+        )
 
-        # Current execution status.
-        if price < early_buy_low:
-            buy_status = "WAIT"
+        early_tp2 = (
+            resistance + 1.50 * early_target_range
+        )
 
-        elif price <= early_buy_high:
-            buy_status = "EARLY ENTRY"
+        # -----------------------------------------------------
+        # POTENTIAL R/R
+        # -----------------------------------------------------
+        # Conservative Early R/R:
+        # assume entry near the TOP of the Early Buy Zone.
 
-        elif price < resistance:
-            buy_status = "WAIT FOR BREAKOUT"
+        potential_risk = (
+            early_buy_high - early_stop
+        )
 
-        elif price <= breakout_buy_high:
-            buy_status = "BREAKOUT ENTRY"
+        potential_reward = (
+            early_tp1 - early_buy_high
+        )
 
-        elif price <= resistance + 1.0 * atr14:
-            buy_status = "EXTENDED"
+        potential_rr = (
+            potential_reward / potential_risk
+            if potential_risk > 0
+            else np.nan
+        )
+
+        # Breakout R/R used internally for Buy Status.
+        breakout_risk = (
+            breakout_buy_high - early_stop
+        )
+
+        breakout_reward = (
+            early_tp1 - breakout_buy_high
+        )
+
+        breakout_rr = (
+            breakout_reward / breakout_risk
+            if breakout_risk > 0
+            else np.nan
+        )
+
+        # -----------------------------------------------------
+        # COMPACT DISPLAY ZONES
+        # -----------------------------------------------------
+
+        early_buy_zone = (
+            f"${early_buy_low:.2f} – ${early_buy_high:.2f}"
+        )
+
+        breakout_buy_zone = (
+            f"${breakout_buy_low:.2f} – ${breakout_buy_high:.2f}"
+        )
+
+        # -----------------------------------------------------
+        # BUY STATUS
+        # -----------------------------------------------------
+        # First gate by setup quality.
+        # BUILDING/PASS cannot produce a true buy signal.
+
+        if early_setup_status == "PASS":
+
+            buy_status = "NO ENTRY"
+
+        elif early_setup_status == "BUILDING":
+
+            buy_status = "WATCH"
 
         else:
-            buy_status = "DO NOT CHASE"
+
+            # PRIME EARLY SETUP / EARLY SETUP only from here.
+            if price < resistance:
+
+                if (
+                    early_buy_low
+                    <= price
+                    <= early_buy_high
+                ):
+
+                    if (
+                        not pd.isna(potential_rr)
+                        and potential_rr >= 2.0
+                        and early_setup_status
+                        == "PRIME EARLY SETUP"
+                    ):
+
+                        buy_status = (
+                            "STRONG EARLY ENTRY"
+                        )
+
+                    elif (
+                        not pd.isna(potential_rr)
+                        and potential_rr >= 1.5
+                    ):
+
+                        buy_status = "EARLY ENTRY"
+
+                    else:
+
+                        buy_status = (
+                            "WAIT - LOW R/R"
+                        )
+
+                elif price < early_buy_low:
+
+                    buy_status = "WAIT"
+
+                else:
+
+                    buy_status = (
+                        "WAIT FOR BREAKOUT"
+                    )
+
+            else:
+
+                if (
+                    price <= breakout_buy_high
+                    and not pd.isna(breakout_rr)
+                    and breakout_rr >= 1.5
+                ):
+
+                    buy_status = (
+                        "BREAKOUT ENTRY"
+                    )
+
+                elif (
+                    price
+                    <= resistance + 1.0 * atr14
+                ):
+
+                    buy_status = "EXTENDED"
+
+                else:
+
+                    buy_status = "DO NOT CHASE"
 
 
         # =====================================================
@@ -877,6 +1012,18 @@ def calculate_technical(
 
             "Buy Status":
                 buy_status,
+
+            "Early Buy Zone":
+                early_buy_zone,
+
+            "Breakout Buy Zone":
+                breakout_buy_zone,
+
+            "Potential R/R":
+                potential_rr,
+
+            "Breakout R/R":
+                breakout_rr,
 
             "Early Buy Low":
                 early_buy_low,
@@ -2399,13 +2546,12 @@ with tab2:
                     "Early Setup Status",
                     "Buy Status",
                     "Price",
-                    "Early Buy Low",
-                    "Early Buy High",
-                    "Breakout Buy Low",
-                    "Breakout Buy High",
+                    "Early Buy Zone",
+                    "Breakout Buy Zone",
                     "Early Stop",
                     "Early TP1",
                     "Early TP2",
+                    "Potential R/R",
                     "Resistance",
                     "Distance to Resistance",
                     "CMS",
@@ -2431,21 +2577,19 @@ with tab2:
                 )
 
                 st.caption(
-                    "执行信息放在前面：Buy Status → Price → Early Buy Zone → "
-                    "Breakout Buy Zone → Stop → TP1 → TP2；后面再显示技术指标。"
+                    "V4.1.2 执行优先：Buy Status → Price → Early Buy Zone → "
+                    "Breakout Buy Zone → Stop → TP1 → TP2 → Potential R/R；"
+                    "BUILDING 只显示 WATCH，PASS 显示 NO ENTRY。"
                 )
 
                 st.dataframe(
                     early_top_df.style.format(
                         {
                             "Price": "{:.2f}",
-                            "Early Buy Low": "{:.2f}",
-                            "Early Buy High": "{:.2f}",
-                            "Breakout Buy Low": "{:.2f}",
-                            "Breakout Buy High": "{:.2f}",
                             "Early Stop": "{:.2f}",
                             "Early TP1": "{:.2f}",
                             "Early TP2": "{:.2f}",
+                            "Potential R/R": "{:.2f}",
                             "Resistance": "{:.2f}",
                             "Distance to Resistance": "{:.1%}",
                             "RSI14": "{:.1f}",
@@ -2588,7 +2732,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.1.1 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.1.2 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
