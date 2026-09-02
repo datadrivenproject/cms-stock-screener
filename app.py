@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.1.3 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.1.4 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.1.3 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.1.4 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -693,7 +693,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.1.3 EARLY ENGINE EXECUTION UPGRADE
+        # V4.1.4 EARLY ENGINE EXECUTION UPGRADE
         # =====================================================
 
         # -----------------------------------------------------
@@ -846,7 +846,7 @@ def calculate_technical(
         # Setup Quality is the first gate.
         # BUILDING/PASS cannot produce a true entry signal.
         #
-        # V4.1.3 improvement:
+        # V4.1.4 improvement:
         # A stock slightly BELOW the Preferred Early Buy Zone
         # is no longer forced to WAIT. If it is within 0.25 ATR
         # and current-price R/R is acceptable, it becomes
@@ -1022,6 +1022,35 @@ def calculate_technical(
             data_check = "OK"
 
 
+        # =====================================================
+        # V4.1.4 ACTION PRIORITY + DISTANCE TO ENTRY
+        # =====================================================
+        priority_map = {
+            "STRONG EARLY ENTRY": (1, "P1 - STRONG EARLY ENTRY"),
+            "STRONG NEAR EARLY ENTRY": (1, "P1 - STRONG NEAR EARLY ENTRY"),
+            "EARLY ENTRY": (2, "P2 - EARLY ENTRY"),
+            "BREAKOUT ENTRY": (2, "P2 - BREAKOUT ENTRY"),
+            "NEAR EARLY ENTRY": (3, "P3 - NEAR EARLY ENTRY"),
+            "WAIT FOR BREAKOUT": (4, "P4 - WAIT FOR BREAKOUT"),
+            "WAIT - BELOW ENTRY ZONE": (5, "P5 - BELOW ENTRY ZONE"),
+            "WATCH - BUILDING": (6, "P6 - BUILDING"),
+            "WAIT - LOW R/R": (7, "P7 - LOW R/R"),
+            "EXTENDED": (8, "P8 - EXTENDED"),
+            "DO NOT CHASE": (9, "P9 - DO NOT CHASE"),
+            "NO ENTRY": (10, "P10 - NO ENTRY"),
+        }
+
+        action_priority_rank, action_priority = priority_map.get(
+            buy_status, (99, "P99 - REVIEW")
+        )
+
+        distance_to_entry_dollar = early_buy_low - price
+        distance_to_entry_pct = (
+            distance_to_entry_dollar / price
+            if price > 0 else np.nan
+        )
+
+
         return {
 
             "Ticker": ticker,
@@ -1075,6 +1104,18 @@ def calculate_technical(
 
             "Buy Status":
                 buy_status,
+
+            "Action Priority":
+                action_priority,
+
+            "Action Priority Rank":
+                action_priority_rank,
+
+            "Distance to Entry $":
+                distance_to_entry_dollar,
+
+            "Distance to Entry %":
+                distance_to_entry_pct,
 
             "Early Buy Zone":
                 early_buy_zone,
@@ -2280,12 +2321,16 @@ with tab2:
                     early_quick_df
                     .sort_values(
                         [
+                            "Action Priority Rank",
                             "Early Setup Score",
+                            "Potential R/R",
                             "Distance to Resistance",
                             "Volume Build Ratio",
                             "MA20 Slope 5D"
                         ],
                         ascending=[
+                            True,
+                            False,
                             False,
                             True,
                             False,
@@ -2611,17 +2656,20 @@ with tab2:
                     "Rank",
                     "Ticker",
                     "Company",
-                    "Early Setup Score",
-                    "Early Setup Status",
+                    "Action Priority",
                     "Buy Status",
                     "Price",
+                    "Distance to Entry $",
+                    "Distance to Entry %",
                     "Early Buy Zone",
-                    "Breakout Buy Zone",
                     "Early Stop",
                     "Early TP1",
-                    "Early TP2",
                     "Potential R/R",
                     "Current R/R",
+                    "Breakout Buy Zone",
+                    "Early TP2",
+                    "Early Setup Score",
+                    "Early Setup Status",
                     "Near Entry Distance ATR",
                     "Resistance",
                     "Distance to Resistance",
@@ -2648,15 +2696,17 @@ with tab2:
                 )
 
                 st.caption(
-                    "V4.1.3 执行优先：Buy Status → Price → Early Buy Zone → "
-                    "Breakout Buy Zone → Stop → TP1 → TP2 → Potential R/R；"
-                    "BUILDING 只显示 WATCH，PASS 显示 NO ENTRY。"
+                    "V4.1.4：按 Action Priority 优先排序；"
+                    "执行信息前置：Buy Status → Price → Distance to Entry → "
+                    "Early Buy Zone → Stop → TP1 → R/R。"
                 )
 
                 st.dataframe(
                     early_top_df.style.format(
                         {
                             "Price": "{:.2f}",
+                            "Distance to Entry $": "{:+.2f}",
+                            "Distance to Entry %": "{:+.2%}",
                             "Early Stop": "{:.2f}",
                             "Early TP1": "{:.2f}",
                             "Early TP2": "{:.2f}",
@@ -2697,12 +2747,85 @@ with tab2:
                         index=False
                     ).encode("utf-8-sig"),
                     file_name=(
-                        f"CMS_V4_1_1_Early_Top_{early_actual_n}_"
+                        f"CMS_V4_1_4_Early_Top_{early_actual_n}_"
                         f"{scan_date}.csv"
                     ),
                     mime="text/csv",
                     key="download_early_results"
                 )
+
+                # =================================================
+                # V4.1.4 PERFORMANCE TRACKER
+                # =================================================
+                # Session-based storage is intentionally used here.
+                # Download the tracker CSV before the Streamlit session resets.
+                tracker_columns = [
+                    "Ticker", "Company", "Action Priority", "Buy Status",
+                    "Price", "Distance to Entry $", "Distance to Entry %",
+                    "Early Buy Zone", "Early Stop", "Early TP1", "Early TP2",
+                    "Potential R/R", "Current R/R",
+                    "Early Setup Score", "Early Setup Status",
+                    "CMS", "Signal", "Sector", "RSI14", "MACD Histogram",
+                    "MA20 Slope 5D", "Volume Build Ratio",
+                    "Compression Ratio", "RVOL"
+                ]
+
+                tracker_snapshot = early_top_df[
+                    [c for c in tracker_columns if c in early_top_df.columns]
+                ].copy()
+
+                tracker_snapshot.insert(
+                    0, "Scan Date", datetime.now().strftime("%Y-%m-%d")
+                )
+                tracker_snapshot.insert(
+                    1, "Scan Time", datetime.now().strftime("%H:%M:%S")
+                )
+
+                if "performance_history" not in st.session_state:
+                    st.session_state.performance_history = pd.DataFrame()
+
+                if st.button(
+                    "📌 Save Current Early Results to Tracker",
+                    key="save_early_tracker"
+                ):
+                    st.session_state.performance_history = pd.concat(
+                        [
+                            st.session_state.performance_history,
+                            tracker_snapshot
+                        ],
+                        ignore_index=True
+                    ).drop_duplicates(
+                        subset=["Scan Date", "Ticker", "Buy Status"],
+                        keep="last"
+                    )
+
+                    st.success(
+                        "Saved. Download the tracker CSV to keep a durable copy."
+                    )
+
+                if not st.session_state.performance_history.empty:
+                    history_csv = (
+                        st.session_state.performance_history
+                        .to_csv(index=False)
+                        .encode("utf-8-sig")
+                    )
+
+                    st.download_button(
+                        label="📊 Download Performance Tracker CSV",
+                        data=history_csv,
+                        file_name=(
+                            "CMS_Performance_Tracker_"
+                            + datetime.now().strftime("%Y-%m-%d")
+                            + ".csv"
+                        ),
+                        mime="text/csv",
+                        key="download_performance_tracker"
+                    )
+
+                    st.caption(
+                        f"Tracker: {len(st.session_state.performance_history)} rows "
+                        "saved in the current Streamlit session."
+                    )
 
                 prime_df = early_result_df[
                     early_result_df[
@@ -2805,7 +2928,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.1.3 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.1.4 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
