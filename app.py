@@ -18,12 +18,12 @@ except ImportError:
 # =========================================================
 
 st.set_page_config(
-    page_title="CMS-100 Stock Screener V4.2 Dual Engine",
+    page_title="CMS-100 Stock Screener V4.2.1 Dual Engine",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 CMS-100 Stock Screener V4.2 Dual Engine")
+st.title("📈 CMS-100 Stock Screener V4.2.1 Dual Engine")
 
 st.caption(
     "Catalyst + Momentum + Setup + Relative Strength + Early Setup + Trade Plan"
@@ -700,7 +700,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.2 EARLY ENGINE EXECUTION UPGRADE
+        # V4.2.1 EARLY ENGINE EXECUTION UPGRADE
         # =====================================================
 
         # -----------------------------------------------------
@@ -853,7 +853,7 @@ def calculate_technical(
         # Setup Quality is the first gate.
         # BUILDING/PASS cannot produce a true entry signal.
         #
-        # V4.2 improvement:
+        # V4.2.1 improvement:
         # A stock slightly BELOW the Preferred Early Buy Zone
         # is no longer forced to WAIT. If it is within 0.25 ATR
         # and current-price R/R is acceptable, it becomes
@@ -1030,7 +1030,7 @@ def calculate_technical(
 
 
         # =====================================================
-        # V4.2 ACTION PRIORITY + DISTANCE TO ENTRY
+        # V4.2.1 ACTION PRIORITY + DISTANCE TO ENTRY
         # =====================================================
         priority_map = {
             "STRONG EARLY ENTRY": (1, "P1 - STRONG EARLY ENTRY"),
@@ -1896,7 +1896,7 @@ def analyze_single_stock(ticker):
 
 
 # =========================================================
-# GOOGLE SHEETS PERFORMANCE TRACKER — V4.2
+# GOOGLE SHEETS PERFORMANCE TRACKER — V4.2.1
 # =========================================================
 
 TRACKER_WORKSHEET = "Tracker"
@@ -1972,7 +1972,7 @@ def get_tracker_worksheet():
     if not current_headers:
         ws.append_row(TRACKER_HEADERS, value_input_option="USER_ENTERED")
     elif current_headers != TRACKER_HEADERS:
-        # V4.2 owns the Tracker worksheet schema. Preserve data where possible
+        # V4.2.1 owns the Tracker worksheet schema. Preserve data where possible
         # by only filling missing headers to the right, rather than deleting rows.
         missing = [h for h in TRACKER_HEADERS if h not in current_headers]
         if missing:
@@ -2008,7 +2008,7 @@ def save_snapshot_to_google_sheet(tracker_snapshot):
     headers = all_values[0]
     header_pos = {h: i for i, h in enumerate(headers)}
 
-    # Ensure every V4.2 field exists.
+    # Ensure every V4.2.1 field exists.
     missing_headers = [h for h in TRACKER_HEADERS if h not in header_pos]
     if missing_headers:
         headers = headers + missing_headers
@@ -2530,10 +2530,12 @@ with tab2:
         value=10
     )
 
-    if st.button(
+    scan_clicked = st.button(
         "🚀 Scan CMS Universe 100",
         key="scan"
-    ):
+    )
+
+    if scan_clicked:
 
         try:
 
@@ -3035,7 +3037,7 @@ with tab2:
                 )
 
                 st.caption(
-                    "V4.2：按 Action Priority 优先排序；"
+                    "V4.2.1：按 Action Priority 优先排序；"
                     "执行信息前置：Buy Status → Price → Distance to Entry → "
                     "Early Buy Zone → Stop → TP1 → R/R。"
                 )
@@ -3094,7 +3096,7 @@ with tab2:
                 )
 
                 # =================================================
-                # V4.2 PERMANENT GOOGLE SHEETS PERFORMANCE TRACKER
+                # V4.2.1 PERMANENT GOOGLE SHEETS PERFORMANCE TRACKER
                 # =================================================
                 tracker_columns = [
                     "Ticker", "Company", "Action Priority", "Buy Status",
@@ -3117,6 +3119,17 @@ with tab2:
                 tracker_snapshot.insert(
                     1, "Scan Time", datetime.now().strftime("%H:%M:%S")
                 )
+
+                # -------------------------------------------------
+                # V4.2.1 FIX:
+                # Save the latest scan into Session State so that
+                # clicking another Streamlit button does not make
+                # the scan results disappear on the rerun.
+                # -------------------------------------------------
+                st.session_state["last_early_top_df"] = early_top_df.copy()
+                st.session_state["last_tracker_snapshot"] = tracker_snapshot.copy()
+                st.session_state["last_scan_date"] = scan_date
+                st.session_state["last_early_actual_n"] = early_actual_n
 
                 st.markdown("#### 📊 Permanent Performance Tracker")
                 st.caption(
@@ -3273,6 +3286,176 @@ with tab2:
             )
 
 
+    # =========================================================
+    # V4.2.1 — PERSIST LAST SCAN ACROSS BUTTON CLICKS
+    # =========================================================
+    # Streamlit reruns the script whenever a button is clicked.
+    # The previous version kept the scan table only inside the
+    # Scan button branch, so clicking Save made the table vanish
+    # before the save action could be processed.
+    #
+    # On non-scan reruns, rebuild the Early table and tracker
+    # controls from Session State.
+    if (
+        not scan_clicked
+        and "last_early_top_df" in st.session_state
+        and "last_tracker_snapshot" in st.session_state
+    ):
+        early_top_df = st.session_state["last_early_top_df"].copy()
+        tracker_snapshot = st.session_state["last_tracker_snapshot"].copy()
+        early_actual_n = st.session_state.get(
+            "last_early_actual_n", len(early_top_df)
+        )
+        scan_date = st.session_state.get(
+            "last_scan_date", datetime.now().strftime("%Y-%m-%d")
+        )
+
+        st.subheader(
+            f"⚡ Last Scan — Top {early_actual_n} Early Setup Candidates"
+        )
+        st.caption(
+            "V4.2.1：结果已保留。点击 Save / Update / Load 不会再让扫描结果消失。"
+        )
+
+        format_map = {
+            "Price": "{:.2f}",
+            "Distance to Entry $": "{:+.2f}",
+            "Distance to Entry %": "{:+.2%}",
+            "Early Stop": "{:.2f}",
+            "Early TP1": "{:.2f}",
+            "Early TP2": "{:.2f}",
+            "Potential R/R": "{:.2f}",
+            "Current R/R": "{:.2f}",
+            "Near Entry Distance ATR": "{:.2f}",
+            "Resistance": "{:.2f}",
+            "Distance to Resistance": "{:.1%}",
+            "RSI14": "{:.1f}",
+            "MACD Histogram": "{:.3f}",
+            "MA20 Slope 5D": "{:.1%}",
+            "Volume Build Ratio": "{:.2f}",
+            "Compression Ratio": "{:.2f}",
+            "RVOL": "{:.2f}",
+        }
+
+        st.dataframe(
+            early_top_df.style.format(
+                {k: v for k, v in format_map.items() if k in early_top_df.columns}
+            ),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        early_save_df = early_top_df.copy()
+        if "Scan Date" not in early_save_df.columns:
+            early_save_df.insert(0, "Scan Date", scan_date)
+
+        st.download_button(
+            label="💾 Download Early Setup Results",
+            data=early_save_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=(
+                f"CMS_V4_2_1_Early_Top_{early_actual_n}_{scan_date}.csv"
+            ),
+            mime="text/csv",
+            key="download_early_results"
+        )
+
+        st.markdown("#### 📊 Permanent Performance Tracker")
+        st.caption(
+            "Save 会永久写入 Google Sheets；"
+            "Update 会补 5D / 10D / 20D；Load 会读取历史记录。"
+        )
+
+        t1, t2, t3 = st.columns(3)
+
+        with t1:
+            if st.button(
+                "☁️ Save Today's Results to Google Sheet",
+                key="save_early_tracker_google"
+            ):
+                try:
+                    with st.spinner("Saving permanently to Google Sheets..."):
+                        saved_count, updated_count = save_snapshot_to_google_sheet(
+                            tracker_snapshot
+                        )
+                    st.success(
+                        f"✅ Saved permanently: {saved_count} new rows, "
+                        f"{updated_count} same-day rows updated."
+                    )
+                except Exception as e:
+                    st.error(f"Google Sheet save failed: {e}")
+
+        with t2:
+            if st.button(
+                "🔄 Update 5D / 10D / 20D",
+                key="update_google_tracker"
+            ):
+                try:
+                    with st.spinner("Checking later trading-day prices..."):
+                        rows_updated, fields_filled = (
+                            update_google_tracker_performance()
+                        )
+                    if fields_filled > 0:
+                        st.success(
+                            f"Updated {rows_updated} tracker rows; "
+                            f"filled {fields_filled} performance horizons."
+                        )
+                    else:
+                        st.info(
+                            "No new 5D/10D/20D results are due yet, "
+                            "or all eligible results are already filled."
+                        )
+                except Exception as e:
+                    st.error(f"Performance update failed: {e}")
+
+        with t3:
+            if st.button(
+                "📖 Load Tracker History",
+                key="load_google_tracker"
+            ):
+                try:
+                    ws = get_tracker_worksheet()
+                    hist = tracker_records_df(ws)
+                    st.session_state["google_tracker_history"] = hist
+                    st.success(f"Loaded {len(hist)} permanent tracker rows.")
+                except Exception as e:
+                    st.error(f"Tracker load failed: {e}")
+
+        if "google_tracker_history" in st.session_state:
+            hist = st.session_state["google_tracker_history"]
+            if hist is not None and not hist.empty:
+                show_cols = [
+                    "Scan Date", "Ticker", "Company", "Buy Status",
+                    "Signal Price", "Early Setup Score", "CMS",
+                    "5D Return", "10D Return", "20D Return",
+                    "Last Updated"
+                ]
+                show_cols = [c for c in show_cols if c in hist.columns]
+
+                display_hist = hist[show_cols].copy()
+
+                for col in ["Signal Price", "5D Return", "10D Return", "20D Return"]:
+                    if col in display_hist.columns:
+                        display_hist[col] = pd.to_numeric(
+                            display_hist[col], errors="coerce"
+                        )
+
+                hist_formats = {}
+                if "Signal Price" in display_hist.columns:
+                    hist_formats["Signal Price"] = "{:.2f}"
+                for col in ["5D Return", "10D Return", "20D Return"]:
+                    if col in display_hist.columns:
+                        hist_formats[col] = "{:+.2%}"
+
+                st.dataframe(
+                    display_hist.tail(100).iloc[::-1].style.format(
+                        hist_formats,
+                        na_rep=""
+                    ),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+
 # =========================================================
 # CACHE
 # =========================================================
@@ -3311,7 +3494,7 @@ st.divider()
 
 st.caption(
     """
-CMS-100 V4.2 Dual Engine 为实验性股票筛选工具，不构成投资建议。
+CMS-100 V4.2.1 Dual Engine 为实验性股票筛选工具，不构成投资建议。
 
 CMS Signal 判断已经形成的趋势/突破质量；
 Early Setup Status 判断股票是否处于潜在启动前阶段；
