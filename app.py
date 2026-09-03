@@ -16,15 +16,16 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A — Early Engine V2",
+    page_title="CMS Stock Screener V4.3A.3 — Early + Fundamental Confirmation",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A — Early Engine V2")
+st.title("📈 CMS Stock Screener V4.3A.3 — Early + Fundamental Confirmation")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
-    "本版本负责决定‘明天重点看谁’，不直接等同于盘中买入。"
+    "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
+    "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
 
 # =========================================================
@@ -678,6 +679,209 @@ def get_company_info(ticker):
         return ticker, "Unknown", np.nan
 
 # =========================================================
+# FUNDAMENTAL CONFIRMATION — V4.3A.3
+# Does NOT change Early V2 Score. It confirms company quality and risk.
+# =========================================================
+@st.cache_data(ttl=21600)
+def get_fundamental_confirmation(ticker):
+    """Return transparent fundamental checks using Yahoo Finance fields.
+
+    This layer is intentionally separate from the Early V2 technical score.
+    Missing fields are treated as '数据不足' rather than as an automatic fail.
+    """
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        info = {}
+
+    def n(key):
+        return safe_num(info.get(key), np.nan)
+
+    roe = n("returnOnEquity")
+    op_margin = n("operatingMargins")
+    profit_margin = n("profitMargins")
+    fcf = n("freeCashflow")
+    ocf = n("operatingCashflow")
+    net_income = n("netIncomeToCommon")
+    debt_equity = n("debtToEquity")
+    total_debt = n("totalDebt")
+    total_cash = n("totalCash")
+    forward_pe = n("forwardPE")
+    peg = n("pegRatio")
+    ev_ebitda = n("enterpriseToEbitda")
+    revenue_growth = n("revenueGrowth")
+    earnings_growth = n("earningsGrowth")
+
+    # ----- 1) Quality -----
+    quality_pts = 0
+    quality_obs = 0
+    if not pd.isna(roe):
+        quality_obs += 1
+        quality_pts += 2 if roe >= 0.18 else (1 if roe >= 0.10 else 0)
+    if not pd.isna(op_margin):
+        quality_obs += 1
+        quality_pts += 2 if op_margin >= 0.18 else (1 if op_margin >= 0.08 else 0)
+    elif not pd.isna(profit_margin):
+        quality_obs += 1
+        quality_pts += 2 if profit_margin >= 0.15 else (1 if profit_margin >= 0.07 else 0)
+
+    if quality_obs == 0:
+        quality_status = "数据不足"
+    elif quality_pts >= 3:
+        quality_status = "Strong"
+    elif quality_pts >= 1:
+        quality_status = "Pass"
+    else:
+        quality_status = "Weak"
+
+    # ----- 2) Cash flow -----
+    cash_pts = 0
+    cash_obs = 0
+    if not pd.isna(fcf):
+        cash_obs += 1
+        cash_pts += 2 if fcf > 0 else 0
+    if not pd.isna(ocf):
+        cash_obs += 1
+        cash_pts += 1 if ocf > 0 else 0
+    if not pd.isna(ocf) and not pd.isna(net_income) and net_income > 0:
+        cash_obs += 1
+        cash_pts += 1 if ocf >= net_income * 0.8 else 0
+
+    if cash_obs == 0:
+        cash_status = "数据不足"
+    elif cash_pts >= 3:
+        cash_status = "Strong"
+    elif cash_pts >= 1:
+        cash_status = "Pass"
+    else:
+        cash_status = "Weak"
+
+    # ----- 3) Debt / balance-sheet risk -----
+    debt_obs = 0
+    debt_pts = 0
+    if not pd.isna(debt_equity):
+        debt_obs += 1
+        # Yahoo debtToEquity is commonly reported as a percentage (e.g. 50 = 50%).
+        debt_pts += 2 if debt_equity <= 80 else (1 if debt_equity <= 150 else 0)
+    if not pd.isna(total_debt) and not pd.isna(total_cash) and total_debt > 0:
+        debt_obs += 1
+        cash_debt = total_cash / total_debt
+        debt_pts += 2 if cash_debt >= 0.75 else (1 if cash_debt >= 0.30 else 0)
+
+    if debt_obs == 0:
+        debt_status = "数据不足"
+    elif debt_pts >= 3:
+        debt_status = "Strong"
+    elif debt_pts >= 1:
+        debt_status = "Pass"
+    else:
+        debt_status = "Weak"
+
+    # ----- 4) Valuation -----
+    # Sector-relative valuation will be a later database/backtest enhancement.
+    # V4.3A.3 only flags clearly stretched or reasonable absolute valuation.
+    val_pts = 0
+    val_obs = 0
+    if not pd.isna(forward_pe) and forward_pe > 0:
+        val_obs += 1
+        val_pts += 2 if forward_pe <= 25 else (1 if forward_pe <= 45 else 0)
+    if not pd.isna(peg) and peg > 0:
+        val_obs += 1
+        val_pts += 2 if peg <= 1.8 else (1 if peg <= 3.0 else 0)
+    elif not pd.isna(ev_ebitda) and ev_ebitda > 0:
+        val_obs += 1
+        val_pts += 2 if ev_ebitda <= 18 else (1 if ev_ebitda <= 30 else 0)
+
+    if val_obs == 0:
+        valuation_status = "数据不足"
+    elif val_pts >= 3:
+        valuation_status = "Strong"
+    elif val_pts >= 1:
+        valuation_status = "Pass"
+    else:
+        valuation_status = "Weak"
+
+    # ----- 5) Growth -----
+    growth_pts = 0
+    growth_obs = 0
+    if not pd.isna(revenue_growth):
+        growth_obs += 1
+        growth_pts += 2 if revenue_growth >= 0.12 else (1 if revenue_growth >= 0.03 else 0)
+    if not pd.isna(earnings_growth):
+        growth_obs += 1
+        growth_pts += 2 if earnings_growth >= 0.12 else (1 if earnings_growth >= 0.03 else 0)
+
+    if growth_obs == 0:
+        growth_status = "数据不足"
+    elif growth_pts >= 3:
+        growth_status = "Strong"
+    elif growth_pts >= 1:
+        growth_status = "Pass"
+    else:
+        growth_status = "Weak"
+
+    statuses = [quality_status, cash_status, debt_status, valuation_status, growth_status]
+    known = [x for x in statuses if x != "数据不足"]
+    strong_n = sum(x == "Strong" for x in known)
+    pass_n = sum(x == "Pass" for x in known)
+    weak_n = sum(x == "Weak" for x in known)
+
+    if len(known) < 3:
+        overall = "数据不足"
+    elif weak_n >= 2:
+        overall = "Weak"
+    elif strong_n >= 3 and weak_n == 0:
+        overall = "Strong"
+    elif strong_n + pass_n >= 3 and weak_n <= 1:
+        overall = "Pass"
+    else:
+        overall = "Weak"
+
+    reasons = []
+    for label, status in [
+        ("Quality", quality_status), ("FCF", cash_status), ("Debt", debt_status),
+        ("Valuation", valuation_status), ("Growth", growth_status)
+    ]:
+        reasons.append(f"{label}:{status}")
+
+    return {
+        "Fundamental Confirmation": overall,
+        "Fundamental Reason": " | ".join(reasons),
+        "Quality Fundamental": quality_status,
+        "FCF Fundamental": cash_status,
+        "Debt Fundamental": debt_status,
+        "Valuation Fundamental": valuation_status,
+        "Growth Fundamental": growth_status,
+        "ROE": roe,
+        "Operating Margin": op_margin,
+        "Free Cash Flow": fcf,
+        "Operating Cash Flow": ocf,
+        "Debt to Equity": debt_equity,
+        "Forward PE": forward_pe,
+        "PEG": peg,
+        "EV/EBITDA": ev_ebitda,
+        "Revenue Growth": revenue_growth,
+        "Earnings Growth": earnings_growth,
+    }
+
+
+def final_confidence(row):
+    """Combine technical readiness with fundamental confirmation without rescoring V4."""
+    tech_score = row.get("Early V2 Score", 0)
+    tech_gate = row.get("质量检查", "⚠️ 观察")
+    f = row.get("Fundamental Confirmation", "数据不足")
+
+    if f == "Weak":
+        return "LOW"
+    if tech_gate == "✅ 通过" and tech_score >= 78 and f == "Strong":
+        return "HIGH"
+    if tech_gate == "✅ 通过" and tech_score >= 72 and f in ("Strong", "Pass"):
+        return "HIGH"
+    if tech_score >= 62 and f in ("Strong", "Pass", "数据不足"):
+        return "MEDIUM"
+    return "LOW"
+
+# =========================================================
 # CATALYST V2 (MAX 15)
 # =========================================================
 @st.cache_data(ttl=3600)
@@ -1013,6 +1217,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         m3 = score_accumulation(df)
 
         company, sector, market_cap = get_company_info(ticker)
+        fundamental = get_fundamental_confirmation(ticker)
         m4 = score_leadership(ret5, ret20, sector, benchmarks)
         cat_score, cat_label, pos_cats, neg_cats, headlines = get_catalyst_v2(ticker)
 
@@ -1072,6 +1277,8 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "RS Acceleration": m4["RS Acceleration"],
             "Sector ETF": m4["Sector ETF"],
 
+            **fundamental,
+
             "Catalyst Label": cat_label,
             "Positive Catalyst": "、".join(pos_cats) if pos_cats else "无",
             "Negative Catalyst": "、".join(neg_cats) if neg_cats else "无",
@@ -1091,6 +1298,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
+        row["Confidence"] = final_confidence(row)
         return row
     except Exception:
         return None
@@ -1098,7 +1306,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 # =========================================================
 # GOOGLE SHEETS — NEW TAB, DOES NOT OVERWRITE V4.2.1 TRACKER
 # =========================================================
-DAILY_WORKSHEET = "V43A2_DailyCandidates"
+DAILY_WORKSHEET = "V43A3_DailyCandidates"
 
 
 def _cell(v):
@@ -1179,7 +1387,7 @@ def save_daily_candidates(df):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A 设置")
+    st.header("V4.3A.3 设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -1187,10 +1395,12 @@ with st.sidebar:
     st.write("资金积累 20")
     st.write("领导力 20")
     st.write("Catalyst 15")
-    st.caption("A程序是盘后选股，不是盘中买入信号。")
+    st.markdown("**Fundamental Confirmation（不计入100分）**")
+    st.write("Quality / FCF / Debt / Valuation / Growth")
+    st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
 
 st.info(
-    "V4.3A 运行逻辑：约1年日K → 五大模块 → Hard Filter → Early V2排名 → 次日Top候选。"
+    "V4.3A.3 运行逻辑：约1年日K → 五大模块 → Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
     "B/C版本以后再负责1H、15min和真正盘中买入信号。"
 )
 
@@ -1243,10 +1453,12 @@ def render_results(top_df, all_df):
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ V4.3A.2 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ V4.3A.3 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
-        "Rank", "Ticker", "Company", "次日决策", "结构阶段", "结构依据", "质量检查", "质量原因", "Early V2 Score",
+        "Rank", "Ticker", "Company", "次日决策", "Confidence", "Fundamental Confirmation", "Fundamental Reason",
+        "Quality Fundamental", "FCF Fundamental", "Debt Fundamental", "Valuation Fundamental", "Growth Fundamental",
+        "结构阶段", "结构依据", "质量检查", "质量原因", "Early V2 Score",
         "Structure Score", "Trend & Momentum Score", "Accumulation Score",
         "Leadership Score", "Catalyst Score", "Price",
         "Major Resistance Zone", "Resistance Touches", "Major Support Zone",
@@ -1254,6 +1466,7 @@ def render_results(top_df, all_df):
         "Volume Build Ratio", "Up/Down Volume Ratio", "OBV Trend",
         "Stock vs SPY 20D", "Sector vs SPY 20D", "Stock vs Sector 20D",
         "RS Acceleration", "Catalyst Label", "Positive Catalyst", "Negative Catalyst",
+        "ROE", "Operating Margin", "Debt to Equity", "Forward PE", "PEG", "Revenue Growth", "Earnings Growth",
         "CMS Context"
     ]
     display_cols = [c for c in display_cols if c in top_df.columns]
@@ -1268,11 +1481,21 @@ def render_results(top_df, all_df):
         "Stock vs SPY 20D": "{:+.1%}",
         "Sector vs SPY 20D": "{:+.1%}",
         "Stock vs Sector 20D": "{:+.1%}",
+        "ROE": "{:.1%}",
+        "Operating Margin": "{:.1%}",
+        "Debt to Equity": "{:.1f}",
+        "Forward PE": "{:.1f}",
+        "PEG": "{:.2f}",
+        "Revenue Growth": "{:.1%}",
+        "Earnings Growth": "{:.1%}",
     }
 
     st.subheader("🌱 Early Engine V2 — 次日重点候选")
     cn_titles = {
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
+        "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
+        "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
+        "Valuation Fundamental":"估值", "Growth Fundamental":"增长",
         "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
         "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
         "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
@@ -1283,6 +1506,8 @@ def render_results(top_df, all_df):
         "Stock vs SPY 20D":"个股 vs SPY", "Sector vs SPY 20D":"板块 vs SPY",
         "Stock vs Sector 20D":"个股 vs 板块", "RS Acceleration":"RS加速度",
         "Catalyst Label":"催化剂状态", "Positive Catalyst":"正面催化剂", "Negative Catalyst":"负面催化剂",
+        "ROE":"ROE", "Operating Margin":"营业利润率", "Debt to Equity":"Debt/Equity",
+        "Forward PE":"Forward P/E", "PEG":"PEG", "Revenue Growth":"营收增长", "Earnings Growth":"盈利增长",
         "CMS Context":"CMS参考"
     }
     show_df = top_df[display_cols].rename(columns=cn_titles)
@@ -1324,6 +1549,7 @@ def render_results(top_df, all_df):
 **③ 资金积累（20）**：Volume Build + Up/Down Volume + OBV。日K只能判断‘资金积累证据’，不能宣称真实主动买盘。  
 **④ 领导力（20）**：Stock vs SPY、Sector vs SPY、Stock vs Sector；5D只判断近期是否加速，不继续增加更多基准。  
 **⑤ Catalyst（15）**：扩大正面/负面关键词并按事件类别识别；没有Catalyst不会直接淘汰，但明显负面Catalyst会压低候选级别。  
+**⑥ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
 """
         )
 
