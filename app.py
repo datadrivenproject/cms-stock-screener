@@ -1,4 +1,46 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import time
+from datetime import datetime, timezone
 
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except ImportError:
+    gspread = None
+    Credentials = None
+
+# =========================================================
+# PAGE
+# =========================================================
+st.set_page_config(
+    page_title="CMS Stock Screener V4.3A — Early Engine V2",
+    page_icon="📈",
+    layout="wide",
+)
+
+st.title("📈 CMS Stock Screener V4.3A — Early Engine V2")
+st.caption(
+    "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
+    "本版本负责决定‘明天重点看谁’，不直接等同于盘中买入。"
+)
+
+# =========================================================
+# SETTINGS
+# =========================================================
+BATCH_SIZE = 40
+MAX_RETRIES = 3
+RETRY_WAIT = [5, 15, 30]
+BATCH_PAUSE = 1.5
+TOP_N_DEFAULT = 10
+
+# V4.3A five-module weights — frozen first implementation.
+WEIGHTS = {
+    "structure": 25,
+    "trend": 20,
+    "accumulation": 20,
     "leadership": 20,
     "catalyst": 15,
 }
