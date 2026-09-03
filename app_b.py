@@ -17,14 +17,14 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.3 — Auto Monitor", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.3 — 自动盘中监控")
-st.caption("A负责选股；B保留5交易日跟踪池。交易时段每小时自动检查，约每2小时生成一次状态提醒。")
+st.set_page_config(page_title="CMS V4.3B V1.4 — 15-Min Auto Monitor", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.4 — 15分钟自动盘中监控")
+st.caption("A负责选股；B保留5交易日跟踪池。交易时段每15分钟自动检查，发现新的BUY立即提醒，约每2小时生成一次状态汇总。")
 
 A_WORKSHEET = "V43A3_DailyCandidates"
 B_LOG_WORKSHEET = "V43B_IntradayLog"
 MARKET_TZ = ZoneInfo("America/New_York")
-AUTO_REFRESH_MS = 60 * 60 * 1000
+AUTO_REFRESH_MS = 15 * 60 * 1000
 REMINDER_HOURS = {11, 13, 15}
 
 
@@ -304,13 +304,13 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.3 参数")
+    st.header("V4.3B V1.4 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
-        "⏱️ 每小时自动检查",
+        "⏱️ 每15分钟自动检查",
         value=True,
-        help="页面保持打开时，美股交易时段约每60分钟自动刷新并重新计算。"
+        help="页面保持打开时，美股交易时段约每15分钟自动刷新并重新计算。"
     )
 
     two_hour_summary = st.toggle(
@@ -406,7 +406,8 @@ def run_b_monitor(a_df, trigger="手动检查"):
     st.session_state["v43b_result"]=out
     st.session_state["v43b_time"]=now.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["v43b_trigger"]=trigger
-    st.session_state["v43b_last_hour"]=now.strftime("%Y-%m-%d-%H")
+    minute_bucket = (now.minute // 15) * 15
+    st.session_state["v43b_last_15m"] = now.strftime("%Y-%m-%d-%H") + f"-{minute_bucket:02d}"
 
 manual_run = st.button(
     "🎯 立即运行V4.3B盘中确认",
@@ -415,7 +416,8 @@ manual_run = st.button(
 )
 
 now = market_now()
-hour_key = now.strftime("%Y-%m-%d-%H")
+minute_bucket = (now.minute // 15) * 15
+bucket_key = now.strftime("%Y-%m-%d-%H") + f"-{minute_bucket:02d}"
 
 first_open = (
     auto_monitor
@@ -423,16 +425,16 @@ first_open = (
     and "v43b_result" not in st.session_state
 )
 
-new_hour = (
+new_15m_bucket = (
     auto_monitor
     and is_regular_market_hours(now)
-    and st.session_state.get("v43b_last_hour") != hour_key
+    and st.session_state.get("v43b_last_15m") != bucket_key
 )
 
 if manual_run:
     run_b_monitor(a_df, trigger="手动检查")
-elif first_open or new_hour:
-    run_b_monitor(a_df, trigger="每小时自动检查")
+elif first_open or new_15m_bucket:
+    run_b_monitor(a_df, trigger="每15分钟自动检查")
 
 if "v43b_result" in st.session_state:
     out=st.session_state["v43b_result"]
@@ -446,7 +448,7 @@ if "v43b_result" in st.session_state:
         new_buy = out[out["新BUY提醒"] == "🔔 新BUY"]
         if not new_buy.empty:
             st.success(
-                "🔔 新BUY提醒：" +
+                "🚨 BUY到点提醒：" +
                 "、".join(new_buy["Ticker"].astype(str).tolist())
             )
 
@@ -485,13 +487,13 @@ if "v43b_result" in st.session_state:
         file_name=f"V43B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
-with st.expander("查看V4.3B V1.3规则"):
+with st.expander("查看V4.3B V1.4规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
 **自动监控：**
-- 页面打开期间，美股交易时段约每60分钟自动刷新并重新检查。
-- WAIT → BUY 等重要状态变化会立即在页面提示。
+- 页面打开期间，美股交易时段约每15分钟自动刷新并重新检查。
+- 每次15分钟检查一旦发现 WAIT → BUY / 新BUY，会立即在页面顶部提示。
 - 约每2小时显示一次状态汇总。
 - 每轮结果保存到 `V43B_IntradayLog`，用于识别上一轮状态。
 - 手动“立即运行”按钮保留。
