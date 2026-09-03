@@ -15,7 +15,7 @@ st.set_page_config(page_title="CMS V4.3B V1.2 — 5-Day Tracking", page_icon="�
 st.title("🎯 CMS Stock Screener V4.3B V1.2 — 5日滚动跟踪")
 st.caption("A负责选股；B负责盘中确认。读取V4.3A.3最新候选，用1H + 15min判断 BUY / WAIT / AVOID。")
 
-A_WORKSHEET = "V43A3_DailyCandidates"
+A_WORKSHEET = ""V43A_DailyCandidates"
 
 def safe_float(x, default=np.nan):
     try:
