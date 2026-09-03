@@ -1,4 +1,4 @@
-import streamlit as st
+
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -481,6 +481,14 @@ def score_structure(df, price, atr14, structure):
 
     compression_ratio = r5 / r20 if r20 and not pd.isna(r20) else np.nan
 
+    flip_zone = structure.get("flip_zone")
+    if flip_zone is not None:
+        flip_zone_text = f"${flip_zone['low']:.2f}–${flip_zone['high']:.2f}"
+        flip_touches = int(flip_zone.get("touches", 0))
+    else:
+        flip_zone_text = "未识别"
+        flip_touches = 0
+
     return {
         "score": total,
         "Major Resistance Zone": res_zone,
@@ -493,6 +501,8 @@ def score_structure(df, price, atr14, structure):
         "Distance to Short Breakout": short_distance,
         "Compression Ratio": compression_ratio,
         "R→S Flip": "是" if structure["rs_flip"] else "否",
+        "R→S Flip Zone": flip_zone_text,
+        "R→S Flip Touches": flip_touches,
     }
 
 # =========================================================
@@ -896,29 +906,65 @@ def daily_candidate_status(r):
 
 
 def classify_structure_stage(row, structure_raw, atr14):
-    """Classify current price location relative to the major resistance zone."""
-    price = row["Price"]
+    """V4.3A.2: classify current structure transparently.
+
+    A valid R→S retest must refer to an explicit historical resistance zone,
+    and the current price must still be close enough to that flip zone.
+    The nearest current major resistance is evaluated separately so that an
+    old flip does not automatically override a poor current location.
+    """
+    price = float(row["Price"])
     major = structure_raw.get("major_res") if structure_raw else None
-    if major is None:
-        return "⚪ 结构不明确", "观察"
-    lo, hi = float(major["low"]), float(major["high"])
+    flip = structure_raw.get("flip_zone") if structure_raw else None
+    rs_flip = bool(structure_raw.get("rs_flip")) if structure_raw else False
     atr = atr14 if atr14 and not pd.isna(atr14) and atr14 > 0 else max(price * 0.02, 0.01)
-    if row.get("R→S Flip") == "是":
-        return "🟢 R→S回踩", "通过"
-    if lo <= price <= hi:
-        return "🟡 正在测试压力", "观察"
+
+    # ---- Explicit R→S validation ----
+    flip_valid = False
+    flip_reason = ""
+    if rs_flip and flip is not None:
+        flo, fhi = float(flip["low"]), float(flip["high"])
+        dist_to_flip = max(price - fhi, 0.0)
+        # Retest must be genuinely near the old resistance zone.
+        if dist_to_flip <= 0.75 * atr and price >= flo * 0.995:
+            flip_valid = True
+            flip_reason = f"旧压力区 {flo:.2f}–{fhi:.2f} 已转为支撑并正在回踩"
+
+    # If no current major resistance can be identified, a valid flip can still
+    # be useful, but it remains an observation rather than an automatic pass.
+    if major is None:
+        if flip_valid:
+            return "🟡 R→S回踩待确认", "观察", flip_reason + "；当前主要压力区未识别"
+        return "⚪ 结构不明确", "观察", "当前未识别出可靠主要压力区"
+
+    lo, hi = float(major["low"]), float(major["high"])
+
+    # Current price below the nearest major resistance zone.
     if price < lo:
         gap = lo - price
+        if flip_valid:
+            # A valid old flip is supportive, but current overhead resistance
+            # still matters. Only pass when the next major resistance is not too far.
+            if gap <= 2.0 * atr:
+                return "🟢 R→S回踩 + 接近压力", "通过", flip_reason + f"；下一主要压力区 {lo:.2f}–{hi:.2f}"
+            return "🟡 R→S回踩但上方压力较远", "观察", flip_reason + f"；下一主要压力区 {lo:.2f}–{hi:.2f} 距离较远"
         if gap <= 1.0 * atr:
-            return "🟢 压力下方蓄势", "通过"
+            return "🟢 压力下方蓄势", "通过", f"当前位于主要压力区 {lo:.2f}–{hi:.2f} 下方 1 ATR 内"
         if gap <= 2.5 * atr:
-            return "🟡 接近主要压力", "观察"
-        return "🔴 距压力过远", "不适合Early"
-    # price > resistance zone
+            return "🟡 接近主要压力", "观察", f"距离主要压力区 {lo:.2f}–{hi:.2f} 约 1–2.5 ATR"
+        return "🔴 距压力过远", "不适合Early", f"距离主要压力区 {lo:.2f}–{hi:.2f} 超过 2.5 ATR"
+
+    # Price currently inside the nearest major resistance zone.
+    if lo <= price <= hi:
+        if flip_valid:
+            return "🟡 R→S有效，但正在测试新压力", "观察", flip_reason + f"；同时进入主要压力区 {lo:.2f}–{hi:.2f}"
+        return "🟡 正在测试压力", "观察", f"当前价格位于主要压力区 {lo:.2f}–{hi:.2f} 内"
+
+    # Price above the current major resistance zone.
     extension = price - hi
     if extension <= 0.75 * atr:
-        return "🟡 突破待确认", "观察"
-    return "🔴 突破过远", "不适合Early"
+        return "🟡 突破待确认", "观察", f"刚突破主要压力区 {lo:.2f}–{hi:.2f}，等待确认或回踩"
+    return "🔴 突破过远", "不适合Early", f"已高出主要压力区 {lo:.2f}–{hi:.2f} 超过 0.75 ATR"
 
 
 def quality_gate(row):
@@ -927,14 +973,14 @@ def quality_gate(row):
     if row.get("Catalyst Label") == "负面催化风险":
         return "❌ 不适合Early", "负面催化风险"
     if stage_quality == "不适合Early":
-        return "❌ 不适合Early", row.get("结构阶段", "结构位置不理想")
+        return "❌ 不适合Early", row.get("结构依据", row.get("结构阶段", "结构位置不理想"))
     if row["Structure Score"] < 10:
         return "❌ 不适合Early", "市场结构分过低"
     if row["Trend & Momentum Score"] < 8:
         return "⚠️ 观察", "趋势动量仍需加强"
     if stage_quality == "观察":
-        return "⚠️ 观察", row.get("结构阶段", "等待结构确认")
-    return "✅ 通过", "结构位置适合Early候选"
+        return "⚠️ 观察", row.get("结构依据", row.get("结构阶段", "等待结构确认"))
+    return "✅ 通过", row.get("结构依据", "结构位置适合Early候选")
 
 # =========================================================
 # PER-STOCK ANALYSIS
@@ -1001,6 +1047,8 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Distance to Short Breakout": m1["Distance to Short Breakout"],
             "Compression Ratio": m1["Compression Ratio"],
             "R→S Flip": m1["R→S Flip"],
+            "R→S Flip Zone": m1["R→S Flip Zone"],
+            "R→S Flip Touches": m1["R→S Flip Touches"],
 
             "MA20": m2["MA20"],
             "MA50": m2["MA50"],
@@ -1030,9 +1078,10 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Headlines": " | ".join(headlines[:3]),
         }
 
-        stage, structure_quality = classify_structure_stage(row, structure_raw, atr14)
+        stage, structure_quality, structure_basis = classify_structure_stage(row, structure_raw, atr14)
         row["结构阶段"] = stage
         row["结构质量"] = structure_quality
+        row["结构依据"] = structure_basis
 
         ok, reason = passes_v43a_hard_filter(row)
         row["Hard Filter"] = "通过" if ok else "未通过"
@@ -1049,7 +1098,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 # =========================================================
 # GOOGLE SHEETS — NEW TAB, DOES NOT OVERWRITE V4.2.1 TRACKER
 # =========================================================
-DAILY_WORKSHEET = "V43A_DailyCandidates"
+DAILY_WORKSHEET = "V43A2_DailyCandidates"
 
 
 def _cell(v):
@@ -1194,14 +1243,14 @@ def render_results(top_df, all_df):
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ V4.3A 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ V4.3A.2 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
-        "Rank", "Ticker", "Company", "次日决策", "结构阶段", "质量检查", "质量原因", "Early V2 Score",
+        "Rank", "Ticker", "Company", "次日决策", "结构阶段", "结构依据", "质量检查", "质量原因", "Early V2 Score",
         "Structure Score", "Trend & Momentum Score", "Accumulation Score",
         "Leadership Score", "Catalyst Score", "Price",
         "Major Resistance Zone", "Resistance Touches", "Major Support Zone",
-        "Short-term Breakout", "R→S Flip", "MA20 Slope 5D", "MACD Phase", "RSI14",
+        "Short-term Breakout", "R→S Flip", "R→S Flip Zone", "R→S Flip Touches", "MA20 Slope 5D", "MACD Phase", "RSI14",
         "Volume Build Ratio", "Up/Down Volume Ratio", "OBV Trend",
         "Stock vs SPY 20D", "Sector vs SPY 20D", "Stock vs Sector 20D",
         "RS Acceleration", "Catalyst Label", "Positive Catalyst", "Negative Catalyst",
@@ -1228,6 +1277,7 @@ def render_results(top_df, all_df):
         "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
         "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
         "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
+        "R→S Flip Zone":"R→S回踩区", "R→S Flip Touches":"R→S历史测试次数",
         "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
         "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
         "Stock vs SPY 20D":"个股 vs SPY", "Sector vs SPY 20D":"板块 vs SPY",
