@@ -893,6 +893,49 @@ def daily_candidate_status(r):
         return "🟡 观察候选"
     return "⚪ 暂缓"
 
+
+
+def classify_structure_stage(row, structure_raw, atr14):
+    """Classify current price location relative to the major resistance zone."""
+    price = row["Price"]
+    major = structure_raw.get("major_res") if structure_raw else None
+    if major is None:
+        return "⚪ 结构不明确", "观察"
+    lo, hi = float(major["low"]), float(major["high"])
+    atr = atr14 if atr14 and not pd.isna(atr14) and atr14 > 0 else max(price * 0.02, 0.01)
+    if row.get("R→S Flip") == "是":
+        return "🟢 R→S回踩", "通过"
+    if lo <= price <= hi:
+        return "🟡 正在测试压力", "观察"
+    if price < lo:
+        gap = lo - price
+        if gap <= 1.0 * atr:
+            return "🟢 压力下方蓄势", "通过"
+        if gap <= 2.5 * atr:
+            return "🟡 接近主要压力", "观察"
+        return "🔴 距压力过远", "不适合Early"
+    # price > resistance zone
+    extension = price - hi
+    if extension <= 0.75 * atr:
+        return "🟡 突破待确认", "观察"
+    return "🔴 突破过远", "不适合Early"
+
+
+def quality_gate(row):
+    """Structure-first gate: score cannot rescue a poor Early-stage location."""
+    stage_quality = row.get("结构质量", "观察")
+    if row.get("Catalyst Label") == "负面催化风险":
+        return "❌ 不适合Early", "负面催化风险"
+    if stage_quality == "不适合Early":
+        return "❌ 不适合Early", row.get("结构阶段", "结构位置不理想")
+    if row["Structure Score"] < 10:
+        return "❌ 不适合Early", "市场结构分过低"
+    if row["Trend & Momentum Score"] < 8:
+        return "⚠️ 观察", "趋势动量仍需加强"
+    if stage_quality == "观察":
+        return "⚠️ 观察", row.get("结构阶段", "等待结构确认")
+    return "✅ 通过", "结构位置适合Early候选"
+
 # =========================================================
 # PER-STOCK ANALYSIS
 # =========================================================
@@ -987,11 +1030,18 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Headlines": " | ".join(headlines[:3]),
         }
 
+        stage, structure_quality = classify_structure_stage(row, structure_raw, atr14)
+        row["结构阶段"] = stage
+        row["结构质量"] = structure_quality
+
         ok, reason = passes_v43a_hard_filter(row)
         row["Hard Filter"] = "通过" if ok else "未通过"
         row["Hard Filter Reason"] = reason
+        q_status, q_reason = quality_gate(row) if ok else ("❌ 不适合Early", reason)
+        row["质量检查"] = q_status
+        row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
-        row["次日决策"] = daily_candidate_status(row) if ok else f"⚪ 暂缓：{reason}"
+        row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         return row
     except Exception:
         return None
@@ -1124,10 +1174,12 @@ if scan_clicked:
 
     all_df = pd.DataFrame(results)
     eligible = all_df[all_df["Hard Filter"] == "通过"].copy()
+    quality_order = {"✅ 通过": 0, "⚠️ 观察": 1, "❌ 不适合Early": 2}
+    eligible["_质量排序"] = eligible["质量检查"].map(quality_order).fillna(9)
     eligible = eligible.sort_values(
-        ["Early V2 Score", "Structure Score", "Leadership Score", "Accumulation Score"],
-        ascending=[False, False, False, False],
-    ).reset_index(drop=True)
+        ["_质量排序", "Early V2 Score", "Structure Score", "Leadership Score", "Accumulation Score"],
+        ascending=[True, False, False, False, False],
+    ).drop(columns=["_质量排序"]).reset_index(drop=True)
     eligible["Rank"] = eligible.index + 1
     top_df = eligible.head(top_n).copy()
 
@@ -1145,7 +1197,7 @@ def render_results(top_df, all_df):
     st.success(f"✅ V4.3A 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
-        "Rank", "Ticker", "Company", "次日决策", "Early V2 Score",
+        "Rank", "Ticker", "Company", "次日决策", "结构阶段", "质量检查", "质量原因", "Early V2 Score",
         "Structure Score", "Trend & Momentum Score", "Accumulation Score",
         "Leadership Score", "Catalyst Score", "Price",
         "Major Resistance Zone", "Resistance Touches", "Major Support Zone",
@@ -1170,8 +1222,23 @@ def render_results(top_df, all_df):
     }
 
     st.subheader("🌱 Early Engine V2 — 次日重点候选")
+    cn_titles = {
+        "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
+        "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
+        "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
+        "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
+        "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
+        "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
+        "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
+        "Stock vs SPY 20D":"个股 vs SPY", "Sector vs SPY 20D":"板块 vs SPY",
+        "Stock vs Sector 20D":"个股 vs 板块", "RS Acceleration":"RS加速度",
+        "Catalyst Label":"催化剂状态", "Positive Catalyst":"正面催化剂", "Negative Catalyst":"负面催化剂",
+        "CMS Context":"CMS参考"
+    }
+    show_df = top_df[display_cols].rename(columns=cn_titles)
+    fmt_cn = {cn_titles.get(k,k): v for k,v in fmt.items()}
     st.dataframe(
-        top_df[display_cols].style.format({k: v for k, v in fmt.items() if k in display_cols}, na_rep=""),
+        show_df.style.format({k: v for k, v in fmt_cn.items() if k in show_df.columns}, na_rep=""),
         hide_index=True,
         use_container_width=True,
     )
