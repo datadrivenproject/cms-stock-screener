@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 try:
     import gspread
@@ -11,11 +12,35 @@ except ImportError:
     gspread = None
     Credentials = None
 
-st.set_page_config(page_title="CMS V4.3B V1.2 — 5-Day Tracking", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.2 — 5日滚动跟踪")
-st.caption("A负责选股；B负责盘中确认。读取V4.3A.3最新候选，用1H + 15min判断 BUY / WAIT / AVOID。")
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
+
+st.set_page_config(page_title="CMS V4.3B V1.3 — Auto Monitor", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.3 — 自动盘中监控")
+st.caption("A负责选股；B保留5交易日跟踪池。交易时段每小时自动检查，约每2小时生成一次状态提醒。")
 
 A_WORKSHEET = "V43A3_DailyCandidates"
+B_LOG_WORKSHEET = "V43B_IntradayLog"
+MARKET_TZ = ZoneInfo("America/New_York")
+AUTO_REFRESH_MS = 60 * 60 * 1000
+REMINDER_HOURS = {11, 13, 15}
+
+
+
+def market_now():
+    return datetime.now(MARKET_TZ)
+
+def is_regular_market_hours(dt=None):
+    dt = dt or market_now()
+    if dt.weekday() >= 5:
+        return False
+    return time(9, 30) <= dt.time() <= time(16, 0)
+
+def is_two_hour_reminder_window(dt=None):
+    dt = dt or market_now()
+    return is_regular_market_hours(dt) and dt.hour in REMINDER_HOURS
 
 def safe_float(x, default=np.nan):
     try:
@@ -93,6 +118,67 @@ def get_a_sheet():
     client = gspread.authorize(creds)
     book = client.open(st.secrets["tracker"]["sheet_name"])
     return book.worksheet(A_WORKSHEET)
+
+
+def get_or_create_b_log_sheet():
+    """保存B每轮结果，用于识别上一轮状态变化。"""
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=scopes
+        )
+        client = gspread.authorize(creds)
+        book = client.open(st.secrets["tracker"]["sheet_name"])
+        try:
+            return book.worksheet(B_LOG_WORKSHEET)
+        except Exception:
+            return book.add_worksheet(title=B_LOG_WORKSHEET, rows=3000, cols=40)
+    except Exception:
+        return None
+
+def load_previous_b_states():
+    try:
+        ws = get_or_create_b_log_sheet()
+        if ws is None:
+            return {}
+        rec = ws.get_all_records()
+        if not rec:
+            return {}
+        df = pd.DataFrame(rec)
+        if "Ticker" not in df.columns or "盘中决策" not in df.columns:
+            return {}
+        if "检查时间" in df.columns:
+            df["_dt"] = pd.to_datetime(df["检查时间"], errors="coerce")
+            df = df.sort_values("_dt")
+        latest = df.drop_duplicates("Ticker", keep="last")
+        return dict(zip(
+            latest["Ticker"].astype(str).str.upper(),
+            latest["盘中决策"].astype(str)
+        ))
+    except Exception:
+        return {}
+
+def append_b_log(out, run_time):
+    try:
+        ws = get_or_create_b_log_sheet()
+        if ws is None or out is None or out.empty:
+            return False
+        log = out.copy()
+        log.insert(0, "检查时间", run_time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.insert(1, "检查日期", run_time.strftime("%Y-%m-%d"))
+        log = log.replace([np.inf, -np.inf], np.nan).fillna("")
+        existing = ws.get_all_values()
+        if not existing:
+            ws.update([list(log.columns)] + log.astype(str).values.tolist(), "A1")
+        else:
+            ws.append_rows(log.astype(str).values.tolist(), value_input_option="USER_ENTERED")
+        return True
+    except Exception:
+        return False
 
 @st.cache_data(ttl=300)
 def load_latest_a_candidates():
@@ -218,11 +304,35 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B 参数")
+    st.header("V4.3B V1.3 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
+
+    auto_monitor = st.toggle(
+        "⏱️ 每小时自动检查",
+        value=True,
+        help="页面保持打开时，美股交易时段约每60分钟自动刷新并重新计算。"
+    )
+
+    two_hour_summary = st.toggle(
+        "🔔 每2小时状态提醒",
+        value=True,
+        help="约11:30、13:30、15:30对应运行轮次显示汇总。"
+    )
+
+    st.caption("注意：Streamlit Cloud无人访问时不保证后台持续运行。")
+
     if st.button("🔄 清除数据缓存",use_container_width=True):
         st.cache_data.clear()
         st.success("缓存已清除")
+
+if auto_monitor and st_autorefresh is not None:
+    st_autorefresh(
+        interval=AUTO_REFRESH_MS,
+        limit=None,
+        key="v43b_hourly_refresh"
+    )
+elif auto_monitor and st_autorefresh is None:
+    st.warning("请在 requirements.txt 增加：streamlit-autorefresh")
 
 st.info("流程：1H判断大方向 → 15min找突破/回踩 → VWAP过滤 → 防追高 → BUY / WAIT / AVOID。")
 
@@ -243,26 +353,125 @@ preview=[c for c in ["Ticker","最近入选日期","跟踪天数","观察剩余�
 if preview:
     st.dataframe(a_df[preview],hide_index=True,use_container_width=True)
 
-if st.button("🎯 运行V4.3B盘中确认",type="primary",use_container_width=True):
+
+def run_b_monitor(a_df, trigger="手动检查"):
     rows=[]
     progress=st.progress(0)
     status=st.empty()
+    previous_states=load_previous_b_states()
+
     for i,(_,row) in enumerate(a_df.iterrows(),1):
         status.write(f"正在分析 {row['Ticker']} ({i}/{len(a_df)})")
         rows.append(analyze_one(row))
         progress.progress(int(i/len(a_df)*100))
+
     status.empty()
+    progress.empty()
+
     out=pd.DataFrame(rows)
+    out["上一轮状态"] = out["Ticker"].map(previous_states).fillna("首次检查")
+
+    out["状态变化"] = out.apply(
+        lambda r: (
+            f"{r['上一轮状态']} → {r['盘中决策']}"
+            if r["上一轮状态"] != "首次检查"
+            and r["上一轮状态"] != r["盘中决策"]
+            else ("首次检查" if r["上一轮状态"] == "首次检查" else "无变化")
+        ),
+        axis=1
+    )
+
+    out["新BUY提醒"] = out.apply(
+        lambda r: (
+            "🔔 新BUY"
+            if r["盘中决策"] == "🟢 BUY"
+            and r["上一轮状态"] != "🟢 BUY"
+            else ""
+        ),
+        axis=1
+    )
+
     order={"🟢 BUY":0,"🟡 WAIT":1,"🔴 AVOID":2,"⚪ DATA":3}
     out["_o"]=out["盘中决策"].map(order).fillna(9)
-    out=out.sort_values(["_o","A排名"]).drop(columns="_o").reset_index(drop=True)
+
+    sort_cols=["_o"]
+    if "A排名" in out.columns:
+        sort_cols.append("A排名")
+
+    out=out.sort_values(sort_cols).drop(columns="_o").reset_index(drop=True)
+
+    now=market_now()
+    append_b_log(out, now)
+
     st.session_state["v43b_result"]=out
-    st.session_state["v43b_time"]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state["v43b_time"]=now.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state["v43b_trigger"]=trigger
+    st.session_state["v43b_last_hour"]=now.strftime("%Y-%m-%d-%H")
+
+manual_run = st.button(
+    "🎯 立即运行V4.3B盘中确认",
+    type="primary",
+    use_container_width=True
+)
+
+now = market_now()
+hour_key = now.strftime("%Y-%m-%d-%H")
+
+first_open = (
+    auto_monitor
+    and is_regular_market_hours(now)
+    and "v43b_result" not in st.session_state
+)
+
+new_hour = (
+    auto_monitor
+    and is_regular_market_hours(now)
+    and st.session_state.get("v43b_last_hour") != hour_key
+)
+
+if manual_run:
+    run_b_monitor(a_df, trigger="手动检查")
+elif first_open or new_hour:
+    run_b_monitor(a_df, trigger="每小时自动检查")
 
 if "v43b_result" in st.session_state:
     out=st.session_state["v43b_result"]
     st.subheader("📡 V4.3B盘中确认结果")
-    st.caption(f"最近运行：{st.session_state.get('v43b_time','')}")
+    st.caption(
+        f"最近运行：{st.session_state.get('v43b_time','')} ｜ "
+        f"触发方式：{st.session_state.get('v43b_trigger','')}"
+    )
+
+    if "新BUY提醒" in out.columns:
+        new_buy = out[out["新BUY提醒"] == "🔔 新BUY"]
+        if not new_buy.empty:
+            st.success(
+                "🔔 新BUY提醒：" +
+                "、".join(new_buy["Ticker"].astype(str).tolist())
+            )
+
+    if "状态变化" in out.columns:
+        changed = out[~out["状态变化"].isin(["无变化","首次检查"])]
+        if not changed.empty:
+            st.warning(
+                "⚠️ 本轮状态变化：" +
+                "；".join(
+                    changed.apply(
+                        lambda r: f"{r['Ticker']} {r['状态变化']}",
+                        axis=1
+                    ).tolist()
+                )
+            )
+
+    if two_hour_summary and is_two_hour_reminder_window():
+        buys = out.loc[out["盘中决策"]=="🟢 BUY","Ticker"].astype(str).tolist()
+        waits = out.loc[out["盘中决策"]=="🟡 WAIT","Ticker"].astype(str).tolist()
+        avoids = out.loc[out["盘中决策"]=="🔴 AVOID","Ticker"].astype(str).tolist()
+        text = f"🔔 两小时状态提醒｜BUY {len(buys)}只"
+        if buys:
+            text += "：" + ", ".join(buys)
+        text += f" ｜ WAIT {len(waits)}只 ｜ AVOID {len(avoids)}只"
+        st.info(text)
     fmt={"当前价格":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}"}
     st.dataframe(out.style.format(fmt,na_rep=""),hide_index=True,use_container_width=True)
 
@@ -276,9 +485,16 @@ if "v43b_result" in st.session_state:
         file_name=f"V43B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
-with st.expander("查看V4.3B V1.2规则"):
+with st.expander("查看V4.3B V1.3规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
+
+**自动监控：**
+- 页面打开期间，美股交易时段约每60分钟自动刷新并重新检查。
+- WAIT → BUY 等重要状态变化会立即在页面提示。
+- 约每2小时显示一次状态汇总。
+- 每轮结果保存到 `V43B_IntradayLog`，用于识别上一轮状态。
+- 手动“立即运行”按钮保留。
 
 **5交易日退出机制：** 未买入候选从最近一次A入选起最多跟踪5个A扫描交易日；期间再次被A选中则重新计时；明显1H破坏可提前AVOID；超过5日后自动从滚动池消失。真实BUY后不应按5日退出，而应转入持仓/C程序持续跟踪，直到SELL / STOP / TAKE PROFIT。
 
