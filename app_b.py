@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V2.2 — Breakout Confirmation Test", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V2.2 — 突破后确认测试")
+st.set_page_config(page_title="CMS V4.3B V2.3 — Profit Giveback Test", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V2.3 — 3日涨幅与利润回吐测试")
 st.caption("V2.2先测试“突破后等待确认”，暂不把等待逻辑放进LIVE。LIVE仍沿用V2.1；回踩BUY和B Master累计逻辑不变。")
 
 A_WORKSHEET = "A_Candidates"
@@ -708,7 +708,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V2.2 参数")
+    st.header("V4.3B V2.3 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1337,6 +1337,48 @@ def original_v20_breakout_trigger(row, h1, m15):
     )
 
 
+
+def day_high_close_metrics(m15_all, entry_ts, entry_px, nth_day):
+    """第nth个交易日（1=买入当日）的最高涨幅和收盘收益。"""
+    dates = sorted(set(m15_all[m15_all.index >= entry_ts].index.date))
+    if len(dates) < nth_day:
+        return np.nan, np.nan
+    d = dates[nth_day-1]
+    x = m15_all[m15_all.index.date == d]
+    if nth_day == 1:
+        x = x[x.index >= entry_ts]
+    if x.empty or pd.isna(entry_px) or entry_px <= 0:
+        return np.nan, np.nan
+    hi = pd.to_numeric(x["High"], errors="coerce").max()
+    close = safe_float(x.iloc[-1]["Close"])
+    high_ret = (hi-entry_px)/entry_px*100 if not pd.isna(hi) else np.nan
+    close_ret = (close-entry_px)/entry_px*100 if not pd.isna(close) else np.nan
+    return high_ret, close_ret
+
+
+def three_day_giveback_metrics(m15_all, entry_ts, entry_px):
+    """
+    从BUY到第3个交易日结束：
+    peak_ret = 期间最高浮盈%
+    end_ret = 第3日收盘收益%
+    giveback = 最高浮盈 - 第3日收盘收益
+    """
+    dates = sorted(set(m15_all[m15_all.index >= entry_ts].index.date))
+    if not dates:
+        return np.nan, np.nan, np.nan
+    use_dates = dates[:3]
+    x = m15_all[m15_all.index.date.astype(object).isin(use_dates)]
+    x = x[x.index >= entry_ts]
+    if x.empty or pd.isna(entry_px) or entry_px <= 0:
+        return np.nan, np.nan, np.nan
+    hi = pd.to_numeric(x["High"], errors="coerce").max()
+    peak_ret = (hi-entry_px)/entry_px*100 if not pd.isna(hi) else np.nan
+    last_close = safe_float(x.iloc[-1]["Close"])
+    end_ret = (last_close-entry_px)/entry_px*100 if not pd.isna(last_close) else np.nan
+    giveback = peak_ret-end_ret if not pd.isna(peak_ret) and not pd.isna(end_ret) else np.nan
+    return peak_ret, end_ret, giveback
+
+
 def breakout_confirmation_test(row, start_date, end_date):
     """
     对V2.0原始突破信号测试：
@@ -1430,6 +1472,10 @@ def breakout_confirmation_test(row, start_date, end_date):
                         ret_3d = (p3-entry_px)/entry_px*100
 
                 mfe1, mae1 = _future_window_excursions(m15_all, entry_ts, entry_px, 26)
+                d1_high, d1_close = day_high_close_metrics(m15_all, entry_ts, entry_px, 1)
+                d2_high, d2_close = day_high_close_metrics(m15_all, entry_ts, entry_px, 2)
+                d3_high, d3_close = day_high_close_metrics(m15_all, entry_ts, entry_px, 3)
+                peak3, end3, giveback3 = three_day_giveback_metrics(m15_all, entry_ts, entry_px)
                 events.append({
                     "股票代码": ticker,
                     "原突破时间": ts.strftime("%Y-%m-%d %H:%M"),
@@ -1440,6 +1486,15 @@ def breakout_confirmation_test(row, start_date, end_date):
                     "当日收盘%": ret_close,
                     "下一交易日%": ret_1d,
                     "3交易日%": ret_3d,
+                    "第1日最高涨幅%": d1_high,
+                    "第1日收盘收益%": d1_close,
+                    "第2日最高涨幅%": d2_high,
+                    "第2日收盘收益%": d2_close,
+                    "第3日最高涨幅%": d3_high,
+                    "第3日收盘收益%": d3_close,
+                    "3日内最高浮盈%": peak3,
+                    "3日末收益%": end3,
+                    "3日利润回吐%": giveback3,
                     "1日最大涨幅%": mfe1,
                     "1日最大回撤%": mae1
                 })
@@ -1646,6 +1701,38 @@ if st.button("🧪 比较立即买 / 30分钟 / 60分钟", use_container_width=T
                 "只有等待确认明显优于立即买时，才考虑把BREAKOUT WATCH加入LIVE。"
             )
 
+
+            st.markdown("#### 💰 30分钟确认BUY：3日最高涨幅与利润回吐")
+            c30 = confirm_out[confirm_out["策略"].eq("等30分钟确认")].copy()
+            if not c30.empty:
+                show_cols = [
+                    "股票代码","原突破时间","确认买入时间","买入价格",
+                    "第1日最高涨幅%","第1日收盘收益%",
+                    "第2日最高涨幅%","第2日收盘收益%",
+                    "第3日最高涨幅%","第3日收盘收益%",
+                    "3日内最高浮盈%","3日末收益%","3日利润回吐%"
+                ]
+                show_cols = [c for c in show_cols if c in c30.columns]
+                pfmt = {c:"{:.2f}" for c in show_cols if c not in ["股票代码","原突破时间","确认买入时间"]}
+                st.dataframe(
+                    c30[show_cols].style.format(pfmt, na_rep=""),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                peak = pd.to_numeric(c30["3日内最高浮盈%"], errors="coerce")
+                endv = pd.to_numeric(c30["3日末收益%"], errors="coerce")
+                gb = pd.to_numeric(c30["3日利润回吐%"], errors="coerce")
+                a,b,c = st.columns(3)
+                a.metric("平均3日内最高浮盈", f"{peak.mean():.2f}%" if peak.notna().any() else "NA")
+                b.metric("平均3日末收益", f"{endv.mean():.2f}%" if endv.notna().any() else "NA")
+                c.metric("平均利润回吐", f"{gb.mean():.2f}%" if gb.notna().any() else "NA")
+
+                st.caption(
+                    "例如：3日内最高浮盈 +6%，3日末收益 +1%，则利润回吐=5个百分点。"
+                    "如果最高浮盈明显高、但3日末收益很低，说明问题更可能在C的止盈/移动止损，而不是B的买点。"
+                )
+
             with st.expander("查看每一次突破的详细结果"):
                 st.dataframe(confirm_out, hide_index=True, use_container_width=True)
 
@@ -1744,7 +1831,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V2.2规则"):
+with st.expander("查看V4.3B V2.3规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1765,6 +1852,7 @@ with st.expander("查看V4.3B V2.2规则"):
 - V2.0新增：支持最近10/20/30交易日长周期批量回放，并自动比较回踩BUY与突破BUY的胜率、平均收益、MFE和MAE。
 - V2.1只优化突破BUY：量比门槛由1.20提高到1.50；15m MACD必须为正；15m RSI限定50–70；突破价不得高于前20根15m高点0.8%以上。回踩BUY参数完全不变。
 - V2.2新增历史测试：用V2.0原始突破信号比较立即买、等待30分钟确认、等待60分钟确认；本版暂不改变LIVE等待逻辑。
+- V2.3新增：对30分钟确认BUY显示第1/2/3日最高涨幅与收盘收益，并计算3日内最高浮盈、3日末收益和利润回吐，用于判断是否应优化C止盈。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
