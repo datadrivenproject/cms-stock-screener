@@ -21,9 +21,23 @@ st.set_page_config(page_title="CMS V4.3B V1.5 — Master Watchlist", page_icon="
 st.title("🎯 CMS Stock Screener V4.3B V1.5 — 候选池 + 持仓一体化")
 st.caption("A负责每日选股；B用Master Watchlist保存候选与真实持仓。候选最多跟踪5个A扫描交易日；真实持仓不受5日限制，直到手动退出/止损/止盈。")
 
-A_WORKSHEET = "V43A3_DailyCandidates"
-B_LOG_WORKSHEET = "V43B_IntradayLog"
-B_MASTER_WORKSHEET = "V43B_MasterWatchlist"
+A_WORKSHEET = "A_Candidates"
+B_LOG_WORKSHEET = "B_Log"
+B_MASTER_WORKSHEET = "B_MasterList"
+
+SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考'}
+SHEET_INTERNAL_MAP = {v:k for k,v in SHEET_CN_MAP.items()}
+B_DISPLAY_CN_MAP = {**SHEET_CN_MAP, "Ticker":"股票代码", "Company":"公司", "Rank":"排名", "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Early V2 Score":"Early V2总分"}
+B_MASTER_PRIMARY = ["Ticker","Company","池状态","是否持仓","最后决策","最后价格","实际买入价","持仓止损","TP1","TP2","最近入选日期","跟踪天数","观察剩余天数","最后检查时间","最后决策依据","Rank","Early V2 Score","Confidence","Fundamental Confirmation","首次进入B","最近同步A","实际买入日期","退出日期","退出价","退出原因"]
+
+def normalize_sheet_columns(df):
+    if df is None or df.empty: return df
+    return df.rename(columns={c:SHEET_INTERNAL_MAP.get(c,c) for c in df.columns})
+
+def chinese_sheet_columns(df):
+    if df is None: return df
+    return df.rename(columns=B_DISPLAY_CN_MAP)
+
 MARKET_TZ = ZoneInfo("America/New_York")
 AUTO_REFRESH_MS = 15 * 60 * 1000
 REMINDER_HOURS = {11, 13, 15}
@@ -170,7 +184,7 @@ def load_b_master():
         rec = ws.get_all_records()
         if not rec:
             return pd.DataFrame()
-        df = pd.DataFrame(rec)
+        df = normalize_sheet_columns(pd.DataFrame(rec))
         if "Ticker" in df.columns:
             df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
         return df
@@ -178,19 +192,22 @@ def load_b_master():
         return pd.DataFrame()
 
 def save_b_master(df):
-    """覆盖写入Master；Master是当前状态，不是15分钟日志。"""
     ws = get_or_create_b_master_sheet()
     if ws is None:
         return False
     try:
         x = df.copy() if df is not None else pd.DataFrame()
-        x = x.replace([np.inf, -np.inf], np.nan).fillna("")
+        x = x.replace([np.inf,-np.inf],np.nan).fillna("")
+        first = [c for c in B_MASTER_PRIMARY if c in x.columns]
+        rest = [c for c in x.columns if c not in first]
+        x = chinese_sheet_columns(x[first+rest].copy())
         ws.clear()
         if not x.empty:
             ws.update([list(x.columns)] + x.astype(str).values.tolist(), "A1")
         return True
     except Exception:
         return False
+
 
 def sync_master_with_a(master, active_a):
     """
@@ -296,17 +313,14 @@ def load_previous_b_states():
         rec = ws.get_all_records()
         if not rec:
             return {}
-        df = pd.DataFrame(rec)
+        df = normalize_sheet_columns(pd.DataFrame(rec))
         if "Ticker" not in df.columns or "盘中决策" not in df.columns:
             return {}
         if "检查时间" in df.columns:
             df["_dt"] = pd.to_datetime(df["检查时间"], errors="coerce")
             df = df.sort_values("_dt")
         latest = df.drop_duplicates("Ticker", keep="last")
-        return dict(zip(
-            latest["Ticker"].astype(str).str.upper(),
-            latest["盘中决策"].astype(str)
-        ))
+        return dict(zip(latest["Ticker"].astype(str).str.upper(), latest["盘中决策"].astype(str)))
     except Exception:
         return {}
 
@@ -316,17 +330,19 @@ def append_b_log(out, run_time):
         if ws is None or out is None or out.empty:
             return False
         log = out.copy()
-        log.insert(0, "检查时间", run_time.strftime("%Y-%m-%d %H:%M:%S"))
-        log.insert(1, "检查日期", run_time.strftime("%Y-%m-%d"))
-        log = log.replace([np.inf, -np.inf], np.nan).fillna("")
+        log.insert(0,"检查时间",run_time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.insert(1,"检查日期",run_time.strftime("%Y-%m-%d"))
+        log = chinese_sheet_columns(log.replace([np.inf,-np.inf],np.nan).fillna(""))
         existing = ws.get_all_values()
-        if not existing:
-            ws.update([list(log.columns)] + log.astype(str).values.tolist(), "A1")
+        headers = list(log.columns)
+        if not existing or existing[0] != headers:
+            ws.clear(); ws.update([headers] + log.astype(str).values.tolist(), "A1")
         else:
             ws.append_rows(log.astype(str).values.tolist(), value_input_option="USER_ENTERED")
         return True
     except Exception:
         return False
+
 
 @st.cache_data(ttl=300)
 def load_latest_a_candidates():
@@ -334,33 +350,33 @@ def load_latest_a_candidates():
     rec = ws.get_all_records()
     if not rec:
         return pd.DataFrame(), None
-    df = pd.DataFrame(rec)
+    df = normalize_sheet_columns(pd.DataFrame(rec))
     if "Ticker" not in df.columns:
-        raise RuntimeError("A候选表缺少Ticker列。")
-    date_col = next((c for c in ["Scan Date","Date","日期"] if c in df.columns), None)
+        raise RuntimeError("A_Candidates 缺少‘股票代码’列。")
+    date_col = next((c for c in ["Scan Date","Date","日期","扫描日期"] if c in df.columns), None)
     if date_col is None:
-        raise RuntimeError("A候选表缺少Scan Date，无法建立5交易日跟踪池。")
+        raise RuntimeError("A_Candidates 缺少‘扫描日期’列。")
     df["_scan_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
     df = df[df["_scan_date"].notna()].copy()
     if df.empty:
         return pd.DataFrame(), None
     df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
     scan_days = sorted(df["_scan_date"].drop_duplicates())
-    latest_day = scan_days[-1]
-    active_days = scan_days[-5:]
+    latest_day = scan_days[-1]; active_days = scan_days[-5:]
     active = df[df["_scan_date"].isin(active_days)].copy()
     last_dates = active.groupby("Ticker")["_scan_date"].max().to_dict()
-    active = active.sort_values(["Ticker","_scan_date"]).drop_duplicates("Ticker", keep="last").copy()
+    active = active.sort_values(["Ticker","_scan_date"]).drop_duplicates("Ticker",keep="last").copy()
     day_pos = {d:i for i,d in enumerate(scan_days)}
     active["最近入选日期"] = active["Ticker"].map(last_dates)
     active["跟踪天数"] = active["最近入选日期"].map(lambda d: day_pos[latest_day]-day_pos[d]+1)
     active["观察剩余天数"] = 6-active["跟踪天数"]
     active["池状态"] = "TRACKING"
     if "Rank" in active.columns:
-        active["Rank"] = pd.to_numeric(active["Rank"], errors="coerce")
-        active = active.sort_values(["最近入选日期","Rank"], ascending=[False,True])
+        active["Rank"] = pd.to_numeric(active["Rank"],errors="coerce")
+        active = active.sort_values(["最近入选日期","Rank"],ascending=[False,True])
     active["最近入选日期"] = pd.to_datetime(active["最近入选日期"]).dt.strftime("%Y-%m-%d")
     return active.reset_index(drop=True), latest_day.strftime("%Y-%m-%d")
+
 
 def evaluate_1h(df):
     if df is None or len(df)<30:
@@ -735,7 +751,9 @@ if "v43b_result" in st.session_state:
         text += f" ｜ WAIT {len(waits)} ｜ AVOID {len(avoids)}"
         st.info(text)
     fmt={"当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
-    st.dataframe(out.style.format(fmt,na_rep=""),hide_index=True,use_container_width=True)
+    display_out = chinese_sheet_columns(out)
+    fmt_cn = {B_DISPLAY_CN_MAP.get(k,k):v for k,v in fmt.items()}
+    st.dataframe(display_out.style.format({k:v for k,v in fmt_cn.items() if k in display_out.columns},na_rep=""),hide_index=True,use_container_width=True)
 
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🟢 BUY",int((out["盘中决策"]=="🟢 BUY").sum()))
@@ -744,9 +762,9 @@ if "v43b_result" in st.session_state:
     c4.metric("🟡 WAIT",int((out["盘中决策"]=="🟡 WAIT").sum()))
     c5.metric("🛑 TP/STOP",int(out["盘中决策"].isin(["🛑 STOP LOSS","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"]).sum()))
 
-    csv=out.to_csv(index=False).encode("utf-8-sig")
+    csv=chinese_sheet_columns(out).to_csv(index=False).encode("utf-8-sig")
     st.download_button("💾 下载盘中结果",csv,
-        file_name=f"V43B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
+        file_name=f"B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
 with st.expander("查看V4.3B V1.5规则"):
@@ -757,7 +775,7 @@ with st.expander("查看V4.3B V1.5规则"):
 - 页面打开期间，美股交易时段约每15分钟自动刷新并重新检查。
 - 每次15分钟检查一旦发现 WAIT → BUY / 新BUY，会立即在页面顶部提示。
 - 约每2小时显示一次状态汇总。
-- 每轮结果保存到 `V43B_IntradayLog`，用于识别上一轮状态。
+- 每轮结果保存到 `B_Log`，用于识别上一轮状态。
 - 手动“立即运行”按钮保留。
 
 **5交易日退出机制：** 未买入候选从最近一次A入选起最多跟踪5个A扫描交易日；期间再次被A选中则重新计时；明显1H破坏可提前AVOID；超过5日后自动从滚动池消失。真实BUY后不应按5日退出，而应转入持仓/C程序持续跟踪，直到SELL / STOP / TAKE PROFIT。
