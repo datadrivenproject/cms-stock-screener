@@ -1078,8 +1078,8 @@ def passes_v43a_hard_filter(r):
         return False, "价格明显低于MA20"
     if r["Price"] < r["MA50"] * 0.97:
         return False, "价格明显低于MA50"
-    if r["Price"] < r["MA200"] * 0.95:
-        return False, "价格明显低于MA200"
+    # A4-Test1: only relax the MA200 rejection rule.
+    # MA200 is still calculated and used elsewhere; it simply no longer auto-rejects a stock.
     if pd.isna(r["MA20 Slope 5D"]) or r["MA20 Slope 5D"] < 0.002:
         return False, "MA20斜率不足0.2%"
     if r["Structure Score"] < 8:
@@ -1868,6 +1868,7 @@ def add_hard_filter_diagnostic_columns(bt):
 
 
 def render_hard_filter_diagnostics(d):
+    st.info('A4-Test1：仅放宽 MA200 Hard Filter；MA20、MA50、MA20斜率、Structure 和排名逻辑保持不变。')
     st.subheader('🧪 Hard Filter 漏杀诊断')
     st.caption('只做历史诊断，不改变 LIVE A。每只股票可能同时违反多条规则，所以“失败规则次数”允许重复计数。')
     x = add_hard_filter_diagnostic_columns(d)
