@@ -17,9 +17,9 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V2.1 — Breakout Quality Filter", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V2.1 — 突破BUY质量优化")
-st.caption("LIVE继续使用同一套B逻辑；V2.1仅收紧突破BUY，回踩BUY不变。REPLAY继续用于验证优化前后BUY质量。B Master累计逻辑不变。")
+st.set_page_config(page_title="CMS V4.3B V2.2 — Breakout Confirmation Test", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V2.2 — 突破后确认测试")
+st.caption("V2.2先测试“突破后等待确认”，暂不把等待逻辑放进LIVE。LIVE仍沿用V2.1；回踩BUY和B Master累计逻辑不变。")
 
 A_WORKSHEET = "A_Candidates"
 B_LOG_WORKSHEET = "B_Log"
@@ -708,7 +708,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V2.1 参数")
+    st.header("V4.3B V2.2 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1313,6 +1313,184 @@ if st.button("🔬 一键诊断当前B监控股票", type="primary", use_contain
 
 
 
+
+def original_v20_breakout_trigger(row, h1, m15):
+    """V2.0原始突破BUY门槛，仅用于历史测试；不改变LIVE。"""
+    if not h1.get("valid") or not m15.get("valid"):
+        return False
+    if h1.get("status") == "弱":
+        return False
+    if m15.get("overextended"):
+        return False
+    if not m15.get("above_vwap"):
+        return False
+    if weak_fundamental(row):
+        return False
+    vr = safe_float(m15.get("volratio", np.nan))
+    return (
+        h1.get("status") == "强"
+        and bool(m15.get("breakout"))
+        and bool(m15.get("ema_structure"))
+        and bool(m15.get("macd_improving"))
+        and not pd.isna(vr)
+        and vr >= 1.20
+    )
+
+
+def breakout_confirmation_test(row, start_date, end_date):
+    """
+    对V2.0原始突破信号测试：
+    A) 突破当刻立即买
+    B) 等30分钟(2根15m)后，若仍站在原突破位和VWAP上方、1H非弱，则买
+    C) 等60分钟(4根15m)后，同样确认后再买
+    """
+    ticker = str(row["Ticker"]).strip().upper()
+    m15_all = get_replay_intraday(ticker, "15m", start_date, end_date)
+    h1_all = get_replay_intraday(ticker, "60m", start_date, end_date)
+    if m15_all is None or m15_all.empty or h1_all is None or h1_all.empty:
+        return pd.DataFrame()
+
+    start_ts = pd.Timestamp(start_date).tz_localize(MARKET_TZ)
+    end_ts = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).tz_localize(MARKET_TZ)
+    bars = m15_all[(m15_all.index >= start_ts) & (m15_all.index < end_ts)].copy()
+    if bars.empty:
+        return pd.DataFrame()
+
+    events = []
+    prev_trigger = False
+
+    for ts in bars.index:
+        m15_slice = m15_all[m15_all.index <= ts]
+        h1_slice = h1_all[h1_all.index <= ts]
+        h1 = evaluate_1h(h1_slice)
+        m15 = evaluate_15m(m15_slice)
+        trig = original_v20_breakout_trigger(row, h1, m15)
+
+        # Only count a new breakout episode once.
+        if trig and not prev_trigger:
+            signal_px = safe_float(m15.get("price", np.nan))
+            # Original breakout level = prior 20-bar high.
+            prior = m15_all[m15_all.index < ts].tail(20)
+            breakout_level = pd.to_numeric(prior["High"], errors="coerce").max() if not prior.empty else np.nan
+
+            for label, wait_bars in [("立即买",0), ("等30分钟确认",2), ("等60分钟确认",4)]:
+                if wait_bars == 0:
+                    entry_ts = ts
+                    entry_px = signal_px
+                    confirmed = True
+                else:
+                    fut = m15_all[m15_all.index > ts]
+                    if len(fut) < wait_bars:
+                        continue
+                    entry_ts = fut.index[wait_bars-1]
+
+                    # Do not confirm on a later calendar day.
+                    if entry_ts.date() != ts.date():
+                        continue
+
+                    entry_slice = m15_all[m15_all.index <= entry_ts]
+                    h1_entry_slice = h1_all[h1_all.index <= entry_ts]
+                    em15 = evaluate_15m(entry_slice)
+                    eh1 = evaluate_1h(h1_entry_slice)
+                    entry_px = safe_float(em15.get("price", np.nan))
+
+                    # Confirmation = breakout has held, still above VWAP, 1H trend not broken.
+                    confirmed = (
+                        em15.get("valid")
+                        and eh1.get("valid")
+                        and eh1.get("status") in ["强","中等"]
+                        and em15.get("above_vwap")
+                        and not pd.isna(entry_px)
+                        and not pd.isna(breakout_level)
+                        and entry_px >= breakout_level
+                    )
+
+                if not confirmed or pd.isna(entry_px) or entry_px <= 0:
+                    continue
+
+                ret_1h = _future_bar_metrics(m15_all, entry_ts, entry_px, 4)
+
+                same_day = m15_all[(m15_all.index.date == entry_ts.date()) & (m15_all.index > entry_ts)]
+                close_day = safe_float(same_day.iloc[-1]["Close"]) if not same_day.empty else entry_px
+                ret_close = ((close_day-entry_px)/entry_px*100) if entry_px > 0 else np.nan
+
+                later = m15_all[m15_all.index.date > entry_ts.date()].copy()
+                later_dates = sorted(set(later.index.date))
+                ret_1d = np.nan
+                ret_3d = np.nan
+                if len(later_dates) >= 1:
+                    d1 = later[later.index.date == later_dates[0]]
+                    p1 = safe_float(d1.iloc[-1]["Close"]) if not d1.empty else np.nan
+                    if not pd.isna(p1):
+                        ret_1d = (p1-entry_px)/entry_px*100
+                if len(later_dates) >= 3:
+                    d3 = later[later.index.date == later_dates[2]]
+                    p3 = safe_float(d3.iloc[-1]["Close"]) if not d3.empty else np.nan
+                    if not pd.isna(p3):
+                        ret_3d = (p3-entry_px)/entry_px*100
+
+                mfe1, mae1 = _future_window_excursions(m15_all, entry_ts, entry_px, 26)
+                events.append({
+                    "股票代码": ticker,
+                    "原突破时间": ts.strftime("%Y-%m-%d %H:%M"),
+                    "策略": label,
+                    "确认买入时间": entry_ts.strftime("%Y-%m-%d %H:%M"),
+                    "买入价格": entry_px,
+                    "1小时后%": ret_1h,
+                    "当日收盘%": ret_close,
+                    "下一交易日%": ret_1d,
+                    "3交易日%": ret_3d,
+                    "1日最大涨幅%": mfe1,
+                    "1日最大回撤%": mae1
+                })
+
+        prev_trigger = trig
+
+    return pd.DataFrame(events)
+
+
+def run_breakout_confirmation_batch(master_df, tickers, start_date, end_date):
+    parts = []
+    prog = st.progress(0)
+    msg = st.empty()
+    for i, ticker in enumerate(tickers, 1):
+        msg.write(f"测试突破后确认 {ticker} ({i}/{len(tickers)})")
+        rr = master_df[master_df["Ticker"].astype(str).str.upper().eq(str(ticker).upper())]
+        if not rr.empty:
+            p = breakout_confirmation_test(rr.iloc[-1], start_date, end_date)
+            if p is not None and not p.empty:
+                parts.append(p)
+        prog.progress(int(i/len(tickers)*100))
+    msg.empty()
+    prog.empty()
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def summarize_confirmation_test(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    rows = []
+    for strategy, g in df.groupby("策略", sort=False):
+        item = {"策略": strategy, "样本数": len(g)}
+        for col, name in [
+            ("1小时后%","1小时"),
+            ("当日收盘%","当日"),
+            ("下一交易日%","下一日"),
+            ("3交易日%","3日")
+        ]:
+            s = pd.to_numeric(g[col], errors="coerce").dropna()
+            item[f"{name}胜率%"] = s.gt(0).mean()*100 if len(s) else np.nan
+            item[f"{name}平均收益%"] = s.mean() if len(s) else np.nan
+        for col in ["1日最大涨幅%","1日最大回撤%"]:
+            s = pd.to_numeric(g[col], errors="coerce").dropna()
+            item[f"平均{col}"] = s.mean() if len(s) else np.nan
+        rows.append(item)
+    order = {"立即买":0, "等30分钟确认":1, "等60分钟确认":2}
+    out = pd.DataFrame(rows)
+    out["_o"] = out["策略"].map(order).fillna(9)
+    return out.sort_values("_o").drop(columns="_o").reset_index(drop=True)
+
+
 def summarize_buy_type_quality(quality_out):
     """按回踩BUY / 突破BUY分别汇总样本数、胜率、平均收益和MFE/MAE。"""
     if quality_out is None or quality_out.empty:
@@ -1428,6 +1606,59 @@ if st.button("🎯 验证当前B股票的BUY质量", use_container_width=True):
             )
 
 
+
+st.markdown("### 🧪 突破后等待确认测试")
+st.caption(
+    "这一步只做历史比较，不改变LIVE买点。用V2.0原始突破条件找信号，"
+    "比较：突破当刻立即买 vs 等30分钟确认 vs 等60分钟确认。"
+)
+
+if st.button("🧪 比较立即买 / 30分钟 / 60分钟", use_container_width=True):
+    if batch_start > batch_end:
+        st.error("开始日期不能晚于结束日期。")
+    elif not batch_tickers:
+        st.warning("当前B没有可测试股票。")
+    else:
+        with st.spinner("正在比较突破后的不同确认时间..."):
+            confirm_out = run_breakout_confirmation_batch(
+                master_df, batch_tickers, batch_start, batch_end
+            )
+
+        if confirm_out.empty:
+            st.warning("所选期间没有可用于比较的原始突破信号。")
+        else:
+            confirm_summary = summarize_confirmation_test(confirm_out)
+            st.success(
+                f"测试完成：原始突破事件 "
+                f"{confirm_out['原突破时间'].astype(str).groupby(confirm_out['股票代码']).count().sum()} 条策略记录。"
+            )
+            cfmt = {
+                c:"{:.1f}" for c in confirm_summary.columns
+                if c not in ["策略","样本数"]
+            }
+            st.dataframe(
+                confirm_summary.style.format(cfmt, na_rep=""),
+                hide_index=True,
+                use_container_width=True
+            )
+            st.caption(
+                "重点比较三行的样本数、当日/下一日胜率与平均收益、以及1日最大回撤。"
+                "只有等待确认明显优于立即买时，才考虑把BREAKOUT WATCH加入LIVE。"
+            )
+
+            with st.expander("查看每一次突破的详细结果"):
+                st.dataframe(confirm_out, hide_index=True, use_container_width=True)
+
+            ccsv = confirm_out.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "💾 下载突破确认测试结果",
+                ccsv,
+                file_name=f"B_Breakout_Confirmation_{batch_start}_{batch_end}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+
 st.markdown("### 🔎 单只股票详细REPLAY")
 replay_candidates = (
     master_df.loc[
@@ -1513,7 +1744,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V2.1规则"):
+with st.expander("查看V4.3B V2.2规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1533,6 +1764,7 @@ with st.expander("查看V4.3B V2.1规则"):
 - V1.9新增：对历史BUY首次触发点计算1小时、当日、下一交易日、3交易日收益，以及1日/3日MFE和MAE，用于验证BUY质量。
 - V2.0新增：支持最近10/20/30交易日长周期批量回放，并自动比较回踩BUY与突破BUY的胜率、平均收益、MFE和MAE。
 - V2.1只优化突破BUY：量比门槛由1.20提高到1.50；15m MACD必须为正；15m RSI限定50–70；突破价不得高于前20根15m高点0.8%以上。回踩BUY参数完全不变。
+- V2.2新增历史测试：用V2.0原始突破信号比较立即买、等待30分钟确认、等待60分钟确认；本版暂不改变LIVE等待逻辑。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
