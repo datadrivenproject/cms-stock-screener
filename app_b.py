@@ -17,9 +17,9 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V2.0 — Long Replay + BUY Type Analysis", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V2.0 — 长周期回放 + BUY类型分析")
-st.caption("LIVE保持原逻辑；REPLAY使用历史15m/60m数据快速检查过去几天的 WAIT → EARLY BUY → BUY 状态变化。B Master继续累计每日A候选。")
+st.set_page_config(page_title="CMS V4.3B V2.1 — Breakout Quality Filter", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V2.1 — 突破BUY质量优化")
+st.caption("LIVE继续使用同一套B逻辑；V2.1仅收紧突破BUY，回踩BUY不变。REPLAY继续用于验证优化前后BUY质量。B Master累计逻辑不变。")
 
 A_WORKSHEET = "A_Candidates"
 B_LOG_WORKSHEET = "B_Log"
@@ -200,6 +200,7 @@ def replay_one_ticker(row, start_date, end_date):
                 "1H状态": h1.get("status", "DATA"),
                 "15m RSI": m15.get("rsi", np.nan),
                 "15m量比": m15.get("volratio", np.nan),
+                "突破幅度%": (safe_float(m15.get("breakout_extension", np.nan))*100 if not pd.isna(safe_float(m15.get("breakout_extension", np.nan))) else np.nan),
                 "VWAP上方": "是" if m15.get("above_vwap") else "否",
                 "15m突破": "是" if m15.get("breakout") else "否",
                 "15m回踩": "是" if m15.get("pullback") else "否",
@@ -599,10 +600,13 @@ def evaluate_15m(df):
     base=max(vwap,e20) if not any(pd.isna(z) for z in [vwap,e20]) else np.nan
     ext=(price-base)/base if not pd.isna(base) and base>0 else np.nan
     overextended = (not pd.isna(ext) and ext>0.025) or (not pd.isna(rsi) and rsi>75)
+    breakout_extension = ((price-ph)/ph) if (breakout and not pd.isna(ph) and ph>0) else np.nan
+    macd_positive = (hist > 0) if not pd.isna(hist) else False
     return {
         "valid":True,"price":price,"vwap":vwap,"ema9":e9,"ema20":e20,"rsi":rsi,"atr":atr,
         "volratio":volratio,"breakout":breakout,"near":near,"above_vwap":above_vwap,
-        "ema_structure":ema_structure,"macd_improving":macd_improving,"pullback":pullback,
+        "ema_structure":ema_structure,"macd_improving":macd_improving,"macd_positive":macd_positive,
+        "breakout_extension":breakout_extension,"pullback":pullback,
         "overextended":overextended
     }
 
@@ -655,12 +659,27 @@ def decision(row,h1,m15):
     if not m15["above_vwap"]: return "🟡 WAIT","价格仍在VWAP下方",np.nan,np.nan
     if weak_fundamental(row): return "🟡 WAIT","A程序基本面/Confidence偏弱",np.nan,np.nan
 
-    breakout_buy = h1["status"]=="强" and m15["breakout"] and m15["ema_structure"] and m15["macd_improving"] and not pd.isna(m15["volratio"]) and m15["volratio"]>=1.20
+    # V2.1：只收紧“突破BUY”，回踩BUY保持V2.0完全不变。
+    breakout_ext = safe_float(m15.get("breakout_extension", np.nan))
+    breakout_rsi_ok = (not pd.isna(m15["rsi"])) and 50 <= m15["rsi"] <= 70
+    breakout_not_chasing = pd.isna(breakout_ext) or breakout_ext <= 0.008
+
+    breakout_buy = (
+        h1["status"]=="强"
+        and m15["breakout"]
+        and m15["ema_structure"]
+        and m15.get("macd_positive", False)
+        and breakout_rsi_ok
+        and breakout_not_chasing
+        and not pd.isna(m15["volratio"])
+        and m15["volratio"]>=1.50
+    )
+
     pullback_buy = h1["status"] in ["强","中等"] and m15["pullback"] and m15["macd_improving"] and (pd.isna(m15["volratio"]) or m15["volratio"]>=0.80)
 
     if breakout_buy:
         stop=min(m15["vwap"],m15["ema20"])-0.35*m15["atr"]
-        return "🟢 BUY","1H强势 + 15min放量突破 + VWAP上方 + 动量确认",m15["price"],stop
+        return "🟢 BUY","V2.1突破确认：1H强 + 15min真实突破 + MACD为正 + RSI 50–70 + 量比≥1.50 + 突破不追高",m15["price"],stop
     if pullback_buy:
         stop=min(m15["vwap"],m15["ema20"])-0.35*m15["atr"]
         return "🟢 BUY","1H趋势保持 + 15min健康回踩 + 动量改善",m15["price"],stop
@@ -689,7 +708,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V2.0 参数")
+    st.header("V4.3B V2.1 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -933,7 +952,7 @@ if "v43b_result" in st.session_state:
             text += " ｜ 需处理：" + ", ".join(actions)
         text += f" ｜ WAIT {len(waits)} ｜ AVOID {len(avoids)}"
         st.info(text)
-    fmt={"当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
+    fmt={"当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
     display_out = chinese_sheet_columns(out)
     fmt_cn = {B_DISPLAY_CN_MAP.get(k,k):v for k,v in fmt.items()}
     st.dataframe(display_out.style.format({k:v for k,v in fmt_cn.items() if k in display_out.columns},na_rep=""),hide_index=True,use_container_width=True)
@@ -1360,7 +1379,7 @@ if st.button("🎯 验证当前B股票的BUY质量", use_container_width=True):
             q4.metric("3交易日为正", f"{r3d:.0f}%" if not pd.isna(r3d) else "NA")
 
             qfmt = {
-                "BUY价格":"{:.2f}", "15m量比":"{:.2f}",
+                "BUY价格":"{:.2f}", "15m量比":"{:.2f}","突破幅度%":"{:.2f}",
                 "1小时后%":"{:.2f}", "当日收盘%":"{:.2f}",
                 "下一交易日收盘%":"{:.2f}", "3交易日收盘%":"{:.2f}",
                 "1日最大涨幅%":"{:.2f}", "1日最大回撤%":"{:.2f}",
@@ -1469,7 +1488,7 @@ if replay_candidates:
                     replay_fmt = {
                         "当前价格":"{:.2f}",
                         "15m RSI":"{:.1f}",
-                        "15m量比":"{:.2f}",
+                        "15m量比":"{:.2f}","突破幅度%":"{:.2f}",
                         "参考入场":"{:.2f}",
                         "参考止损":"{:.2f}"
                     }
@@ -1494,7 +1513,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V2.0规则"):
+with st.expander("查看V4.3B V2.1规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1513,6 +1532,7 @@ with st.expander("查看V4.3B V2.0规则"):
 - V1.8新增：一键批量诊断当前B监控股票，并统计1H、VWAP、MACD、量比、突破、回踩各门槛通过次数和主要阻挡。
 - V1.9新增：对历史BUY首次触发点计算1小时、当日、下一交易日、3交易日收益，以及1日/3日MFE和MAE，用于验证BUY质量。
 - V2.0新增：支持最近10/20/30交易日长周期批量回放，并自动比较回踩BUY与突破BUY的胜率、平均收益、MFE和MAE。
+- V2.1只优化突破BUY：量比门槛由1.20提高到1.50；15m MACD必须为正；15m RSI限定50–70；突破价不得高于前20根15m高点0.8%以上。回踩BUY参数完全不变。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
