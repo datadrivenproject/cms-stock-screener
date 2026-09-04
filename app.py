@@ -1980,11 +1980,59 @@ def render_hard_filter_diagnostics(d):
 
 
 def render_3way_hardfilter_comparison(bt):
-    """Direct same-window comparison of A3 Control vs MA200-only vs Combined."""
+    """Direct same-window comparison of A3 Control vs MA200-only vs Combined.
+
+    Robust to Streamlit hot-reload/session_state: if the cached replay was created by
+    the previous app version and does not yet contain the new comparison columns,
+    rebuild those columns directly from the cached historical rows instead of crashing.
+    """
     if bt is None or bt.empty:
         return
 
     d = bt.copy()
+
+    required_variant_cols = [
+        'HF Control', 'HF MA200-only', 'HF Combined',
+        'Rank Control', 'Rank MA200-only', 'Rank Combined'
+    ]
+    if not all(c in d.columns for c in required_variant_cols):
+        # Rebuild the three Hard Filter variants from already-computed historical features.
+        d['HF Control'] = d.apply(
+            lambda r: _historical_hard_filter_variant(r, False, False), axis=1
+        )
+        d['HF MA200-only'] = d.apply(
+            lambda r: _historical_hard_filter_variant(r, False, True), axis=1
+        )
+        d['HF Combined'] = d.apply(
+            lambda r: _historical_hard_filter_variant(r, True, True), axis=1
+        )
+
+        qorder = {'✅ 通过':0, '⚠️ 观察':1, '❌ 不适合Early':2}
+        d['_cmp_q'] = d.get('质量检查', pd.Series(index=d.index, dtype=object)).map(qorder).fillna(9)
+
+        def _rank_one_group(g, ok_col, rank_col):
+            gg = g[g[ok_col]].copy()
+            gg = gg.sort_values(
+                ['_cmp_q','Replay Core Score 85','Structure Score','Leadership Score','Accumulation Score'],
+                ascending=[True,False,False,False,False]
+            )
+            rank_map = {idx: i+1 for i, idx in enumerate(gg.index)}
+            return pd.Series([rank_map.get(idx, np.nan) for idx in g.index], index=g.index)
+
+        for ok_col, rank_col in [
+            ('HF Control','Rank Control'),
+            ('HF MA200-only','Rank MA200-only'),
+            ('HF Combined','Rank Combined')
+        ]:
+            d[rank_col] = np.nan
+            for _, idxs in d.groupby('Replay Date').groups.items():
+                g = d.loc[idxs]
+                ranks = _rank_one_group(g, ok_col, rank_col)
+                d.loc[ranks.index, rank_col] = ranks.values
+
+        d = d.drop(columns=['_cmp_q'], errors='ignore')
+        st.info('检测到旧版缓存的历史回测结果，已自动重建三版本排名；无需重新等待60日数据。')
+
     d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
     d = d.dropna(subset=['5D Max Gain'])
     if d.empty:
