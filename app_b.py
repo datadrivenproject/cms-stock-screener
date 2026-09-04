@@ -17,9 +17,9 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.6 — Persistent Master Watchlist", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.6 — 候选累计 + 持仓一体化")
-st.caption("A每天只提供当日候选；B把每天候选累计进Master。未持仓候选从最近一次入选起跟踪5个交易日；再次入选则重新计时。真实持仓不受5日限制，直到退出/止损/止盈。")
+st.set_page_config(page_title="CMS V4.3B V1.7 — Persistent Master + Replay", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.7 — 候选累计 + 历史回放")
+st.caption("LIVE保持原逻辑；REPLAY使用历史15m/60m数据快速检查过去几天的 WAIT → EARLY BUY → BUY 状态变化。B Master继续累计每日A候选。")
 
 A_WORKSHEET = "A_Candidates"
 B_LOG_WORKSHEET = "B_Log"
@@ -121,6 +121,95 @@ def get_intraday(ticker, interval, period):
         return flatten_yf(df)
     except Exception:
         return None
+
+
+@st.cache_data(ttl=900)
+def get_replay_intraday(ticker, interval, start_date, end_date):
+    """历史回放专用：一次下载日期区间数据，避免逐根K线反复请求。"""
+    try:
+        start_ts = pd.to_datetime(start_date) - pd.Timedelta(days=45)
+        end_ts = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+        df = yf.download(
+            ticker,
+            interval=interval,
+            start=start_ts.strftime("%Y-%m-%d"),
+            end=end_ts.strftime("%Y-%m-%d"),
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            prepost=False
+        )
+        x = flatten_yf(df)
+        if x is None or x.empty:
+            return None
+        # 统一成纽约时间，便于15m与60m按时间切片比较。
+        if getattr(x.index, "tz", None) is None:
+            x.index = x.index.tz_localize(MARKET_TZ)
+        else:
+            x.index = x.index.tz_convert(MARKET_TZ)
+        return x.sort_index()
+    except Exception:
+        return None
+
+
+def replay_one_ticker(row, start_date, end_date):
+    """
+    用过去真实K线逐个15分钟时点重放B的同一套decision逻辑。
+    只记录状态变化，避免输出几百行重复WAIT。
+    """
+    ticker = str(row["Ticker"]).strip().upper()
+    m15_all = get_replay_intraday(ticker, "15m", start_date, end_date)
+    h1_all = get_replay_intraday(ticker, "60m", start_date, end_date)
+
+    if m15_all is None or m15_all.empty:
+        return pd.DataFrame(), f"{ticker}: 15m历史数据不足"
+    if h1_all is None or h1_all.empty:
+        return pd.DataFrame(), f"{ticker}: 60m历史数据不足"
+
+    start_ts = pd.Timestamp(start_date).tz_localize(MARKET_TZ)
+    end_ts = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).tz_localize(MARKET_TZ)
+
+    # 仅回放常规美股交易时段内的15分钟K。
+    bars = m15_all[
+        (m15_all.index >= start_ts) &
+        (m15_all.index < end_ts)
+    ].copy()
+
+    if bars.empty:
+        return pd.DataFrame(), f"{ticker}: 所选日期没有15m交易数据"
+
+    rows = []
+    prev_status = None
+
+    for ts in bars.index:
+        # 必须只使用“当时已经发生”的数据，避免未来函数。
+        m15_slice = m15_all[m15_all.index <= ts]
+        h1_slice = h1_all[h1_all.index <= ts]
+
+        h1 = evaluate_1h(h1_slice)
+        m15 = evaluate_15m(m15_slice)
+        d, reason, entry, stop = decision(row, h1, m15)
+
+        # 只保留状态变化；首次也保留。
+        if d != prev_status:
+            rows.append({
+                "时间": ts.strftime("%Y-%m-%d %H:%M"),
+                "股票代码": ticker,
+                "状态": d,
+                "当前价格": m15.get("price", np.nan),
+                "1H状态": h1.get("status", "DATA"),
+                "15m RSI": m15.get("rsi", np.nan),
+                "15m量比": m15.get("volratio", np.nan),
+                "VWAP上方": "是" if m15.get("above_vwap") else "否",
+                "15m突破": "是" if m15.get("breakout") else "否",
+                "15m回踩": "是" if m15.get("pullback") else "否",
+                "参考入场": entry,
+                "参考止损": stop,
+                "决策依据": reason
+            })
+            prev_status = d
+
+    return pd.DataFrame(rows), None
 
 def get_a_sheet():
     if gspread is None or Credentials is None:
@@ -600,7 +689,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.6 参数")
+    st.header("V4.3B V1.7 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -861,16 +950,114 @@ if "v43b_result" in st.session_state:
         file_name=f"B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
-with st.expander("查看V4.3B V1.6规则"):
+
+st.divider()
+st.subheader("🧪 历史 REPLAY 测试")
+st.caption(
+    "不影响LIVE、不写入B_Log、不修改B_MasterList。"
+    "选择Master中的股票和过去日期后，程序会用同一套B判断逻辑逐根回放15分钟K线，只显示状态变化。"
+)
+
+replay_candidates = (
+    master_df.loc[
+        master_df["池状态"].astype(str).isin(["TRACKING","HOLDING","EXPIRED","CLOSED"]),
+        "Ticker"
+    ].astype(str).dropna().drop_duplicates().tolist()
+    if master_df is not None and not master_df.empty and "Ticker" in master_df.columns
+    else []
+)
+
+if replay_candidates:
+    rc1, rc2, rc3 = st.columns([1.2,1,1])
+    replay_ticker = rc1.selectbox("回放股票", replay_candidates, key="replay_ticker")
+    replay_end = rc3.date_input(
+        "结束日期",
+        value=market_now().date(),
+        max_value=market_now().date(),
+        key="replay_end"
+    )
+    default_start = replay_end - pd.Timedelta(days=7)
+    replay_start = rc2.date_input(
+        "开始日期",
+        value=default_start.date() if hasattr(default_start, "date") else default_start,
+        max_value=replay_end,
+        key="replay_start"
+    )
+
+    st.caption("建议一次测试 5–10 个交易日。Yahoo 15分钟历史数据可用范围有限，因此不要选择太久以前。")
+
+    if st.button("▶️ 运行历史REPLAY", use_container_width=True):
+        if replay_start > replay_end:
+            st.error("开始日期不能晚于结束日期。")
+        else:
+            sel_rows = master_df[master_df["Ticker"].astype(str).str.upper().eq(str(replay_ticker).upper())]
+            if sel_rows.empty:
+                st.error("Master里找不到这只股票。")
+            else:
+                with st.spinner(f"正在回放 {replay_ticker} ..."):
+                    replay_out, replay_err = replay_one_ticker(
+                        sel_rows.iloc[-1],
+                        replay_start,
+                        replay_end
+                    )
+
+                if replay_err:
+                    st.warning(replay_err)
+                elif replay_out.empty:
+                    st.info("所选期间没有可显示的状态变化。")
+                else:
+                    buy_count = int((replay_out["状态"] == "🟢 BUY").sum())
+                    early_count = int((replay_out["状态"] == "🟠 EARLY BUY").sum())
+                    avoid_count = int((replay_out["状态"] == "🔴 AVOID").sum())
+                    st.success(
+                        f"{replay_ticker} 回放完成：状态变化 {len(replay_out)} 次 ｜ "
+                        f"BUY {buy_count} ｜ EARLY {early_count} ｜ AVOID {avoid_count}"
+                    )
+
+                    replay_fmt = {
+                        "当前价格":"{:.2f}",
+                        "15m RSI":"{:.1f}",
+                        "15m量比":"{:.2f}",
+                        "参考入场":"{:.2f}",
+                        "参考止损":"{:.2f}"
+                    }
+                    st.dataframe(
+                        replay_out.style.format(
+                            {k:v for k,v in replay_fmt.items() if k in replay_out.columns},
+                            na_rep=""
+                        ),
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+                    replay_csv = replay_out.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "💾 下载REPLAY结果",
+                        replay_csv,
+                        file_name=f"B_Replay_{replay_ticker}_{replay_start}_{replay_end}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+else:
+    st.info("Master中暂时没有股票可用于REPLAY。")
+
+
+with st.expander("查看V4.3B V1.7规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
-**自动监控：**
+**LIVE自动监控：**
 - 页面打开期间，美股交易时段约每15分钟自动刷新并重新检查。
 - 每次15分钟检查一旦发现 WAIT → BUY / 新BUY，会立即在页面顶部提示。
 - 约每2小时显示一次状态汇总。
 - 每轮结果保存到 `B_Log`，用于识别上一轮状态。
 - 手动“立即运行”按钮保留。
+
+**REPLAY历史回放：**
+- 不写入B_Log，不修改Master，不影响LIVE。
+- 使用历史15m和60m数据逐时点调用同一套B decision逻辑。
+- 只显示状态变化，例如 WAIT → EARLY BUY → BUY → WAIT。
+- 用于快速测试BUY/EARLY BUY条件，不代表真实成交。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
