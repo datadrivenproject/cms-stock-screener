@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A.3 — Early + Fundamental Confirmation",
+    page_title="CMS Stock Screener V4.3A.3B — Strong Stock Backtest",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A.3 — Early + Fundamental Confirmation")
+st.title("📈 CMS Stock Screener V4.3A.3B — Strong Stock Backtest")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -1406,6 +1406,145 @@ def save_daily_candidates(df):
     return new_rows, updated_rows
 
 
+
+# =========================================================
+# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B
+# Keeps LIVE A ranking unchanged. Stores the whole scanned universe so we can
+# measure whether A ranks future 3–5 day big movers near the top.
+# =========================================================
+ALL_SCAN_WORKSHEET = "A_AllScannedHistory"
+
+def get_named_worksheet(name, rows=12000, cols=80):
+    if gspread is None or Credentials is None:
+        raise RuntimeError("请在 requirements.txt 中保留 gspread 和 google-auth。")
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError("未找到 Streamlit Secret [gcp_service_account]。")
+    if "tracker" not in st.secrets or "sheet_name" not in st.secrets["tracker"]:
+        raise RuntimeError("未找到 [tracker].sheet_name。")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+    client = gspread.authorize(creds)
+    book = client.open(st.secrets["tracker"]["sheet_name"])
+    try:
+        return book.worksheet(name)
+    except gspread.WorksheetNotFound:
+        return book.add_worksheet(title=name, rows=rows, cols=cols)
+
+def save_all_scanned_history(all_df):
+    """Append/update every scanned stock, not only Top10. One row per scan-date+ticker."""
+    ws = get_named_worksheet(ALL_SCAN_WORKSHEET)
+    d = all_df.copy()
+    d.insert(0, "Scan Date", datetime.now().strftime("%Y-%m-%d"))
+    d.insert(1, "Scan Time", datetime.now().strftime("%H:%M:%S"))
+    # Rank the whole universe with the same LIVE ordering logic.
+    qorder = {"✅ 通过":0, "⚠️ 观察":1, "❌ 不适合Early":2}
+    d["_q"] = d["质量检查"].map(qorder).fillna(9)
+    d = d.sort_values(["_q","Early V2 Score","Structure Score","Leadership Score","Accumulation Score"],
+                      ascending=[True,False,False,False,False]).drop(columns="_q").reset_index(drop=True)
+    d["Universe Rank"] = d.index + 1
+    keep = ["Scan Date","Scan Time","Ticker","Company","Sector","Universe Rank","Hard Filter","Hard Filter Reason",
+            "质量检查","结构阶段","Early V2 Score","Structure Score","Trend & Momentum Score","Accumulation Score",
+            "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","Dollar Volume",
+            "MA20 Slope 5D","MACD Phase","RSI14","Volume Build Ratio","Up/Down Volume Ratio",
+            "Stock vs SPY 20D","Sector vs SPY 20D","Stock vs Sector 20D","RS Acceleration","Confidence",
+            "Fundamental Confirmation"]
+    d=d[[c for c in keep if c in d.columns]].copy()
+    headers=list(d.columns)
+    existing=ws.get_all_values()
+    if not existing:
+        ws.update("A1", [headers]); existing=[headers]
+    elif existing[0] != headers:
+        # Do not destroy history when schema changes: create a fresh versioned tab.
+        raise RuntimeError("A_AllScannedHistory 表头与当前版本不同。请不要手工改表头。")
+    di=headers.index("Scan Date"); ti=headers.index("Ticker")
+    rowmap={}
+    for i,r in enumerate(existing[1:],start=2):
+        if len(r)>max(di,ti): rowmap[(str(r[di]),str(r[ti]).upper())]=i
+    new=upd=0
+    for _,r in d.iterrows():
+        vals=[_cell(r.get(c,"")) for c in headers]
+        key=(str(r["Scan Date"]),str(r["Ticker"]).upper())
+        if key in rowmap:
+            ws.update(f"A{rowmap[key]}",[vals]); upd+=1
+        else:
+            ws.append_row(vals,value_input_option="USER_ENTERED"); new+=1
+    return new,upd
+
+def load_all_scan_history():
+    ws=get_named_worksheet(ALL_SCAN_WORKSHEET)
+    vals=ws.get_all_values()
+    if len(vals)<2: return pd.DataFrame()
+    return pd.DataFrame(vals[1:],columns=vals[0])
+
+@st.cache_data(ttl=1800)
+def download_backtest_daily(tickers_tuple):
+    return safe_batch_download(tuple(tickers_tuple), "2y")
+
+def evaluate_scan_history(hist, max_rows=1500):
+    """Forward 1/3/5-trading-day outcome from scan close. No look-ahead in labels."""
+    if hist is None or hist.empty: return pd.DataFrame()
+    h=hist.copy().tail(max_rows)
+    h["Scan Date"]=pd.to_datetime(h["Scan Date"],errors="coerce")
+    h=h.dropna(subset=["Scan Date","Ticker"])
+    tickers=tuple(sorted(h["Ticker"].astype(str).str.upper().unique()))
+    px=download_backtest_daily(tickers)
+    out=[]
+    for _,r in h.iterrows():
+        t=str(r["Ticker"]).upper(); df=px.get(t)
+        if df is None or df.empty: continue
+        d=df.copy(); d.index=pd.to_datetime(d.index).tz_localize(None) if getattr(pd.to_datetime(d.index), 'tz', None) is not None else pd.to_datetime(d.index)
+        d=d.sort_index(); sd=pd.Timestamp(r["Scan Date"]).tz_localize(None)
+        base_rows=d[d.index<=sd]
+        future=d[d.index>sd].head(5)
+        if base_rows.empty or future.empty: continue
+        base=float(pd.to_numeric(base_rows["Close"],errors="coerce").iloc[-1])
+        rec=dict(r); rec["Backtest Base Close"]=base
+        for n in [1,3,5]:
+            f=future.head(n)
+            if f.empty: rec[f"{n}D Max Gain"]=np.nan; continue
+            rec[f"{n}D Max Gain"]=float(pd.to_numeric(f["High"],errors="coerce").max()/base-1)
+        if len(future)>=5:
+            rec["5D Close Return"]=float(pd.to_numeric(future["Close"],errors="coerce").iloc[4]/base-1)
+            rec["5D Max Drawdown"]=float(pd.to_numeric(future["Low"],errors="coerce").min()/base-1)
+            g=rec.get("5D Max Gain",np.nan)
+            rec["Hit +3%"] = bool(g>=0.03) if not pd.isna(g) else False
+            rec["Hit +5%"] = bool(g>=0.05) if not pd.isna(g) else False
+            rec["Hit +8%"] = bool(g>=0.08) if not pd.isna(g) else False
+            rec["Strength Class"] = "🚀 ≥8%" if g>=.08 else ("🔥 5–8%" if g>=.05 else ("🟡 2–5%" if g>=.02 else "⚪ <2%"))
+        else:
+            rec["5D Close Return"]=np.nan; rec["5D Max Drawdown"]=np.nan
+            rec["Hit +3%"] = rec["Hit +5%"] = rec["Hit +8%"] = False
+            rec["Strength Class"]="等待5个交易日"
+        out.append(rec)
+    return pd.DataFrame(out)
+
+def render_strong_stock_backtest(bt):
+    mature=bt[pd.to_numeric(bt.get("5D Max Gain"),errors="coerce").notna()].copy() if not bt.empty else pd.DataFrame()
+    if mature.empty:
+        st.warning("还没有满5个交易日的全扫描池历史。先每天保存全部扫描池，5个交易日后就能开始正式比较。")
+        return
+    mature["Universe Rank"]=pd.to_numeric(mature["Universe Rank"],errors="coerce")
+    g=pd.to_numeric(mature["5D Max Gain"],errors="coerce")
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("样本",len(mature)); c2.metric("5日≥3%",f"{(g>=.03).mean():.1%}")
+    c3.metric("5日≥5%",f"{(g>=.05).mean():.1%}"); c4.metric("5日≥8%",f"{(g>=.08).mean():.1%}")
+    strong=mature[g>=.05]
+    if len(strong):
+        s1,s2,s3=st.columns(3)
+        s1.metric("≥5%强股总数",len(strong))
+        s2.metric("强股进入Top10",f"{(strong['Universe Rank']<=10).mean():.1%}")
+        s3.metric("强股进入Top20",f"{(strong['Universe Rank']<=20).mean():.1%}")
+    st.subheader("🚀 被A排低但后来大涨的股票")
+    missed=mature[(g>=.05) & (mature["Universe Rank"]>10)].sort_values("5D Max Gain",ascending=False)
+    cols=["Scan Date","Ticker","Universe Rank","Early V2 Score","Structure Score","Trend & Momentum Score","Accumulation Score","Leadership Score","Catalyst Score","5D Max Gain","5D Close Return","5D Max Drawdown"]
+    st.dataframe(missed[[c for c in cols if c in missed.columns]].head(50),hide_index=True,use_container_width=True)
+    st.subheader("📊 Top10 vs 全扫描池")
+    rows=[]
+    for label,x in [("全部扫描池",mature),("A Top10",mature[mature["Universe Rank"]<=10]),("A Top20",mature[mature["Universe Rank"]<=20])]:
+        gg=pd.to_numeric(x["5D Max Gain"],errors="coerce")
+        rows.append({"范围":label,"样本":len(x),"≥3%":(gg>=.03).mean() if len(x) else np.nan,"≥5%":(gg>=.05).mean() if len(x) else np.nan,"≥8%":(gg>=.08).mean() if len(x) else np.nan,"平均5日最大涨幅":gg.mean() if len(x) else np.nan})
+    st.dataframe(pd.DataFrame(rows).style.format({"≥3%":"{:.1%}","≥5%":"{:.1%}","≥8%":"{:.1%}","平均5日最大涨幅":"{:.1%}"},na_rep=""),hide_index=True,use_container_width=True)
+
 # =========================================================
 # UI
 # =========================================================
@@ -1469,6 +1608,12 @@ if scan_clicked:
     st.session_state["v43a_top_df"] = top_df.copy()
     st.session_state["v43a_all_df"] = all_df.copy()
     st.session_state["v43a_scan_date"] = datetime.now().strftime("%Y-%m-%d")
+    # Full-universe history is kept separately for A strength backtesting.
+    try:
+        n_all, u_all = save_all_scanned_history(all_df)
+        st.session_state["a_all_history_save_msg"] = f"全扫描池历史：新增 {n_all} 行，更新 {u_all} 行"
+    except Exception as e:
+        st.session_state["a_all_history_save_msg"] = f"全扫描池历史保存失败：{e}"
 
 
 def render_results(top_df, all_df):
@@ -1600,3 +1745,22 @@ if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
     st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
+
+st.divider()
+st.header("🔥 A强股回测 — 全扫描池 → 排名 → Top10")
+st.caption("LIVE A选股逻辑完全不变。本模块只验证：约100只扫描池里后来真正上涨≥5%/≥8%的股票，当天被A排在第几名。")
+if "a_all_history_save_msg" in st.session_state:
+    st.info(st.session_state["a_all_history_save_msg"])
+if st.button("🧪 运行 A 强股回测", use_container_width=True):
+    try:
+        hist=load_all_scan_history()
+        if hist.empty:
+            st.warning("A_AllScannedHistory 还没有历史。请先正常运行一次A扫描；新版会自动保存约100只的完整扫描结果。")
+        else:
+            with st.spinner("正在读取历史扫描池并计算未来1/3/5个交易日表现……"):
+                bt=evaluate_scan_history(hist)
+            st.session_state["a_strong_bt"] = bt
+    except Exception as e:
+        st.error(f"A强股回测失败：{e}")
+if "a_strong_bt" in st.session_state:
+    render_strong_stock_backtest(st.session_state["a_strong_bt"])
