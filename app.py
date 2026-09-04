@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A.3B-FIX1 — Strong Stock Backtest",
+    page_title="CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A.3B-FIX1 — Strong Stock Backtest")
+st.title("📈 CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -1363,6 +1363,7 @@ def reorder_a_columns(df):
 
 
 def save_daily_candidates(df):
+    """Save Top candidates with ONE batch write instead of row-by-row API calls."""
     ws = get_daily_worksheet()
     saved = df.copy()
     scan_date = datetime.now().strftime("%Y-%m-%d")
@@ -1375,40 +1376,50 @@ def save_daily_candidates(df):
     rest = [c for c in saved.columns if c not in fixed + primary]
     saved = saved[fixed + primary + rest].copy()
     sheet_df = saved.rename(columns=A_SHEET_CN_MAP)
+    headers = list(sheet_df.columns)
 
     existing = ws.get_all_values()
-    headers = list(sheet_df.columns)
-    if not existing:
-        ws.update("A1", [headers])
-        existing = [headers]
-    elif existing[0] != headers:
+    if existing and existing[0] != headers:
+        # Schema changed: rebuild once. This costs two writes only on version changes.
         ws.clear()
-        ws.update("A1", [headers])
-        existing = [headers]
+        existing = []
 
     date_col, ticker_col = "扫描日期", "股票代码"
     date_idx, ticker_idx = headers.index(date_col), headers.index(ticker_col)
-    row_map = {}
-    for i, row in enumerate(existing[1:], start=2):
-        if len(row) > max(date_idx, ticker_idx):
-            row_map[(str(row[date_idx]), str(row[ticker_idx]).upper())] = i
 
-    new_rows = updated_rows = 0
-    for _, r in sheet_df.iterrows():
-        values = [_cell(r.get(c, "")) for c in headers]
-        key = (str(r[date_col]), str(r[ticker_col]).upper())
-        if key in row_map:
-            ws.update(f"A{row_map[key]}", [values])
+    old_rows = existing[1:] if existing else []
+    new_map = {
+        (str(r[date_col]), str(r[ticker_col]).upper()): [_cell(r.get(c, "")) for c in headers]
+        for _, r in sheet_df.iterrows()
+    }
+
+    merged_rows = []
+    seen = set()
+    updated_rows = 0
+    for row in old_rows:
+        padded = list(row) + [""] * max(0, len(headers) - len(row))
+        padded = padded[:len(headers)]
+        key = (str(padded[date_idx]), str(padded[ticker_idx]).upper())
+        if key in new_map:
+            merged_rows.append(new_map[key])
+            seen.add(key)
             updated_rows += 1
         else:
-            ws.append_row(values, value_input_option="USER_ENTERED")
-            new_rows += 1
+            merged_rows.append(padded)
+
+    for key, vals in new_map.items():
+        if key not in seen:
+            merged_rows.append(vals)
+
+    new_rows = len(new_map) - updated_rows
+    # One matrix update = one Sheets write request in normal operation.
+    ws.update("A1", [headers] + merged_rows, value_input_option="USER_ENTERED")
     return new_rows, updated_rows
 
 
 
 # =========================================================
-# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX1
+# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX2
 # Keeps LIVE A ranking unchanged. Stores the whole scanned universe so we can
 # measure whether A ranks future 3–5 day big movers near the top.
 # =========================================================
@@ -1431,48 +1442,70 @@ def get_named_worksheet(name, rows=12000, cols=80):
         return book.add_worksheet(title=name, rows=rows, cols=cols)
 
 def save_all_scanned_history(all_df):
-    """Append/update every scanned stock, not only Top10. One row per scan-date+ticker."""
+    """Save the whole scanned universe with ONE batch write per scan.
+
+    This avoids Google Sheets' per-user per-minute write quota, which the old
+    row-by-row append/update loop could hit when ~100 stocks were saved.
+    """
     ws = get_named_worksheet(ALL_SCAN_WORKSHEET)
     d = all_df.copy()
     d.insert(0, "Scan Date", datetime.now().strftime("%Y-%m-%d"))
     d.insert(1, "Scan Time", datetime.now().strftime("%H:%M:%S"))
-    # Rank the whole universe with the same LIVE ordering logic.
+
+    # Rank the whole universe with exactly the same LIVE ordering logic.
     qorder = {"✅ 通过":0, "⚠️ 观察":1, "❌ 不适合Early":2}
     d["_q"] = d["质量检查"].map(qorder).fillna(9)
-    d = d.sort_values(["_q","Early V2 Score","Structure Score","Leadership Score","Accumulation Score"],
-                      ascending=[True,False,False,False,False]).drop(columns="_q").reset_index(drop=True)
+    d = d.sort_values(
+        ["_q","Early V2 Score","Structure Score","Leadership Score","Accumulation Score"],
+        ascending=[True,False,False,False,False]
+    ).drop(columns="_q").reset_index(drop=True)
     d["Universe Rank"] = d.index + 1
+
     keep = ["Scan Date","Scan Time","Ticker","Company","Sector","Universe Rank","Hard Filter","Hard Filter Reason",
             "质量检查","结构阶段","Early V2 Score","Structure Score","Trend & Momentum Score","Accumulation Score",
             "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","Dollar Volume",
             "MA20 Slope 5D","MACD Phase","RSI14","Volume Build Ratio","Up/Down Volume Ratio",
             "Stock vs SPY 20D","Sector vs SPY 20D","Stock vs Sector 20D","RS Acceleration","Confidence",
             "Fundamental Confirmation"]
-    d=d[[c for c in keep if c in d.columns]].copy()
-    headers=list(d.columns)
-    existing=ws.get_all_values()
-    if not existing:
-        ws.update("A1", [headers]); existing=[headers]
-    elif existing[0] != headers:
-        # Backtest history is a derived diagnostic table. If an older test schema
-        # exists, rebuild this worksheet automatically so the current version can
-        # start collecting a clean, internally consistent full-universe history.
+    d = d[[c for c in keep if c in d.columns]].copy()
+    headers = list(d.columns)
+
+    existing = ws.get_all_values()
+    if existing and existing[0] != headers:
+        # Diagnostic sheet only: rebuild automatically on schema changes.
         ws.clear()
-        ws.update("A1", [headers])
-        existing = [headers]
-    di=headers.index("Scan Date"); ti=headers.index("Ticker")
-    rowmap={}
-    for i,r in enumerate(existing[1:],start=2):
-        if len(r)>max(di,ti): rowmap[(str(r[di]),str(r[ti]).upper())]=i
-    new=upd=0
-    for _,r in d.iterrows():
-        vals=[_cell(r.get(c,"")) for c in headers]
-        key=(str(r["Scan Date"]),str(r["Ticker"]).upper())
-        if key in rowmap:
-            ws.update(f"A{rowmap[key]}",[vals]); upd+=1
+        existing = []
+
+    di, ti = headers.index("Scan Date"), headers.index("Ticker")
+    old_rows = existing[1:] if existing else []
+
+    new_map = {
+        (str(r["Scan Date"]), str(r["Ticker"]).upper()): [_cell(r.get(c, "")) for c in headers]
+        for _, r in d.iterrows()
+    }
+
+    merged_rows = []
+    seen = set()
+    upd = 0
+    for row in old_rows:
+        padded = list(row) + [""] * max(0, len(headers) - len(row))
+        padded = padded[:len(headers)]
+        key = (str(padded[di]), str(padded[ti]).upper())
+        if key in new_map:
+            merged_rows.append(new_map[key])
+            seen.add(key)
+            upd += 1
         else:
-            ws.append_row(vals,value_input_option="USER_ENTERED"); new+=1
-    return new,upd
+            merged_rows.append(padded)
+
+    for key, vals in new_map.items():
+        if key not in seen:
+            merged_rows.append(vals)
+
+    new = len(new_map) - upd
+    # One bulk matrix update instead of ~100 append/update requests.
+    ws.update("A1", [headers] + merged_rows, value_input_option="USER_ENTERED")
+    return new, upd
 
 def load_all_scan_history():
     ws=get_named_worksheet(ALL_SCAN_WORKSHEET)
