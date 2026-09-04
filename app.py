@@ -1582,11 +1582,339 @@ def render_strong_stock_backtest(bt):
         rows.append({"范围":label,"样本":len(x),"≥3%":(gg>=.03).mean() if len(x) else np.nan,"≥5%":(gg>=.05).mean() if len(x) else np.nan,"≥8%":(gg>=.08).mean() if len(x) else np.nan,"平均5日最大涨幅":gg.mean() if len(x) else np.nan})
     st.dataframe(pd.DataFrame(rows).style.format({"≥3%":"{:.1%}","≥5%":"{:.1%}","≥8%":"{:.1%}","平均5日最大涨幅":"{:.1%}"},na_rep=""),hide_index=True,use_container_width=True)
 
+
+# =========================================================
+# HISTORICAL A REPLAY — V4.3A.3C
+# Re-runs the historical-price-reconstructable A core on old dates.
+# IMPORTANT: Yahoo's current news feed cannot reconstruct historical Catalyst
+# point-in-time without look-ahead, so Catalyst is EXCLUDED from replay ranking.
+# Fundamental Confirmation never entered the 100-point Early V2 score, so it is
+# also not needed for replay ranking.  The replay core is therefore 85 points:
+# Structure 25 + Trend 20 + Accumulation 20 + Leadership 20.
+# =========================================================
+
+def _norm_daily_index(df):
+    d = df.copy()
+    idx = pd.to_datetime(d.index)
+    try:
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+    except Exception:
+        pass
+    d.index = idx
+    return d.sort_index()
+
+
+def _historical_benchmark_snapshot(benchmark_data, asof_date):
+    out = {}
+    asof = pd.Timestamp(asof_date)
+    for t, df in benchmark_data.items():
+        if df is None or df.empty:
+            continue
+        d = _norm_daily_index(df)
+        d = d[d.index <= asof]
+        if d.empty:
+            continue
+        c = pd.to_numeric(d['Close'], errors='coerce').dropna()
+        if len(c) < 22:
+            continue
+        out[t] = {'5D': pct_return(c, 5), '20D': pct_return(c, 20)}
+    return out
+
+
+def _get_replay_sector_map(tickers):
+    """Prefer sectors already obtained by the LIVE scan; otherwise use cached Yahoo info."""
+    sector_map = {}
+    live = st.session_state.get('v43a_all_df')
+    if isinstance(live, pd.DataFrame) and not live.empty and {'Ticker','Sector'}.issubset(live.columns):
+        sector_map.update({
+            str(r['Ticker']).upper(): str(r['Sector'])
+            for _, r in live[['Ticker','Sector']].dropna().iterrows()
+        })
+    missing = [t for t in tickers if t not in sector_map]
+    if missing:
+        for t in missing:
+            try:
+                _, sec, _ = get_company_info(t)
+                sector_map[t] = sec
+            except Exception:
+                sector_map[t] = 'Unknown'
+    return sector_map
+
+
+def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
+    """Historical replay of A components that can be reconstructed without future data."""
+    try:
+        if df_hist is None or len(df_hist) < 210:
+            return None
+        df = _norm_daily_index(df_hist)
+        for c in ['Open','High','Low','Close','Volume']:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.dropna(subset=['High','Low','Close','Volume'])
+        if len(df) < 210:
+            return None
+
+        close, high, low, volume = df['Close'], df['High'], df['Low'], df['Volume']
+        price = float(close.iloc[-1])
+        atr14 = safe_num(calc_atr(high, low, close, 14).iloc[-1])
+        avgvol20 = safe_num(volume.rolling(20).mean().iloc[-1])
+        rvol = float(volume.iloc[-1] / avgvol20) if avgvol20 > 0 else np.nan
+        dollar_volume = price * avgvol20 if avgvol20 > 0 else 0
+        ret5, ret20 = pct_return(close, 5), pct_return(close, 20)
+
+        structure_raw = identify_market_structure(df, atr14, price)
+        m1 = score_structure(df, price, atr14, structure_raw)
+        m2 = score_trend_momentum(df)
+        m3 = score_accumulation(df)
+        m4 = score_leadership(ret5, ret20, sector, benchmarks)
+
+        replay85 = int(m1['score'] + m2['score'] + m3['score'] + m4['score'])
+        replay100 = float(replay85 / 85.0 * 100.0)
+
+        row = {
+            'Ticker': ticker,
+            'Sector': sector,
+            'Price': price,
+            'ATR14': atr14,
+            'RVOL': rvol,
+            'Dollar Volume': dollar_volume,
+            '5D Return': ret5,
+            '20D Return': ret20,
+            'Structure Score': m1['score'],
+            'Trend & Momentum Score': m2['score'],
+            'Accumulation Score': m3['score'],
+            'Leadership Score': m4['score'],
+            'Replay Core Score 85': replay85,
+            'Replay Core Score 100': replay100,
+            'Catalyst Score': np.nan,
+            'Catalyst Label': '历史回放未使用',
+            'Major Resistance Zone': m1['Major Resistance Zone'],
+            'Major Support Zone': m1['Major Support Zone'],
+            'Short-term Breakout': m1['Short-term Breakout'],
+            'Distance to Major Resistance': m1['Distance to Major Resistance'],
+            'Distance to Short Breakout': m1['Distance to Short Breakout'],
+            'Compression Ratio': m1['Compression Ratio'],
+            'R→S Flip': m1['R→S Flip'],
+            'R→S Flip Zone': m1['R→S Flip Zone'],
+            'R→S Flip Touches': m1['R→S Flip Touches'],
+            'MA20': m2['MA20'], 'MA50': m2['MA50'], 'MA200': m2['MA200'],
+            'MA20 Slope 5D': m2['MA20 Slope 5D'],
+            'MACD Phase': m2['MACD Phase'], 'RSI14': m2['RSI14'],
+            'Volume Build Ratio': m3['Volume Build Ratio'],
+            'Up/Down Volume Ratio': m3['Up/Down Volume Ratio'],
+            'OBV Trend': m3['OBV Trend'],
+            'Stock vs SPY 20D': m4['Stock vs SPY 20D'],
+            'Sector vs SPY 20D': m4['Sector vs SPY 20D'],
+            'Stock vs Sector 20D': m4['Stock vs Sector 20D'],
+            'RS Acceleration': m4['RS Acceleration'],
+        }
+
+        hard_ok, hard_reason = passes_v43a_hard_filter(row)
+        row['Hard Filter'] = '通过' if hard_ok else '未通过'
+        row['Hard Filter Reason'] = hard_reason
+
+        stage, stage_quality, stage_reason = classify_structure_stage(row, structure_raw, atr14)
+        row['结构阶段'] = stage
+        row['结构质量'] = stage_quality
+        row['结构依据'] = stage_reason
+        q, qr = quality_gate(row)
+        row['质量检查'] = q
+        row['质量原因'] = qr
+        return row
+    except Exception:
+        return None
+
+
+def _future_5d_labels(full_df, asof_date, base_close):
+    d = _norm_daily_index(full_df)
+    future = d[d.index > pd.Timestamp(asof_date)].head(5)
+    if len(future) < 5 or base_close <= 0:
+        return None
+    hi = pd.to_numeric(future['High'], errors='coerce')
+    lo = pd.to_numeric(future['Low'], errors='coerce')
+    cl = pd.to_numeric(future['Close'], errors='coerce')
+    return {
+        '1D Max Gain': float(hi.iloc[:1].max() / base_close - 1),
+        '3D Max Gain': float(hi.iloc[:3].max() / base_close - 1),
+        '5D Max Gain': float(hi.iloc[:5].max() / base_close - 1),
+        '5D Close Return': float(cl.iloc[4] / base_close - 1),
+        '5D Max Drawdown': float(lo.iloc[:5].min() / base_close - 1),
+    }
+
+
+def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
+    """Replay the historical A core across the entire current universe.
+
+    The final 5 trading days are reserved for forward outcome labels, so every
+    replayed date has a complete 5-day future window available immediately.
+    """
+    tickers = get_universe()
+    all_tickers = tuple(dict.fromkeys(tickers + BENCHMARK_TICKERS))
+    if status_box is not None:
+        status_box.write('正在下载约2年历史日K（股票池 + SPY/板块ETF）……')
+    data_all = safe_batch_download(all_tickers, '2y')
+    stock_data = {t: _norm_daily_index(data_all[t]) for t in tickers if t in data_all and data_all[t] is not None and not data_all[t].empty}
+    bench_data = {t: _norm_daily_index(data_all[t]) for t in BENCHMARK_TICKERS if t in data_all and data_all[t] is not None and not data_all[t].empty}
+
+    spy = bench_data.get('SPY')
+    if spy is None or spy.empty:
+        raise RuntimeError('历史回放无法取得 SPY 日K。')
+    spy_dates = list(spy.index)
+    if len(spy_dates) < 220 + replay_days + 5:
+        raise RuntimeError('历史数据不足，无法完成所选回放天数。')
+
+    # Mature historical dates only: exclude the latest 5 trading days.
+    mature_dates = spy_dates[:-5]
+    replay_dates = mature_dates[-int(replay_days):]
+    sector_map = _get_replay_sector_map(tickers)
+
+    all_out = []
+    total_steps = max(1, len(replay_dates) * len(tickers))
+    done = 0
+
+    for di, asof in enumerate(replay_dates, start=1):
+        if status_box is not None:
+            status_box.write(f'历史回放 {pd.Timestamp(asof).date()}（{di}/{len(replay_dates)}）— 正在扫描约{len(tickers)}只……')
+        benchmarks = _historical_benchmark_snapshot(bench_data, asof)
+        day_rows = []
+        for t in tickers:
+            full = stock_data.get(t)
+            done += 1
+            if progress_bar is not None:
+                progress_bar.progress(min(100, int(done / total_steps * 100)))
+            if full is None or full.empty:
+                continue
+            hist = full[full.index <= pd.Timestamp(asof)]
+            row = analyze_historical_a_core(t, hist, sector_map.get(t, 'Unknown'), benchmarks)
+            if row is None:
+                continue
+            row['Replay Date'] = pd.Timestamp(asof).strftime('%Y-%m-%d')
+            day_rows.append(row)
+
+        if not day_rows:
+            continue
+        day = pd.DataFrame(day_rows)
+
+        # Whole-pool rank for diagnostics.
+        qorder = {'✅ 通过':0, '⚠️ 观察':1, '❌ 不适合Early':2}
+        day['_q'] = day['质量检查'].map(qorder).fillna(9)
+        rank_cols = ['_q','Replay Core Score 85','Structure Score','Leadership Score','Accumulation Score']
+        day = day.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
+        day['Replay Universe Rank'] = day.index + 1
+
+        # Actual A candidate pool first applies Hard Filter, then uses the same quality-first ordering.
+        eligible = day[day['Hard Filter'] == '通过'].copy()
+        eligible = eligible.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
+        eligible['Replay Eligible Rank'] = eligible.index + 1
+        erank = dict(zip(eligible['Ticker'], eligible['Replay Eligible Rank']))
+        day['Replay Eligible Rank'] = day['Ticker'].map(erank)
+        day['Replay Top10'] = day['Replay Eligible Rank'].apply(lambda x: bool(pd.notna(x) and float(x) <= 10))
+
+        # Add future labels only AFTER ranking.
+        for _, r in day.iterrows():
+            rec = dict(r)
+            full = stock_data.get(str(r['Ticker']).upper())
+            labels = _future_5d_labels(full, asof, float(r['Price'])) if full is not None else None
+            if labels is not None:
+                rec.update(labels)
+                g = labels['5D Max Gain']
+                rec['Hit +3%'] = bool(g >= 0.03)
+                rec['Hit +5%'] = bool(g >= 0.05)
+                rec['Hit +8%'] = bool(g >= 0.08)
+                rec['Strength Class'] = '🚀 ≥8%' if g >= .08 else ('🔥 5–8%' if g >= .05 else ('🟡 2–5%' if g >= .02 else '⚪ <2%'))
+                all_out.append(rec)
+
+    out = pd.DataFrame(all_out)
+    if progress_bar is not None:
+        progress_bar.progress(100)
+    if status_box is not None:
+        status_box.empty()
+    return out
+
+
+def render_historical_a_replay(bt):
+    if bt is None or bt.empty:
+        st.warning('历史回放没有得到有效样本。')
+        return
+    d = bt.copy()
+    for c in ['Replay Universe Rank','Replay Eligible Rank','5D Max Gain','5D Close Return','5D Max Drawdown']:
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors='coerce')
+    g = d['5D Max Gain']
+
+    dates_n = d['Replay Date'].nunique()
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric('回放交易日', int(dates_n))
+    c2.metric('股票-日期样本', len(d))
+    c3.metric('全池 5日≥3%', f'{(g>=.03).mean():.1%}')
+    c4.metric('全池 5日≥5%', f'{(g>=.05).mean():.1%}')
+    c5.metric('全池 5日≥8%', f'{(g>=.08).mean():.1%}')
+
+    st.subheader('📊 全扫描池 vs Top30 / Top20 / Top10')
+    rows = []
+    scopes = [
+        ('全部扫描池', d),
+        ('Hard Filter通过', d[d['Hard Filter']=='通过']),
+        ('A Top30', d[d['Replay Eligible Rank']<=30]),
+        ('A Top20', d[d['Replay Eligible Rank']<=20]),
+        ('A Top10', d[d['Replay Eligible Rank']<=10]),
+    ]
+    for label, x in scopes:
+        gg = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
+        rows.append({
+            '范围': label, '样本': len(gg),
+            '≥3%命中率': (gg>=.03).mean() if len(gg) else np.nan,
+            '≥5%命中率': (gg>=.05).mean() if len(gg) else np.nan,
+            '≥8%命中率': (gg>=.08).mean() if len(gg) else np.nan,
+            '平均5日最大涨幅': gg.mean() if len(gg) else np.nan,
+            '中位数5日最大涨幅': gg.median() if len(gg) else np.nan,
+        })
+    summary = pd.DataFrame(rows)
+    st.dataframe(summary.style.format({
+        '≥3%命中率':'{:.1%}','≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}',
+        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    strong = d[d['5D Max Gain'] >= .05].copy()
+    if not strong.empty:
+        top10_capture = (strong['Replay Eligible Rank'] <= 10).fillna(False).mean()
+        top20_capture = (strong['Replay Eligible Rank'] <= 20).fillna(False).mean()
+        hf_capture = strong['Replay Eligible Rank'].notna().mean()
+        a,b,c,dcol = st.columns(4)
+        a.metric('≥5%强股总数', len(strong))
+        b.metric('通过Hard Filter', f'{hf_capture:.1%}')
+        c.metric('进入Top20', f'{top20_capture:.1%}')
+        dcol.metric('进入Top10', f'{top10_capture:.1%}')
+
+    st.subheader('🚀 漏掉的强股：后来5日≥5%，但没进A Top10')
+    missed = d[(d['5D Max Gain']>=.05) & (~d['Replay Top10'])].copy()
+    missed = missed.sort_values(['5D Max Gain','Replay Universe Rank'], ascending=[False,True])
+    cols = ['Replay Date','Ticker','Sector','Replay Universe Rank','Replay Eligible Rank','Hard Filter','Hard Filter Reason',
+            'Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
+            'MA20 Slope 5D','RS Acceleration','5D Max Gain','5D Close Return','5D Max Drawdown']
+    show = missed[[c for c in cols if c in missed.columns]].head(100)
+    fmt = {'MA20 Slope 5D':'{:.2%}','5D Max Gain':'{:+.2%}','5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'}
+    st.dataframe(show.style.format({k:v for k,v in fmt.items() if k in show.columns}, na_rep=''), hide_index=True, use_container_width=True)
+
+    st.subheader('🔎 强股 vs 弱股：A当天特征')
+    tmp = d.copy()
+    tmp['组别'] = np.where(tmp['5D Max Gain']>=.05, '强股 ≥5%', np.where(tmp['5D Max Gain']<.02, '弱股 <2%', '普通 2–5%'))
+    features = ['Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
+                'MA20 Slope 5D','Volume Build Ratio','Up/Down Volume Ratio','Stock vs SPY 20D','Stock vs Sector 20D']
+    available = [c for c in features if c in tmp.columns]
+    grp = tmp.groupby('组别')[available].mean(numeric_only=True).reset_index()
+    st.dataframe(grp.style.format({c:'{:.3f}' for c in available}, na_rep=''), hide_index=True, use_container_width=True)
+
+    csv = d.to_csv(index=False).encode('utf-8-sig')
+    st.download_button('💾 下载历史A回放明细', csv,
+                       file_name=f"V43A_Historical_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                       mime='text/csv', use_container_width=True)
+
 # =========================================================
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.3 设置")
+    st.header("V4.3A.3C 设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -1658,7 +1986,7 @@ def render_results(top_df, all_df):
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ V4.3A.3 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ V4.3A.3C 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
         # 第一屏：真正用于每天判断/复核的字段
@@ -1784,20 +2112,48 @@ else:
     st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
 
 st.divider()
-st.header("🔥 A强股回测 — 全扫描池 → 排名 → Top10")
-st.caption("LIVE A选股逻辑完全不变。本模块只验证：约100只扫描池里后来真正上涨≥5%/≥8%的股票，当天被A排在第几名。")
-if "a_all_history_save_msg" in st.session_state:
-    st.info(st.session_state["a_all_history_save_msg"])
-if st.button("🧪 运行 A 强股回测", use_container_width=True):
+st.header("🔥 A历史强股回测 — 过去行情直接Replay")
+st.caption(
+    "不用等未来5天。程序会回到过去每个交易日，用当时已有的日K重新扫描整个股票池，再查看随后1/3/5个交易日的真实表现。"
+)
+st.info(
+    "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
+    "Yahoo当前News无法可靠还原过去某一天的Catalyst，因此历史Catalyst不参与Replay排名；Fundamental本来就不进入Early V2 100分。"
+)
+
+r1, r2 = st.columns([1,2])
+with r1:
+    replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=1)
+with r2:
+    st.caption("第一次建议先跑30日。确认速度和结果后，再跑60日。最近5个交易日只作为未来结果窗口，不作为Replay起点。")
+
+if st.button("🧪 运行 A 历史强股回测", type="primary", use_container_width=True):
     try:
-        hist=load_all_scan_history()
-        if hist.empty:
-            st.warning("A_AllScannedHistory 还没有历史。请先正常运行一次A扫描；新版会自动保存约100只的完整扫描结果。")
-        else:
-            with st.spinner("正在读取历史扫描池并计算未来1/3/5个交易日表现……"):
-                bt=evaluate_scan_history(hist)
-            st.session_state["a_strong_bt"] = bt
+        p = st.progress(0)
+        s = st.empty()
+        bt = run_historical_a_replay(replay_days=int(replay_days), progress_bar=p, status_box=s)
+        st.session_state["a_historical_replay"] = bt
+        st.session_state["a_historical_replay_days"] = int(replay_days)
     except Exception as e:
-        st.error(f"A强股回测失败：{e}")
-if "a_strong_bt" in st.session_state:
-    render_strong_stock_backtest(st.session_state["a_strong_bt"])
+        st.error(f"A历史回测失败：{e}")
+
+if "a_historical_replay" in st.session_state:
+    render_historical_a_replay(st.session_state["a_historical_replay"])
+
+with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
+    if "a_all_history_save_msg" in st.session_state:
+        st.info(st.session_state["a_all_history_save_msg"])
+    st.caption("A_AllScannedHistory 保留用于以后做真实的前瞻验证，但它不是历史Replay的前提。历史Replay现在可以立刻运行。")
+    if st.button("运行已保存历史库的Forward Validation", use_container_width=True):
+        try:
+            hist = load_all_scan_history()
+            if hist.empty:
+                st.warning("A_AllScannedHistory 还没有记录。")
+            else:
+                bt_fwd = evaluate_scan_history(hist)
+                st.session_state["a_strong_bt"] = bt_fwd
+        except Exception as e:
+            st.error(f"Forward Validation失败：{e}")
+    if "a_strong_bt" in st.session_state:
+        render_strong_stock_backtest(st.session_state["a_strong_bt"])
+
