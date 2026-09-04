@@ -1306,8 +1306,9 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 # =========================================================
 # GOOGLE SHEETS — NEW TAB, DOES NOT OVERWRITE V4.2.1 TRACKER
 # =========================================================
-DAILY_WORKSHEET = "V43A3_DailyCandidates"
+DAILY_WORKSHEET = "A_Candidates"
 
+A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考'}
 
 def _cell(v):
     if v is None:
@@ -1345,6 +1346,22 @@ def get_daily_worksheet():
     return ws
 
 
+A_PRIMARY_COLS = [
+    "Ticker", "Company", "Rank", "次日决策", "Early V2 Score", "Confidence",
+    "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
+    "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
+    "Structure Score", "Trend & Momentum Score", "Accumulation Score",
+    "Leadership Score", "Catalyst Score", "Catalyst Label",
+]
+
+
+def reorder_a_columns(df):
+    """Put decision-useful A columns first without dropping any original fields."""
+    first = [c for c in A_PRIMARY_COLS if c in df.columns]
+    rest = [c for c in df.columns if c not in first]
+    return df[first + rest].copy()
+
+
 def save_daily_candidates(df):
     ws = get_daily_worksheet()
     saved = df.copy()
@@ -1353,28 +1370,33 @@ def save_daily_candidates(df):
     saved.insert(0, "Scan Date", scan_date)
     saved.insert(1, "Scan Time", scan_time)
 
+    fixed = ["Scan Date", "Scan Time"]
+    primary = [c for c in A_PRIMARY_COLS if c in saved.columns]
+    rest = [c for c in saved.columns if c not in fixed + primary]
+    saved = saved[fixed + primary + rest].copy()
+    sheet_df = saved.rename(columns=A_SHEET_CN_MAP)
+
     existing = ws.get_all_values()
-    headers = list(saved.columns)
+    headers = list(sheet_df.columns)
     if not existing:
         ws.update("A1", [headers])
         existing = [headers]
     elif existing[0] != headers:
-        # V4.3A gets its own tab, so refreshing headers is safe here.
         ws.clear()
         ws.update("A1", [headers])
         existing = [headers]
 
-    # Same Scan Date + Ticker updates rather than duplicates.
+    date_col, ticker_col = "扫描日期", "股票代码"
+    date_idx, ticker_idx = headers.index(date_col), headers.index(ticker_col)
     row_map = {}
     for i, row in enumerate(existing[1:], start=2):
-        if len(row) >= 3:
-            row_map[(row[0], row[2])] = i
+        if len(row) > max(date_idx, ticker_idx):
+            row_map[(str(row[date_idx]), str(row[ticker_idx]).upper())] = i
 
-    new_rows = 0
-    updated_rows = 0
-    for _, r in saved.iterrows():
+    new_rows = updated_rows = 0
+    for _, r in sheet_df.iterrows():
         values = [_cell(r.get(c, "")) for c in headers]
-        key = (str(r["Scan Date"]), str(r["Ticker"]))
+        key = (str(r[date_col]), str(r[ticker_col]).upper())
         if key in row_map:
             ws.update(f"A{row_map[key]}", [values])
             updated_rows += 1
@@ -1382,6 +1404,7 @@ def save_daily_candidates(df):
             ws.append_row(values, value_input_option="USER_ENTERED")
             new_rows += 1
     return new_rows, updated_rows
+
 
 # =========================================================
 # UI
@@ -1401,7 +1424,7 @@ with st.sidebar:
 
 st.info(
     "V4.3A.3 运行逻辑：约1年日K → 五大模块 → Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
-    "B/C版本以后再负责1H、15min和真正盘中买入信号。"
+    "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
 scan_clicked = st.button("🚀 运行 V4.3A 盘后扫描", type="primary", use_container_width=True)
@@ -1456,16 +1479,23 @@ def render_results(top_df, all_df):
     st.success(f"✅ V4.3A.3 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
-        "Rank", "Ticker", "Company", "次日决策", "Confidence", "Fundamental Confirmation", "Fundamental Reason",
-        "Quality Fundamental", "FCF Fundamental", "Debt Fundamental", "Valuation Fundamental", "Growth Fundamental",
-        "结构阶段", "结构依据", "质量检查", "质量原因", "Early V2 Score",
+        # 第一屏：真正用于每天判断/复核的字段
+        "Rank", "Ticker", "Company", "次日决策", "Early V2 Score", "Confidence",
+        "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
+        "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
+
+        # 第二层：解释为什么入选
+        "Fundamental Reason", "结构依据", "质量原因",
         "Structure Score", "Trend & Momentum Score", "Accumulation Score",
-        "Leadership Score", "Catalyst Score", "Price",
-        "Major Resistance Zone", "Resistance Touches", "Major Support Zone",
-        "Short-term Breakout", "R→S Flip", "R→S Flip Zone", "R→S Flip Touches", "MA20 Slope 5D", "MACD Phase", "RSI14",
+        "Leadership Score", "Catalyst Score", "Catalyst Label",
+
+        # 其余诊断/明细
+        "Quality Fundamental", "FCF Fundamental", "Debt Fundamental", "Valuation Fundamental", "Growth Fundamental",
+        "Resistance Touches", "R→S Flip", "R→S Flip Zone", "R→S Flip Touches",
+        "MA20 Slope 5D", "MACD Phase", "RSI14",
         "Volume Build Ratio", "Up/Down Volume Ratio", "OBV Trend",
         "Stock vs SPY 20D", "Sector vs SPY 20D", "Stock vs Sector 20D",
-        "RS Acceleration", "Catalyst Label", "Positive Catalyst", "Negative Catalyst",
+        "RS Acceleration", "Positive Catalyst", "Negative Catalyst",
         "ROE", "Operating Margin", "Debt to Equity", "Forward PE", "PEG", "Revenue Growth", "Earnings Growth",
         "CMS Context"
     ]
@@ -1520,12 +1550,12 @@ def render_results(top_df, all_df):
 
     st.caption(
         "注意：这里的‘一级/二级重点候选’表示第二天重点监控，不代表开盘立即买入。"
-        "真正买点将在 V4.3B/C 用1H和15min确认。"
+        "真正买点将在 V4.3B 用1H和15min确认；买入后也由B继续管理。"
     )
 
     c1, c2 = st.columns(2)
     with c1:
-        csv = top_df.to_csv(index=False).encode("utf-8-sig")
+        csv = reorder_a_columns(top_df).rename(columns=A_SHEET_CN_MAP).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "💾 下载 V4.3A Top 候选",
             csv,
