@@ -1074,10 +1074,12 @@ def passes_v43a_hard_filter(r):
         return False, "股价低于$5"
     if r["Dollar Volume"] < 20_000_000:
         return False, "流动性不足"
-    # A4 combined test: MA20 hard-filter rejection relaxed.
+    if r["Price"] < r["MA20"] * 0.99:
+        return False, "价格明显低于MA20"
     if r["Price"] < r["MA50"] * 0.97:
         return False, "价格明显低于MA50"
-    # A4 combined test: MA200 hard-filter rejection relaxed.
+    if r["Price"] < r["MA200"] * 0.95:
+        return False, "价格明显低于MA200"
     if pd.isna(r["MA20 Slope 5D"]) or r["MA20 Slope 5D"] < 0.002:
         return False, "MA20斜率不足0.2%"
     if r["Structure Score"] < 8:
@@ -1740,6 +1742,42 @@ def _future_5d_labels(full_df, asof_date, base_close):
     }
 
 
+
+def _historical_hard_filter_variant(r, relax_ma20=False, relax_ma200=False):
+    """Historical A/B test only. LIVE passes_v43a_hard_filter() is NOT changed."""
+    if r is None:
+        return False
+    try:
+        if r["Price"] < 5:
+            return False
+        if r["Dollar Volume"] < 20_000_000:
+            return False
+        if (not relax_ma20) and r["Price"] < r["MA20"] * 0.99:
+            return False
+        if r["Price"] < r["MA50"] * 0.97:
+            return False
+        if (not relax_ma200) and r["Price"] < r["MA200"] * 0.95:
+            return False
+        if pd.isna(r["MA20 Slope 5D"]) or r["MA20 Slope 5D"] < 0.002:
+            return False
+        if r["Structure Score"] < 8:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _assign_variant_rank(day, rank_cols, ok_col, rank_col):
+    eligible = day[day[ok_col]].copy()
+    eligible = eligible.sort_values(
+        rank_cols, ascending=[True, False, False, False, False]
+    ).reset_index(drop=True)
+    eligible[rank_col] = eligible.index + 1
+    rank_map = dict(zip(eligible["Ticker"], eligible[rank_col]))
+    day[rank_col] = day["Ticker"].map(rank_map)
+    return day
+
+
 def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     """Replay the historical A core across the entire current universe.
 
@@ -1800,13 +1838,32 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         day = day.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
         day['Replay Universe Rank'] = day.index + 1
 
-        # Actual A candidate pool first applies Hard Filter, then uses the same quality-first ordering.
-        eligible = day[day['Hard Filter'] == '通过'].copy()
-        eligible = eligible.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
-        eligible['Replay Eligible Rank'] = eligible.index + 1
-        erank = dict(zip(eligible['Ticker'], eligible['Replay Eligible Rank']))
-        day['Replay Eligible Rank'] = day['Ticker'].map(erank)
-        day['Replay Top10'] = day['Replay Eligible Rank'].apply(lambda x: bool(pd.notna(x) and float(x) <= 10))
+        # ---------------------------------------------------------
+        # SAME-DATE 3-WAY HARD FILTER TEST
+        # Control: original A3
+        # MA200-only: relax MA200 only
+        # Combined: relax MA20 + MA200
+        # LIVE A logic is NOT changed.
+        # ---------------------------------------------------------
+        day['HF Control'] = day.apply(
+            lambda r: _historical_hard_filter_variant(r, False, False), axis=1
+        )
+        day['HF MA200-only'] = day.apply(
+            lambda r: _historical_hard_filter_variant(r, False, True), axis=1
+        )
+        day['HF Combined'] = day.apply(
+            lambda r: _historical_hard_filter_variant(r, True, True), axis=1
+        )
+
+        day = _assign_variant_rank(day, rank_cols, 'HF Control', 'Rank Control')
+        day = _assign_variant_rank(day, rank_cols, 'HF MA200-only', 'Rank MA200-only')
+        day = _assign_variant_rank(day, rank_cols, 'HF Combined', 'Rank Combined')
+
+        # Backward-compatible aliases: existing diagnostic tables continue to show Control A3.
+        day['Replay Eligible Rank'] = day['Rank Control']
+        day['Replay Top10'] = day['Rank Control'].apply(
+            lambda x: bool(pd.notna(x) and float(x) <= 10)
+        )
 
         # Add future labels only AFTER ranking.
         for _, r in day.iterrows():
@@ -1866,7 +1923,6 @@ def add_hard_filter_diagnostic_columns(bt):
 
 
 def render_hard_filter_diagnostics(d):
-    st.info('A4-Combined Test：仅同时放宽 MA20 + MA200 Hard Filter；MA50、MA20斜率、Structure、评分和排名逻辑全部保持不变。')
     st.subheader('🧪 Hard Filter 漏杀诊断')
     st.caption('只做历史诊断，不改变 LIVE A。每只股票可能同时违反多条规则，所以“失败规则次数”允许重复计数。')
     x = add_hard_filter_diagnostic_columns(d)
@@ -1922,10 +1978,135 @@ def render_hard_filter_diagnostics(d):
     st.dataframe(ex.style.format({'MA20 Slope 5D':'{:.2%}','5D Max Gain':'{:+.2%}','5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'},na_rep=''),hide_index=True,use_container_width=True)
 
 
+
+def render_3way_hardfilter_comparison(bt):
+    """Direct same-window comparison of A3 Control vs MA200-only vs Combined."""
+    if bt is None or bt.empty:
+        return
+
+    d = bt.copy()
+    d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
+    d = d.dropna(subset=['5D Max Gain'])
+    if d.empty:
+        return
+
+    versions = [
+        ('A3 Control', 'HF Control', 'Rank Control'),
+        ('MA200-only', 'HF MA200-only', 'Rank MA200-only'),
+        ('MA20+MA200', 'HF Combined', 'Rank Combined'),
+    ]
+
+    st.header('🧪 60日同窗口三版本 A/B/C 对照')
+    st.caption(
+        '同一批历史日期、同一股票池、同一排名逻辑，只改变 Hard Filter。'
+        'LIVE A 仍保持原 A3 规则，本表只是历史实验。'
+    )
+
+    strong_all = d[d['5D Max Gain'] >= .05].copy()
+    rows = []
+    for label, hf_col, rank_col in versions:
+        top10 = d[pd.to_numeric(d[rank_col], errors='coerce') <= 10].copy()
+        gg = pd.to_numeric(top10['5D Max Gain'], errors='coerce').dropna()
+        hf_pass = float(d[hf_col].mean()) if hf_col in d.columns else np.nan
+        strong_hf_capture = (
+            float(strong_all[hf_col].mean())
+            if (not strong_all.empty and hf_col in strong_all.columns) else np.nan
+        )
+        strong_top20 = (
+            float((pd.to_numeric(strong_all[rank_col], errors='coerce') <= 20).fillna(False).mean())
+            if not strong_all.empty else np.nan
+        )
+        strong_top10 = (
+            float((pd.to_numeric(strong_all[rank_col], errors='coerce') <= 10).fillna(False).mean())
+            if not strong_all.empty else np.nan
+        )
+
+        rows.append({
+            '版本': label,
+            'Top10样本': len(gg),
+            'Top10 ≥3%': (gg >= .03).mean() if len(gg) else np.nan,
+            'Top10 ≥5%': (gg >= .05).mean() if len(gg) else np.nan,
+            'Top10 ≥8%': (gg >= .08).mean() if len(gg) else np.nan,
+            'Top10平均5日最大涨幅': gg.mean() if len(gg) else np.nan,
+            'Top10中位数5日最大涨幅': gg.median() if len(gg) else np.nan,
+            'Hard Filter通过率': hf_pass,
+            '≥5%强股通过HF': strong_hf_capture,
+            '≥5%强股进入Top20': strong_top20,
+            '≥5%强股进入Top10': strong_top10,
+        })
+
+    comp = pd.DataFrame(rows)
+
+    # Identify the best variant by the main strong-stock metrics.
+    score_cols = ['Top10 ≥5%', 'Top10 ≥8%', 'Top10平均5日最大涨幅']
+    comp['_wins'] = 0
+    for c in score_cols:
+        if comp[c].notna().any():
+            best = comp[c].max()
+            comp.loc[comp[c] == best, '_wins'] += 1
+    best_row = comp.sort_values(
+        ['_wins','Top10 ≥8%','Top10 ≥5%','Top10平均5日最大涨幅'],
+        ascending=[False,False,False,False]
+    ).iloc[0]
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric('回放交易日', int(d['Replay Date'].nunique()))
+    c2.metric('股票-日期样本', len(d))
+    c3.metric('当前领先版本', str(best_row['版本']))
+    c4.metric('领先版 Top10 ≥5%', f"{best_row['Top10 ≥5%']:.1%}")
+
+    show = comp.drop(columns=['_wins'])
+    st.dataframe(
+        show.style.format({
+            'Top10 ≥3%':'{:.1%}',
+            'Top10 ≥5%':'{:.1%}',
+            'Top10 ≥8%':'{:.1%}',
+            'Top10平均5日最大涨幅':'{:+.2%}',
+            'Top10中位数5日最大涨幅':'{:+.2%}',
+            'Hard Filter通过率':'{:.1%}',
+            '≥5%强股通过HF':'{:.1%}',
+            '≥5%强股进入Top20':'{:.1%}',
+            '≥5%强股进入Top10':'{:.1%}',
+        }, na_rep=''),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # Direct deltas vs Control make the decision easier.
+    control = comp[comp['版本']=='A3 Control'].iloc[0]
+    delta_rows = []
+    for _, r in comp[comp['版本']!='A3 Control'].iterrows():
+        delta_rows.append({
+            '测试版本': r['版本'],
+            'Δ Top10 ≥3%': r['Top10 ≥3%'] - control['Top10 ≥3%'],
+            'Δ Top10 ≥5%': r['Top10 ≥5%'] - control['Top10 ≥5%'],
+            'Δ Top10 ≥8%': r['Top10 ≥8%'] - control['Top10 ≥8%'],
+            'Δ 平均最大涨幅': r['Top10平均5日最大涨幅'] - control['Top10平均5日最大涨幅'],
+            'Δ 强股进入Top10': r['≥5%强股进入Top10'] - control['≥5%强股进入Top10'],
+        })
+    st.markdown('**相对原 A3 的净变化**')
+    delta = pd.DataFrame(delta_rows)
+    st.dataframe(
+        delta.style.format({
+            'Δ Top10 ≥3%':'{:+.1%}',
+            'Δ Top10 ≥5%':'{:+.1%}',
+            'Δ Top10 ≥8%':'{:+.1%}',
+            'Δ 平均最大涨幅':'{:+.2%}',
+            'Δ 强股进入Top10':'{:+.1%}',
+        }, na_rep=''),
+        hide_index=True,
+        use_container_width=True
+    )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
         return
+    # First show the same-window A/B/C decision table.
+    render_3way_hardfilter_comparison(bt)
+    st.divider()
+
     d = bt.copy()
     for c in ['Replay Universe Rank','Replay Eligible Rank','5D Max Gain','5D Close Return','5D Max Drawdown']:
         if c in d.columns:
@@ -2006,7 +2187,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.3D 设置")
+    st.header("V4.3A.4 Compare 设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2019,7 +2200,7 @@ with st.sidebar:
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
 
 st.info(
-    "V4.3A.3 运行逻辑：约1年日K → 五大模块 → Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
+    "LIVE A仍保持原A3规则：约1年日K → 五大模块 → 原Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
     "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
@@ -2215,11 +2396,11 @@ st.info(
 
 r1, r2 = st.columns([1,2])
 with r1:
-    replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=1)
+    replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("第一次建议先跑30日。确认速度和结果后，再跑60日。最近5个交易日只作为未来结果窗口，不作为Replay起点。")
+    st.caption("现在建议直接跑60日：同一窗口一次比较 A3 Control、MA200-only、MA20+MA200。最近5个交易日只作为未来结果窗口。")
 
-if st.button("🧪 运行 A 历史强股回测", type="primary", use_container_width=True):
+if st.button("🧪 运行 60日三版本同屏回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
