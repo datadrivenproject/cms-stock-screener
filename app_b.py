@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.9 — BUY Quality Replay", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.9 — BUY质量验证")
+st.set_page_config(page_title="CMS V4.3B V2.0 — Long Replay + BUY Type Analysis", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V2.0 — 长周期回放 + BUY类型分析")
 st.caption("LIVE保持原逻辑；REPLAY使用历史15m/60m数据快速检查过去几天的 WAIT → EARLY BUY → BUY 状态变化。B Master继续累计每日A候选。")
 
 A_WORKSHEET = "A_Candidates"
@@ -127,7 +127,7 @@ def get_intraday(ticker, interval, period):
 def get_replay_intraday(ticker, interval, start_date, end_date):
     """历史回放专用：一次下载日期区间数据，避免逐根K线反复请求。"""
     try:
-        start_ts = pd.to_datetime(start_date) - pd.Timedelta(days=45)
+        start_ts = pd.to_datetime(start_date) - pd.Timedelta(days=14)
         end_ts = pd.to_datetime(end_date) + pd.Timedelta(days=1)
         df = yf.download(
             ticker,
@@ -689,7 +689,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.9 参数")
+    st.header("V4.3B V2.0 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1210,6 +1210,19 @@ st.caption(
 
 
 st.markdown("### 🔬 一键批量诊断当前B候选")
+range_choice = st.selectbox(
+    "批量回放范围",
+    ["最近10个交易日", "最近20个交易日", "最近30个交易日", "自定义"],
+    index=2,
+    help="建议优先用最近30个交易日积累更多BUY样本。Yahoo 15分钟历史数据范围有限。"
+)
+
+range_map = {
+    "最近10个交易日": 14,
+    "最近20个交易日": 28,
+    "最近30个交易日": 42
+}
+
 bc1, bc2 = st.columns(2)
 batch_end = bc2.date_input(
     "批量结束日期",
@@ -1217,13 +1230,20 @@ batch_end = bc2.date_input(
     max_value=market_now().date(),
     key="batch_replay_end"
 )
-batch_default_start = batch_end - pd.Timedelta(days=7)
+
+if range_choice == "自定义":
+    batch_default_start = batch_end - pd.Timedelta(days=35)
+else:
+    batch_default_start = batch_end - pd.Timedelta(days=range_map[range_choice])
+
 batch_start = bc1.date_input(
     "批量开始日期",
     value=batch_default_start.date() if hasattr(batch_default_start, "date") else batch_default_start,
     max_value=batch_end,
-    key="batch_replay_start"
+    key=f"batch_replay_start_{range_choice}"
 )
+
+st.caption("推荐：先用最近30个交易日。若15分钟数据下载失败，再缩短为20个交易日。")
 
 batch_tickers = (
     monitor_df["Ticker"].astype(str).dropna().drop_duplicates().tolist()
@@ -1271,6 +1291,33 @@ if st.button("🔬 一键诊断当前B监控股票", type="primary", use_contain
                 mime="text/csv",
                 use_container_width=True
             )
+
+
+
+def summarize_buy_type_quality(quality_out):
+    """按回踩BUY / 突破BUY分别汇总样本数、胜率、平均收益和MFE/MAE。"""
+    if quality_out is None or quality_out.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for buy_type, g in quality_out.groupby("BUY类型", dropna=False):
+        item = {"BUY类型": buy_type, "样本数": len(g)}
+        for col, label in [
+            ("1小时后%", "1小时胜率%"),
+            ("当日收盘%", "当日胜率%"),
+            ("下一交易日收盘%", "下一日胜率%"),
+            ("3交易日收盘%", "3日胜率%")
+        ]:
+            s = pd.to_numeric(g[col], errors="coerce").dropna()
+            item[label] = s.gt(0).mean()*100 if len(s) else np.nan
+            item[label.replace("胜率","平均收益")] = s.mean() if len(s) else np.nan
+
+        for col in ["1日最大涨幅%","1日最大回撤%","3日最大涨幅%","3日最大回撤%"]:
+            s = pd.to_numeric(g[col], errors="coerce").dropna()
+            item[f"平均{col}"] = s.mean() if len(s) else np.nan
+        rows.append(item)
+
+    return pd.DataFrame(rows).sort_values("样本数", ascending=False).reset_index(drop=True)
 
 
 st.markdown("### 🎯 BUY质量验证")
@@ -1329,9 +1376,27 @@ if st.button("🎯 验证当前B股票的BUY质量", use_container_width=True):
                 use_container_width=True
             )
 
+            st.markdown("#### 📊 回踩 BUY vs 突破 BUY")
+            type_summary = summarize_buy_type_quality(quality_out)
+            if not type_summary.empty:
+                type_fmt = {
+                    c: "{:.1f}" for c in type_summary.columns
+                    if c not in ["BUY类型","样本数"]
+                }
+                st.dataframe(
+                    type_summary.style.format(type_fmt, na_rep=""),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                st.caption(
+                    "先看样本数，再比较胜率、平均收益、最大涨幅(MFE)和最大回撤(MAE)。"
+                    "单一类型样本少于10次时，只作为方向性参考，不建议据此大幅调参。"
+                )
+
             st.info(
                 "判断原则：先看BUY后的方向是否多数为正，再看最大涨幅(MFE)与最大回撤(MAE)。"
-                "样本只有几次时先不要据此大幅调参，继续积累更多回放样本。"
+                "目标先积累至少20–30次BUY信号；样本较少时不要据此大幅调参。"
             )
 
             qcsv = quality_out.to_csv(index=False).encode("utf-8-sig")
@@ -1429,7 +1494,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V1.9规则"):
+with st.expander("查看V4.3B V2.0规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1447,6 +1512,7 @@ with st.expander("查看V4.3B V1.9规则"):
 - 用于快速测试BUY/EARLY BUY条件，不代表真实成交。
 - V1.8新增：一键批量诊断当前B监控股票，并统计1H、VWAP、MACD、量比、突破、回踩各门槛通过次数和主要阻挡。
 - V1.9新增：对历史BUY首次触发点计算1小时、当日、下一交易日、3交易日收益，以及1日/3日MFE和MAE，用于验证BUY质量。
+- V2.0新增：支持最近10/20/30交易日长周期批量回放，并自动比较回踩BUY与突破BUY的胜率、平均收益、MFE和MAE。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
