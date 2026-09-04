@@ -1078,8 +1078,8 @@ def passes_v43a_hard_filter(r):
         return False, "价格明显低于MA20"
     if r["Price"] < r["MA50"] * 0.97:
         return False, "价格明显低于MA50"
-    if r["Price"] < r["MA200"] * 0.95:
-        return False, "价格明显低于MA200"
+    # V4.3A.4 正式规则：MA200 不再作为一票否决。
+    # MA200 仍保留在趋势/诊断字段中，但价格低于 MA200 不再自动淘汰。
     if pd.isna(r["MA20 Slope 5D"]) or r["MA20 Slope 5D"] < 0.002:
         return False, "MA20斜率不足0.2%"
     if r["Structure Score"] < 8:
@@ -2047,7 +2047,7 @@ def render_3way_hardfilter_comparison(bt):
     st.header('🧪 60日同窗口三版本 A/B/C 对照')
     st.caption(
         '同一批历史日期、同一股票池、同一排名逻辑，只改变 Hard Filter。'
-        'LIVE A 仍保持原 A3 规则，本表只是历史实验。'
+        'LIVE A 当前正式采用 MA200-only；本表保留 A3 / MA200-only / MA20+MA200 的历史对照。'
     )
 
     strong_all = d[d['5D Max Gain'] >= .05].copy()
@@ -2235,7 +2235,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.4 Compare 设置")
+    st.header("V4.3A.4 正式版设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2246,9 +2246,10 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
+    st.success("V4.3A.4 正式规则：仅放宽 MA200；MA20、MA50、MA20斜率≥0.2%、Structure 均保留。")
 
 st.info(
-    "LIVE A仍保持原A3规则：约1年日K → 五大模块 → 原Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
+    "LIVE A当前正式采用MA200-only：约1年日K → 五大模块 → 原Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
     "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
@@ -2307,7 +2308,7 @@ def render_results(top_df, all_df):
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ V4.3A.3C 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ V4.3A.4 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
         # 第一屏：真正用于每天判断/复核的字段
