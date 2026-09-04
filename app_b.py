@@ -17,9 +17,9 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.5 — Master Watchlist", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.5 — 候选池 + 持仓一体化")
-st.caption("A负责每日选股；B用Master Watchlist保存候选与真实持仓。候选最多跟踪5个A扫描交易日；真实持仓不受5日限制，直到手动退出/止损/止盈。")
+st.set_page_config(page_title="CMS V4.3B V1.6 — Persistent Master Watchlist", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.6 — 候选累计 + 持仓一体化")
+st.caption("A每天只提供当日候选；B把每天候选累计进Master。未持仓候选从最近一次入选起跟踪5个交易日；再次入选则重新计时。真实持仓不受5日限制，直到退出/止损/止盈。")
 
 A_WORKSHEET = "A_Candidates"
 B_LOG_WORKSHEET = "B_Log"
@@ -209,57 +209,143 @@ def save_b_master(df):
         return False
 
 
-def sync_master_with_a(master, active_a):
+def business_day_age(last_date, current_date):
     """
-    A每天变化；Master不覆盖。
-    - 最近5个A扫描日内候选 -> TRACKING
-    - 不再处于5日窗口且未持仓 -> EXPIRED
-    - 已持仓 -> HOLDING，永不因A名单变化而过期
+    计算从最近一次A入选日至当前A扫描日的工作日天数（含首尾）。
+    例如：同一天=1；下一个工作日=2。
+    注：这里按周一至周五计算，不额外识别美股节假日。
+    """
+    try:
+        d1 = pd.to_datetime(last_date).normalize()
+        d2 = pd.to_datetime(current_date).normalize()
+        if pd.isna(d1) or pd.isna(d2):
+            return np.nan
+        if d2 < d1:
+            return 1
+        return len(pd.bdate_range(d1, d2))
+    except Exception:
+        return np.nan
+
+
+def sync_master_with_a(master, today_a, scan_date):
+    """
+    V1.6核心：
+    - A_Candidates每天可以被覆盖，只需要保留“今天”的A结果。
+    - B_MasterList负责真正累计历史候选，每只Ticker只保留一行。
+    - 今天再次被A选中：更新最近入选日期，并把5日观察期重新从1开始。
+    - 今天未被A选中：Master仍保留；按最近入选日期继续计算5个交易日。
+    - 超过5个交易日且未持仓：EXPIRED。
+    - 已持仓：HOLDING，不受5日限制。
     """
     now = market_now().strftime("%Y-%m-%d %H:%M:%S")
+    current_day = pd.to_datetime(scan_date, errors="coerce")
+    if pd.isna(current_day):
+        current_day = pd.Timestamp(market_now().date())
+    current_day = current_day.normalize()
+    current_day_str = current_day.strftime("%Y-%m-%d")
+
     m = master.copy() if master is not None else pd.DataFrame()
     if m.empty:
         m = pd.DataFrame(columns=["Ticker"])
     if "Ticker" not in m.columns:
         m["Ticker"] = ""
+
     m["Ticker"] = m["Ticker"].astype(str).str.strip().str.upper()
 
-    # 先把未持仓旧候选标记为EXPIRED；随后活跃A候选会被重新激活。
-    if "是否持仓" not in m.columns:
-        m["是否持仓"] = "否"
-    if "池状态" not in m.columns:
-        m["池状态"] = "TRACKING"
-    holding_mask = m["是否持仓"].astype(str).isin(["是","Y","YES","TRUE","1"])
-    m.loc[holding_mask, "池状态"] = "HOLDING"
-    m.loc[~holding_mask, "池状态"] = "EXPIRED"
+    # 每只Ticker只保留Master中最后一行，避免历史误重复。
+    if not m.empty:
+        m = m.drop_duplicates("Ticker", keep="last").copy()
 
-    # 用Ticker做索引，方便更新/追加。
-    rows = {str(r.get("Ticker","")).strip().upper(): r.to_dict() for _,r in m.iterrows() if str(r.get("Ticker","")).strip()}
+    required_defaults = {
+        "是否持仓": "否",
+        "池状态": "TRACKING",
+        "首次进入B": "",
+        "最近入选日期": "",
+        "跟踪天数": "",
+        "观察剩余天数": "",
+        "最近同步A": ""
+    }
+    for c, default in required_defaults.items():
+        if c not in m.columns:
+            m[c] = default
 
-    for _, arow in active_a.iterrows():
+    # 先按Master已有记录重新计算状态，不因为今天A覆盖就删除旧候选。
+    for idx, row in m.iterrows():
+        is_holding = str(row.get("是否持仓","否")).upper() in ["是","Y","YES","TRUE","1"]
+        if is_holding:
+            m.at[idx, "池状态"] = "HOLDING"
+            m.at[idx, "观察剩余天数"] = "持仓不受限"
+            continue
+
+        last_pick = row.get("最近入选日期","")
+        age = business_day_age(last_pick, current_day)
+        if pd.isna(age):
+            # 旧Master缺最近入选日期时，不直接删除，先保留TRACKING等待下一次A同步修复。
+            m.at[idx, "池状态"] = "TRACKING"
+            continue
+
+        age = int(age)
+        m.at[idx, "跟踪天数"] = age
+        m.at[idx, "观察剩余天数"] = max(0, 6 - age)
+        m.at[idx, "池状态"] = "TRACKING" if age <= 5 else "EXPIRED"
+
+    # 处理今天A的候选：追加新Ticker；重复Ticker只更新最新A字段并重置5日计时。
+    a = today_a.copy() if today_a is not None else pd.DataFrame()
+    if not a.empty:
+        a["Ticker"] = a["Ticker"].astype(str).str.strip().str.upper()
+        a = a.drop_duplicates("Ticker", keep="last")
+
+    rows = {
+        str(r.get("Ticker","")).strip().upper(): r.to_dict()
+        for _, r in m.iterrows()
+        if str(r.get("Ticker","")).strip()
+    }
+
+    protected = {
+        "首次进入B","是否持仓","实际买入日期","实际买入价","持仓止损",
+        "TP1","TP2","退出日期","退出价","退出原因"
+    }
+
+    for _, arow in a.iterrows():
         t = str(arow.get("Ticker","")).strip().upper()
         if not t:
             continue
+
         old = rows.get(t, {})
         new = dict(old)
-        # 保存A的最新字段，但不覆盖B的持仓管理字段。
-        protected = {"首次进入B","是否持仓","实际买入日期","实际买入价","持仓止损","TP1","TP2","退出日期","退出价","退出原因"}
-        for k,v in arow.to_dict().items():
+
+        for k, v in arow.to_dict().items():
             if k not in protected:
                 new[k] = v
+
         new["Ticker"] = t
         if not old.get("首次进入B"):
             new["首次进入B"] = now
+
+        # 当天再次入选 = 重新开始5交易日观察窗口。
+        new["最近入选日期"] = current_day_str
+        new["跟踪天数"] = 1
+        new["观察剩余天数"] = 5
         new["最近同步A"] = now
+
         is_holding = str(old.get("是否持仓","否")).upper() in ["是","Y","YES","TRUE","1"]
         new["是否持仓"] = "是" if is_holding else "否"
         new["池状态"] = "HOLDING" if is_holding else "TRACKING"
+
+        # 如果以前已经CLOSED，但今天重新被A选中，则允许重新进入观察池。
+        if str(old.get("池状态","")).upper() == "CLOSED" and not is_holding:
+            new["退出日期"] = old.get("退出日期","")
+            new["退出价"] = old.get("退出价","")
+            new["退出原因"] = old.get("退出原因","")
+
         rows[t] = new
 
     out = pd.DataFrame(list(rows.values())) if rows else pd.DataFrame(columns=["Ticker"])
     if not out.empty:
         out["Ticker"] = out["Ticker"].astype(str).str.upper()
-        out = out.sort_values(["池状态","Ticker"], kind="stable").reset_index(drop=True)
+        state_order = {"HOLDING":0, "TRACKING":1, "EXPIRED":2, "CLOSED":3}
+        out["_state_order"] = out.get("池状态","").map(state_order).fillna(9)
+        out = out.sort_values(["_state_order","Ticker"], kind="stable").drop(columns="_state_order").reset_index(drop=True)
     return out
 
 def active_master_pool(master, max_candidates=20):
@@ -346,36 +432,44 @@ def append_b_log(out, run_time):
 
 @st.cache_data(ttl=300)
 def load_latest_a_candidates():
+    """
+    A_Candidates允许每天覆盖。
+    B这里只读取A表“最新扫描日”的当日候选，不再假设A表保存最近5天。
+    历史5日累计完全由B_MasterList负责。
+    """
     ws = get_a_sheet()
     rec = ws.get_all_records()
     if not rec:
         return pd.DataFrame(), None
+
     df = normalize_sheet_columns(pd.DataFrame(rec))
     if "Ticker" not in df.columns:
         raise RuntimeError("A_Candidates 缺少‘股票代码’列。")
+
     date_col = next((c for c in ["Scan Date","Date","日期","扫描日期"] if c in df.columns), None)
     if date_col is None:
         raise RuntimeError("A_Candidates 缺少‘扫描日期’列。")
+
     df["_scan_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
     df = df[df["_scan_date"].notna()].copy()
     if df.empty:
         return pd.DataFrame(), None
-    df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
-    scan_days = sorted(df["_scan_date"].drop_duplicates())
-    latest_day = scan_days[-1]; active_days = scan_days[-5:]
-    active = df[df["_scan_date"].isin(active_days)].copy()
-    last_dates = active.groupby("Ticker")["_scan_date"].max().to_dict()
-    active = active.sort_values(["Ticker","_scan_date"]).drop_duplicates("Ticker",keep="last").copy()
-    day_pos = {d:i for i,d in enumerate(scan_days)}
-    active["最近入选日期"] = active["Ticker"].map(last_dates)
-    active["跟踪天数"] = active["最近入选日期"].map(lambda d: day_pos[latest_day]-day_pos[d]+1)
-    active["观察剩余天数"] = 6-active["跟踪天数"]
-    active["池状态"] = "TRACKING"
-    if "Rank" in active.columns:
-        active["Rank"] = pd.to_numeric(active["Rank"],errors="coerce")
-        active = active.sort_values(["最近入选日期","Rank"],ascending=[False,True])
-    active["最近入选日期"] = pd.to_datetime(active["最近入选日期"]).dt.strftime("%Y-%m-%d")
-    return active.reset_index(drop=True), latest_day.strftime("%Y-%m-%d")
+
+    latest_day = df["_scan_date"].max()
+    today = df[df["_scan_date"].eq(latest_day)].copy()
+    today["Ticker"] = today["Ticker"].astype(str).str.strip().str.upper()
+    today = today.drop_duplicates("Ticker", keep="last")
+
+    if "Rank" in today.columns:
+        today["Rank"] = pd.to_numeric(today["Rank"], errors="coerce")
+        today = today.sort_values("Rank", ascending=True, na_position="last")
+
+    today["最近入选日期"] = latest_day.strftime("%Y-%m-%d")
+    today["跟踪天数"] = 1
+    today["观察剩余天数"] = 5
+    today["池状态"] = "TRACKING"
+
+    return today.reset_index(drop=True), latest_day.strftime("%Y-%m-%d")
 
 
 def evaluate_1h(df):
@@ -506,7 +600,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.5 参数")
+    st.header("V4.3B V1.6 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -548,14 +642,14 @@ if a_df.empty:
     st.warning("A候选为空，请先盘后运行V4.3A.3。")
     st.stop()
 
-# 关键变化：A只负责提供最近5个扫描日候选；B Master负责长期保存当前状态。
+# V1.6关键变化：A只提供当天候选；B Master负责累计历史候选并独立计算5交易日有效期。
 master_df = load_b_master()
-master_df = sync_master_with_a(master_df, a_df)
+master_df = sync_master_with_a(master_df, a_df, scan_date)
 save_b_master(master_df)
 monitor_df = active_master_pool(master_df, max_candidates=max_names)
 
 st.success(
-    f"A基准日：{scan_date} ｜ B当前监控{len(monitor_df)}只 "
+    f"A最新扫描日：{scan_date} ｜ B当前监控{len(monitor_df)}只 "
     f"（候选{int((monitor_df.get('池状态','')=='TRACKING').sum()) if not monitor_df.empty else 0}，"
     f"持仓{int((monitor_df.get('池状态','')=='HOLDING').sum()) if not monitor_df.empty else 0}）。"
 )
@@ -767,7 +861,7 @@ if "v43b_result" in st.session_state:
         file_name=f"B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
-with st.expander("查看V4.3B V1.5规则"):
+with st.expander("查看V4.3B V1.6规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -778,7 +872,7 @@ with st.expander("查看V4.3B V1.5规则"):
 - 每轮结果保存到 `B_Log`，用于识别上一轮状态。
 - 手动“立即运行”按钮保留。
 
-**5交易日退出机制：** 未买入候选从最近一次A入选起最多跟踪5个A扫描交易日；期间再次被A选中则重新计时；明显1H破坏可提前AVOID；超过5日后自动从滚动池消失。真实BUY后不应按5日退出，而应转入持仓/C程序持续跟踪，直到SELL / STOP / TAKE PROFIT。
+**5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
 - 1H：EMA20/EMA50、MACD、RSI确认大方向。
 - 15min：VWAP、EMA9/EMA20、MACD、RSI、成交量、突破和回踩。
