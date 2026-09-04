@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V2.3 — Profit Giveback Test", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V2.3 — 3日涨幅与利润回吐测试")
+st.set_page_config(page_title="CMS V4.3B V2.3.1 — Profit Giveback Test Fix", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V2.3.1 — 3日涨幅与利润回吐测试")
 st.caption("V2.2先测试“突破后等待确认”，暂不把等待逻辑放进LIVE。LIVE仍沿用V2.1；回踩BUY和B Master累计逻辑不变。")
 
 A_WORKSHEET = "A_Candidates"
@@ -708,7 +708,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V2.3 参数")
+    st.header("V4.3B V2.3.1 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1367,7 +1367,7 @@ def three_day_giveback_metrics(m15_all, entry_ts, entry_px):
     if not dates:
         return np.nan, np.nan, np.nan
     use_dates = dates[:3]
-    x = m15_all[m15_all.index.date.astype(object).isin(use_dates)]
+    x = m15_all[np.isin(m15_all.index.date, use_dates)]
     x = x[x.index >= entry_ts]
     if x.empty or pd.isna(entry_px) or entry_px <= 0:
         return np.nan, np.nan, np.nan
@@ -1831,7 +1831,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V2.3规则"):
+with st.expander("查看V4.3B V2.3.1规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
