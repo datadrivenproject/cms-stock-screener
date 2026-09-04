@@ -1832,6 +1832,97 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     return out
 
 
+
+
+def hard_filter_rule_failures(r):
+    """Return every failed hard-filter rule, not just the first one. Diagnostic only."""
+    fails = []
+    try:
+        if pd.isna(r.get('Price')) or r.get('Price', 0) < 5:
+            fails.append('股价低于$5')
+        if pd.isna(r.get('Dollar Volume')) or r.get('Dollar Volume', 0) < 20_000_000:
+            fails.append('流动性不足')
+        if pd.isna(r.get('MA20')) or r.get('Price', np.nan) < r.get('MA20', np.nan) * 0.99:
+            fails.append('价格明显低于MA20')
+        if pd.isna(r.get('MA50')) or r.get('Price', np.nan) < r.get('MA50', np.nan) * 0.97:
+            fails.append('价格明显低于MA50')
+        if pd.isna(r.get('MA200')) or r.get('Price', np.nan) < r.get('MA200', np.nan) * 0.95:
+            fails.append('价格明显低于MA200')
+        if pd.isna(r.get('MA20 Slope 5D')) or r.get('MA20 Slope 5D', np.nan) < 0.002:
+            fails.append('MA20斜率不足0.2%')
+        if pd.isna(r.get('Structure Score')) or r.get('Structure Score', 0) < 8:
+            fails.append('市场结构不足')
+    except Exception:
+        return ['数据不足']
+    return fails
+
+
+def add_hard_filter_diagnostic_columns(bt):
+    if bt is None or bt.empty:
+        return bt
+    x = bt.copy()
+    all_fails = x.apply(lambda r: hard_filter_rule_failures(r), axis=1)
+    x['Hard Filter All Failures'] = all_fails.apply(lambda z: '；'.join(z) if z else '通过')
+    x['Hard Filter Failure Count'] = all_fails.apply(len)
+    return x
+
+
+def render_hard_filter_diagnostics(d):
+    st.subheader('🧪 Hard Filter 漏杀诊断')
+    st.caption('只做历史诊断，不改变 LIVE A。每只股票可能同时违反多条规则，所以“失败规则次数”允许重复计数。')
+    x = add_hard_filter_diagnostic_columns(d)
+    rejected = x[x['Hard Filter'] != '通过'].copy()
+    if rejected.empty:
+        st.info('历史回放中没有被 Hard Filter 淘汰的样本。')
+        return
+
+    rules = ['股价低于$5','流动性不足','价格明显低于MA20','价格明显低于MA50','价格明显低于MA200','MA20斜率不足0.2%','市场结构不足']
+    rows=[]
+    strong5 = x['5D Max Gain'] >= .05
+    strong8 = x['5D Max Gain'] >= .08
+    weak = x['5D Max Gain'] < .02
+    total_rej5 = int(((x['Hard Filter']!='通过') & strong5).sum())
+    total_rej8 = int(((x['Hard Filter']!='通过') & strong8).sum())
+    for rule in rules:
+        failed = x['Hard Filter All Failures'].str.contains(rule, regex=False, na=False)
+        n_all = int(failed.sum())
+        n5 = int((failed & strong5).sum())
+        n8 = int((failed & strong8).sum())
+        nw = int((failed & weak).sum())
+        rows.append({
+            'Hard Filter规则':rule,
+            '失败样本':n_all,
+            '其中5日≥5%':n5,
+            '占全部被漏≥5%强股': n5/total_rej5 if total_rej5 else np.nan,
+            '其中5日≥8%':n8,
+            '占全部被漏≥8%强股': n8/total_rej8 if total_rej8 else np.nan,
+            '其中弱股<2%':nw,
+            '强股/弱股比': n5/nw if nw else np.nan,
+        })
+    diag=pd.DataFrame(rows).sort_values(['其中5日≥5%','其中5日≥8%'],ascending=False)
+    st.dataframe(diag.style.format({'占全部被漏≥5%强股':'{:.1%}','占全部被漏≥8%强股':'{:.1%}','强股/弱股比':'{:.2f}'},na_rep=''),hide_index=True,use_container_width=True)
+
+    st.markdown('**如果只放宽一条规则：理论上能救回多少强股，同时会放进多少弱股**')
+    # A sample is rescued by relaxing one rule only if it fails exactly that one rule.
+    relax_rows=[]
+    for rule in rules:
+        only = (x['Hard Filter Failure Count']==1) & x['Hard Filter All Failures'].eq(rule)
+        n= int(only.sum()); n5=int((only & strong5).sum()); n8=int((only & strong8).sum()); nw=int((only & weak).sum())
+        relax_rows.append({
+            '单独放宽规则':rule,'新增进入样本':n,'救回≥5%强股':n5,'救回≥8%强股':n8,'同时放入弱股<2%':nw,
+            '≥5%强股占新增': n5/n if n else np.nan,
+            '救回强股/弱股': n5/nw if nw else np.nan,
+        })
+    relax=pd.DataFrame(relax_rows).sort_values(['救回≥5%强股','救回≥8%强股'],ascending=False)
+    st.dataframe(relax.style.format({'≥5%强股占新增':'{:.1%}','救回强股/弱股':'{:.2f}'},na_rep=''),hide_index=True,use_container_width=True)
+
+    st.markdown('**被 Hard Filter 淘汰但后来 5日≥8% 的代表性强股**')
+    examples=x[(x['Hard Filter']!='通过') & (x['5D Max Gain']>=.08)].copy().sort_values('5D Max Gain',ascending=False)
+    cols=['Replay Date','Ticker','Replay Universe Rank','Hard Filter All Failures','Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score','MA20 Slope 5D','5D Max Gain','5D Close Return','5D Max Drawdown']
+    ex=examples[[c for c in cols if c in examples.columns]].head(100)
+    st.dataframe(ex.style.format({'MA20 Slope 5D':'{:.2%}','5D Max Gain':'{:+.2%}','5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'},na_rep=''),hide_index=True,use_container_width=True)
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -1886,6 +1977,8 @@ def render_historical_a_replay(bt):
         c.metric('进入Top20', f'{top20_capture:.1%}')
         dcol.metric('进入Top10', f'{top10_capture:.1%}')
 
+    render_hard_filter_diagnostics(d)
+
     st.subheader('🚀 漏掉的强股：后来5日≥5%，但没进A Top10')
     missed = d[(d['5D Max Gain']>=.05) & (~d['Replay Top10'])].copy()
     missed = missed.sort_values(['5D Max Gain','Replay Universe Rank'], ascending=[False,True])
@@ -1914,7 +2007,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.3C 设置")
+    st.header("V4.3A.3D 设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
