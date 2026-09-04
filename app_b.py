@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.8 — Batch Diagnostic Replay", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.8 — 批量诊断回放")
+st.set_page_config(page_title="CMS V4.3B V1.9 — BUY Quality Replay", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.9 — BUY质量验证")
 st.caption("LIVE保持原逻辑；REPLAY使用历史15m/60m数据快速检查过去几天的 WAIT → EARLY BUY → BUY 状态变化。B Master继续累计每日A候选。")
 
 A_WORKSHEET = "A_Candidates"
@@ -689,7 +689,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.8 参数")
+    st.header("V4.3B V1.9 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -952,6 +952,137 @@ if "v43b_result" in st.session_state:
 
 
 
+
+def _future_bar_metrics(m15_all, signal_ts, entry_price, bars_ahead):
+    """BUY之后固定15m根数的收益；若数据不足返回NaN。"""
+    if m15_all is None or m15_all.empty or pd.isna(entry_price) or entry_price <= 0:
+        return np.nan
+    fut = m15_all[m15_all.index > signal_ts]
+    if len(fut) < bars_ahead:
+        return np.nan
+    px = safe_float(fut.iloc[bars_ahead - 1]["Close"])
+    return ((px - entry_price) / entry_price * 100) if not pd.isna(px) else np.nan
+
+
+def _future_window_excursions(m15_all, signal_ts, entry_price, bars_ahead):
+    """BUY后指定窗口的最大有利涨幅(MFE)和最大不利回撤(MAE)。"""
+    if m15_all is None or m15_all.empty or pd.isna(entry_price) or entry_price <= 0:
+        return np.nan, np.nan
+    fut = m15_all[m15_all.index > signal_ts].head(bars_ahead)
+    if fut.empty:
+        return np.nan, np.nan
+    hi = pd.to_numeric(fut["High"], errors="coerce").max()
+    lo = pd.to_numeric(fut["Low"], errors="coerce").min()
+    mfe = ((hi - entry_price) / entry_price * 100) if not pd.isna(hi) else np.nan
+    mae = ((lo - entry_price) / entry_price * 100) if not pd.isna(lo) else np.nan
+    return mfe, mae
+
+
+def buy_quality_replay(row, start_date, end_date):
+    """
+    找出BUY状态“首次切入”的时点，并评估后续表现。
+    1小时=4根15m；当日收盘=同交易日最后一根；1/3交易日用后续交易日收盘。
+    """
+    ticker = str(row["Ticker"]).strip().upper()
+    m15_all = get_replay_intraday(ticker, "15m", start_date, end_date)
+    h1_all = get_replay_intraday(ticker, "60m", start_date, end_date)
+
+    if m15_all is None or m15_all.empty or h1_all is None or h1_all.empty:
+        return pd.DataFrame()
+
+    start_ts = pd.Timestamp(start_date).tz_localize(MARKET_TZ)
+    end_ts = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).tz_localize(MARKET_TZ)
+    bars = m15_all[(m15_all.index >= start_ts) & (m15_all.index < end_ts)].copy()
+    if bars.empty:
+        return pd.DataFrame()
+
+    signals = []
+    prev_state = None
+
+    for ts in bars.index:
+        m15_slice = m15_all[m15_all.index <= ts]
+        h1_slice = h1_all[h1_all.index <= ts]
+        h1 = evaluate_1h(h1_slice)
+        m15 = evaluate_15m(m15_slice)
+        if not h1.get("valid") or not m15.get("valid"):
+            continue
+
+        d, reason, entry, stop = decision(row, h1, m15)
+
+        # 只把从非BUY切换到BUY的那一刻当作一次BUY信号，避免连续BUY重复计算。
+        if d == "🟢 BUY" and prev_state != "🟢 BUY":
+            entry_px = safe_float(m15.get("price", entry))
+            signal_date = ts.date()
+
+            # 1小时后
+            ret_1h = _future_bar_metrics(m15_all, ts, entry_px, 4)
+
+            # 当日收盘
+            same_day = m15_all[(m15_all.index.date == signal_date) & (m15_all.index > ts)]
+            close_day = safe_float(same_day.iloc[-1]["Close"]) if not same_day.empty else entry_px
+            ret_close = ((close_day-entry_px)/entry_px*100) if entry_px > 0 else np.nan
+
+            # 后续交易日收盘
+            later = m15_all[m15_all.index.date > signal_date].copy()
+            later_dates = sorted(set(later.index.date))
+            ret_1d = np.nan
+            ret_3d = np.nan
+            if len(later_dates) >= 1:
+                d1 = later[later.index.date == later_dates[0]]
+                p1 = safe_float(d1.iloc[-1]["Close"]) if not d1.empty else np.nan
+                if not pd.isna(p1):
+                    ret_1d = (p1-entry_px)/entry_px*100
+            if len(later_dates) >= 3:
+                d3 = later[later.index.date == later_dates[2]]
+                p3 = safe_float(d3.iloc[-1]["Close"]) if not d3.empty else np.nan
+                if not pd.isna(p3):
+                    ret_3d = (p3-entry_px)/entry_px*100
+
+            # 未来约1交易日(26根15m)和3交易日(78根15m)的MFE/MAE
+            mfe_1d, mae_1d = _future_window_excursions(m15_all, ts, entry_px, 26)
+            mfe_3d, mae_3d = _future_window_excursions(m15_all, ts, entry_px, 78)
+
+            signals.append({
+                "股票代码": ticker,
+                "BUY时间": ts.strftime("%Y-%m-%d %H:%M"),
+                "BUY价格": entry_px,
+                "BUY类型": "突破" if m15.get("breakout") else ("回踩" if m15.get("pullback") else "其他"),
+                "1H状态": h1.get("status",""),
+                "15m量比": safe_float(m15.get("volratio",np.nan)),
+                "1小时后%": ret_1h,
+                "当日收盘%": ret_close,
+                "下一交易日收盘%": ret_1d,
+                "3交易日收盘%": ret_3d,
+                "1日最大涨幅%": mfe_1d,
+                "1日最大回撤%": mae_1d,
+                "3日最大涨幅%": mfe_3d,
+                "3日最大回撤%": mae_3d,
+                "参考止损": stop,
+                "触发依据": reason
+            })
+
+        prev_state = d
+
+    return pd.DataFrame(signals)
+
+
+def run_buy_quality_batch(master_df, tickers, start_date, end_date):
+    all_parts = []
+    prog = st.progress(0)
+    msg = st.empty()
+    for i, ticker in enumerate(tickers, 1):
+        msg.write(f"验证BUY质量 {ticker} ({i}/{len(tickers)})")
+        rr = master_df[master_df["Ticker"].astype(str).str.upper().eq(str(ticker).upper())]
+        if not rr.empty:
+            part = buy_quality_replay(rr.iloc[-1], start_date, end_date)
+            if part is not None and not part.empty:
+                all_parts.append(part)
+        prog.progress(int(i / len(tickers) * 100))
+    msg.empty()
+    prog.empty()
+    return pd.concat(all_parts, ignore_index=True) if all_parts else pd.DataFrame()
+
+
 def diagnose_replay_ticker(row, start_date, end_date):
     """批量诊断：统计每个BUY门槛在历史15m时点满足了多少次，以及主要阻挡条件。"""
     ticker = str(row["Ticker"]).strip().upper()
@@ -1141,6 +1272,78 @@ if st.button("🔬 一键诊断当前B监控股票", type="primary", use_contain
                 use_container_width=True
             )
 
+
+st.markdown("### 🎯 BUY质量验证")
+st.caption(
+    "使用当前完全相同的B BUY逻辑，找出历史BUY首次触发点，并检查买入后1小时、当日收盘、"
+    "下一交易日和3交易日表现，以及1日/3日最大涨幅与最大回撤。"
+)
+
+if st.button("🎯 验证当前B股票的BUY质量", use_container_width=True):
+    if batch_start > batch_end:
+        st.error("开始日期不能晚于结束日期。")
+    elif not batch_tickers:
+        st.warning("当前B没有可验证股票。")
+    else:
+        with st.spinner("正在验证历史BUY后的表现..."):
+            quality_out = run_buy_quality_batch(master_df, batch_tickers, batch_start, batch_end)
+
+        if quality_out.empty:
+            st.warning("所选期间没有找到BUY信号，因此没有BUY质量结果。")
+        else:
+            nsignals = len(quality_out)
+            nstocks = quality_out["股票代码"].nunique()
+
+            def _positive_rate(col):
+                s = pd.to_numeric(quality_out[col], errors="coerce").dropna()
+                return (s.gt(0).mean()*100) if len(s) else np.nan
+
+            r1h = _positive_rate("1小时后%")
+            rclose = _positive_rate("当日收盘%")
+            r1d = _positive_rate("下一交易日收盘%")
+            r3d = _positive_rate("3交易日收盘%")
+
+            st.success(
+                f"BUY质量验证完成：{nstocks}只股票，共{nsignals}次BUY信号。"
+            )
+            q1,q2,q3,q4 = st.columns(4)
+            q1.metric("1小时后为正", f"{r1h:.0f}%" if not pd.isna(r1h) else "NA")
+            q2.metric("当日收盘为正", f"{rclose:.0f}%" if not pd.isna(rclose) else "NA")
+            q3.metric("下一交易日为正", f"{r1d:.0f}%" if not pd.isna(r1d) else "NA")
+            q4.metric("3交易日为正", f"{r3d:.0f}%" if not pd.isna(r3d) else "NA")
+
+            qfmt = {
+                "BUY价格":"{:.2f}", "15m量比":"{:.2f}",
+                "1小时后%":"{:.2f}", "当日收盘%":"{:.2f}",
+                "下一交易日收盘%":"{:.2f}", "3交易日收盘%":"{:.2f}",
+                "1日最大涨幅%":"{:.2f}", "1日最大回撤%":"{:.2f}",
+                "3日最大涨幅%":"{:.2f}", "3日最大回撤%":"{:.2f}",
+                "参考止损":"{:.2f}"
+            }
+            st.dataframe(
+                quality_out.style.format(
+                    {k:v for k,v in qfmt.items() if k in quality_out.columns},
+                    na_rep=""
+                ),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.info(
+                "判断原则：先看BUY后的方向是否多数为正，再看最大涨幅(MFE)与最大回撤(MAE)。"
+                "样本只有几次时先不要据此大幅调参，继续积累更多回放样本。"
+            )
+
+            qcsv = quality_out.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "💾 下载BUY质量结果",
+                qcsv,
+                file_name=f"B_BUY_Quality_{batch_start}_{batch_end}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+
 st.markdown("### 🔎 单只股票详细REPLAY")
 replay_candidates = (
     master_df.loc[
@@ -1226,7 +1429,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V1.8规则"):
+with st.expander("查看V4.3B V1.9规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1243,6 +1446,7 @@ with st.expander("查看V4.3B V1.8规则"):
 - 只显示状态变化，例如 WAIT → EARLY BUY → BUY → WAIT。
 - 用于快速测试BUY/EARLY BUY条件，不代表真实成交。
 - V1.8新增：一键批量诊断当前B监控股票，并统计1H、VWAP、MACD、量比、突破、回踩各门槛通过次数和主要阻挡。
+- V1.9新增：对历史BUY首次触发点计算1小时、当日、下一交易日、3交易日收益，以及1日/3日MFE和MAE，用于验证BUY质量。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
