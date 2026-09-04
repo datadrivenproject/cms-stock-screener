@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A.3B — Strong Stock Backtest",
+    page_title="CMS Stock Screener V4.3A.3B-FIX1 — Strong Stock Backtest",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A.3B — Strong Stock Backtest")
+st.title("📈 CMS Stock Screener V4.3A.3B-FIX1 — Strong Stock Backtest")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -1408,7 +1408,7 @@ def save_daily_candidates(df):
 
 
 # =========================================================
-# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B
+# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX1
 # Keeps LIVE A ranking unchanged. Stores the whole scanned universe so we can
 # measure whether A ranks future 3–5 day big movers near the top.
 # =========================================================
@@ -1454,8 +1454,12 @@ def save_all_scanned_history(all_df):
     if not existing:
         ws.update("A1", [headers]); existing=[headers]
     elif existing[0] != headers:
-        # Do not destroy history when schema changes: create a fresh versioned tab.
-        raise RuntimeError("A_AllScannedHistory 表头与当前版本不同。请不要手工改表头。")
+        # Backtest history is a derived diagnostic table. If an older test schema
+        # exists, rebuild this worksheet automatically so the current version can
+        # start collecting a clean, internally consistent full-universe history.
+        ws.clear()
+        ws.update("A1", [headers])
+        existing = [headers]
     di=headers.index("Scan Date"); ti=headers.index("Ticker")
     rowmap={}
     for i,r in enumerate(existing[1:],start=2):
