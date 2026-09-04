@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS V4.3B V1.7 — Persistent Master + Replay", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener V4.3B V1.7 — 候选累计 + 历史回放")
+st.set_page_config(page_title="CMS V4.3B V1.8 — Batch Diagnostic Replay", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener V4.3B V1.8 — 批量诊断回放")
 st.caption("LIVE保持原逻辑；REPLAY使用历史15m/60m数据快速检查过去几天的 WAIT → EARLY BUY → BUY 状态变化。B Master继续累计每日A候选。")
 
 A_WORKSHEET = "A_Candidates"
@@ -689,7 +689,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("V4.3B V1.7 参数")
+    st.header("V4.3B V1.8 参数")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -951,6 +951,125 @@ if "v43b_result" in st.session_state:
         mime="text/csv",use_container_width=True)
 
 
+
+def diagnose_replay_ticker(row, start_date, end_date):
+    """批量诊断：统计每个BUY门槛在历史15m时点满足了多少次，以及主要阻挡条件。"""
+    ticker = str(row["Ticker"]).strip().upper()
+    m15_all = get_replay_intraday(ticker, "15m", start_date, end_date)
+    h1_all = get_replay_intraday(ticker, "60m", start_date, end_date)
+
+    if m15_all is None or m15_all.empty or h1_all is None or h1_all.empty:
+        return {
+            "股票代码": ticker, "有效K线": 0, "BUY次数": 0, "EARLY次数": 0,
+            "1H强/中等": 0, "VWAP上方": 0, "MACD改善": 0,
+            "量比≥1.20": 0, "量比≥0.80": 0, "15m突破": 0, "15m回踩": 0,
+            "主要阻挡": "历史数据不足"
+        }
+
+    start_ts = pd.Timestamp(start_date).tz_localize(MARKET_TZ)
+    end_ts = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).tz_localize(MARKET_TZ)
+    bars = m15_all[(m15_all.index >= start_ts) & (m15_all.index < end_ts)].copy()
+
+    counts = {
+        "有效K线":0, "BUY次数":0, "EARLY次数":0,
+        "1H强/中等":0, "VWAP上方":0, "MACD改善":0,
+        "量比≥1.20":0, "量比≥0.80":0, "15m突破":0, "15m回踩":0
+    }
+    blockers = {
+        "1H趋势不足":0, "VWAP下方":0, "MACD未改善":0,
+        "量能不足":0, "缺突破/回踩":0, "基本面/信心偏弱":0, "追高过滤":0
+    }
+
+    prev_state = None
+    buy_transitions = 0
+    early_transitions = 0
+
+    for ts in bars.index:
+        m15_slice = m15_all[m15_all.index <= ts]
+        h1_slice = h1_all[h1_all.index <= ts]
+        h1 = evaluate_1h(h1_slice)
+        m15 = evaluate_15m(m15_slice)
+
+        if not h1.get("valid") or not m15.get("valid"):
+            continue
+
+        counts["有效K线"] += 1
+        if h1.get("status") in ["强","中等"]:
+            counts["1H强/中等"] += 1
+        if m15.get("above_vwap"):
+            counts["VWAP上方"] += 1
+        if m15.get("macd_improving"):
+            counts["MACD改善"] += 1
+        vr = safe_float(m15.get("volratio", np.nan))
+        if not pd.isna(vr) and vr >= 1.20:
+            counts["量比≥1.20"] += 1
+        if not pd.isna(vr) and vr >= 0.80:
+            counts["量比≥0.80"] += 1
+        if m15.get("breakout"):
+            counts["15m突破"] += 1
+        if m15.get("pullback"):
+            counts["15m回踩"] += 1
+
+        d, _, _, _ = decision(row, h1, m15)
+        if d == "🟢 BUY" and prev_state != "🟢 BUY":
+            buy_transitions += 1
+        if d == "🟠 EARLY BUY" and prev_state != "🟠 EARLY BUY":
+            early_transitions += 1
+        prev_state = d
+
+        # 诊断“为什么没有BUY”，按当前B逻辑的门槛顺序统计。
+        if h1.get("status") == "弱":
+            blockers["1H趋势不足"] += 1
+            continue
+        if m15.get("overextended"):
+            blockers["追高过滤"] += 1
+            continue
+        if not m15.get("above_vwap"):
+            blockers["VWAP下方"] += 1
+            continue
+        if weak_fundamental(row):
+            blockers["基本面/信心偏弱"] += 1
+            continue
+        if not m15.get("macd_improving"):
+            blockers["MACD未改善"] += 1
+            continue
+
+        breakout_path = bool(m15.get("breakout"))
+        pullback_path = bool(m15.get("pullback"))
+        if not breakout_path and not pullback_path:
+            blockers["缺突破/回踩"] += 1
+        elif breakout_path and (pd.isna(vr) or vr < 1.20) and not pullback_path:
+            blockers["量能不足"] += 1
+        elif pullback_path and (not pd.isna(vr) and vr < 0.80) and not breakout_path:
+            blockers["量能不足"] += 1
+
+    counts["BUY次数"] = buy_transitions
+    counts["EARLY次数"] = early_transitions
+
+    if counts["有效K线"] == 0:
+        main_block = "无有效K线"
+    else:
+        max_block = max(blockers.values()) if blockers else 0
+        main_block = max(blockers, key=blockers.get) if max_block > 0 else "条件总体通过"
+
+    return {"股票代码":ticker, **counts, "主要阻挡":main_block}
+
+
+def run_batch_replay(master_df, tickers, start_date, end_date):
+    rows = []
+    prog = st.progress(0)
+    msg = st.empty()
+    for i, ticker in enumerate(tickers, 1):
+        msg.write(f"批量诊断 {ticker} ({i}/{len(tickers)})")
+        rr = master_df[master_df["Ticker"].astype(str).str.upper().eq(str(ticker).upper())]
+        if not rr.empty:
+            rows.append(diagnose_replay_ticker(rr.iloc[-1], start_date, end_date))
+        prog.progress(int(i / len(tickers) * 100))
+    msg.empty()
+    prog.empty()
+    return pd.DataFrame(rows)
+
+
 st.divider()
 st.subheader("🧪 历史 REPLAY 测试")
 st.caption(
@@ -958,6 +1077,71 @@ st.caption(
     "选择Master中的股票和过去日期后，程序会用同一套B判断逻辑逐根回放15分钟K线，只显示状态变化。"
 )
 
+
+st.markdown("### 🔬 一键批量诊断当前B候选")
+bc1, bc2 = st.columns(2)
+batch_end = bc2.date_input(
+    "批量结束日期",
+    value=market_now().date(),
+    max_value=market_now().date(),
+    key="batch_replay_end"
+)
+batch_default_start = batch_end - pd.Timedelta(days=7)
+batch_start = bc1.date_input(
+    "批量开始日期",
+    value=batch_default_start.date() if hasattr(batch_default_start, "date") else batch_default_start,
+    max_value=batch_end,
+    key="batch_replay_start"
+)
+
+batch_tickers = (
+    monitor_df["Ticker"].astype(str).dropna().drop_duplicates().tolist()
+    if monitor_df is not None and not monitor_df.empty and "Ticker" in monitor_df.columns
+    else []
+)
+
+if st.button("🔬 一键诊断当前B监控股票", type="primary", use_container_width=True):
+    if batch_start > batch_end:
+        st.error("开始日期不能晚于结束日期。")
+    elif not batch_tickers:
+        st.warning("当前B没有可诊断股票。")
+    else:
+        with st.spinner("正在批量回放并诊断BUY门槛..."):
+            batch_out = run_batch_replay(master_df, batch_tickers, batch_start, batch_end)
+
+        if batch_out.empty:
+            st.warning("没有得到批量诊断结果。")
+        else:
+            total_buy = int(batch_out["BUY次数"].sum())
+            total_early = int(batch_out["EARLY次数"].sum())
+            names_with_buy = int((batch_out["BUY次数"] > 0).sum())
+            names_with_early = int((batch_out["EARLY次数"] > 0).sum())
+
+            st.success(
+                f"批量诊断完成：{len(batch_out)}只 ｜ "
+                f"出现BUY的股票 {names_with_buy}只 / BUY状态变化 {total_buy}次 ｜ "
+                f"出现EARLY的股票 {names_with_early}只 / EARLY状态变化 {total_early}次"
+            )
+
+            st.dataframe(batch_out, hide_index=True, use_container_width=True)
+
+            if names_with_buy == 0:
+                st.warning("⚠️ 当前样本没有任何BUY。先看“主要阻挡”和各门槛通过次数，再决定是否放松参数。")
+            elif names_with_buy <= max(1, len(batch_out)//5):
+                st.info("BUY触发较少，系统可能偏严格；建议结合主要阻挡列判断具体该调哪一关。")
+            else:
+                st.info("已有多只股票产生BUY，暂不建议整体放松条件，应优先检查BUY后的表现。")
+
+            batch_csv = batch_out.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "💾 下载批量诊断结果",
+                batch_csv,
+                file_name=f"B_Batch_Diagnostic_{batch_start}_{batch_end}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+st.markdown("### 🔎 单只股票详细REPLAY")
 replay_candidates = (
     master_df.loc[
         master_df["池状态"].astype(str).isin(["TRACKING","HOLDING","EXPIRED","CLOSED"]),
@@ -1042,7 +1226,7 @@ else:
     st.info("Master中暂时没有股票可用于REPLAY。")
 
 
-with st.expander("查看V4.3B V1.7规则"):
+with st.expander("查看V4.3B V1.8规则"):
     st.markdown("""
 **B不重新选股，也没有第二套100分。**
 
@@ -1058,6 +1242,7 @@ with st.expander("查看V4.3B V1.7规则"):
 - 使用历史15m和60m数据逐时点调用同一套B decision逻辑。
 - 只显示状态变化，例如 WAIT → EARLY BUY → BUY → WAIT。
 - 用于快速测试BUY/EARLY BUY条件，不代表真实成交。
+- V1.8新增：一键批量诊断当前B监控股票，并统计1H、VWAP、MACD、量比、突破、回踩各门槛通过次数和主要阻挡。
 
 **5交易日退出机制（V1.6）：** A表可以每天覆盖，只保留当天候选。B_MasterList独立累计每天A候选；未买入股票从最近一次A入选日起最多跟踪5个交易日，期间再次被A选中则重新从第1天计时；超过5日变为EXPIRED。真实持仓不受5日限制，直到SELL / STOP / TAKE PROFIT。
 
