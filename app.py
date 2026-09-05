@@ -2316,9 +2316,18 @@ def render_a4_a5_resonance_comparison(bt):
     if bt is None or bt.empty:
         return
     d = bt.copy()
-    req = ['Replay Date','Ticker','Replay Eligible Rank','5D Max Gain','A5决策','共振数']
-    if any(c not in d.columns for c in req):
-        st.warning("当前缓存是旧Replay，请重新运行历史回测一次，生成A5共振字段。")
+    req = [
+        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain',
+        'A5决策','共振数',
+        'MACD共振','KDJ共振','RSI共振','量价共振','RS共振','图形共振'
+    ]
+    missing = [c for c in req if c not in d.columns]
+    if missing:
+        st.warning(
+            "当前 Session 里还是旧版本 Replay 缓存，缺少 A5.1 新字段："
+            + "、".join(missing)
+            + "。请点击上面的“🧪 运行 60日三版本同屏回测”重新跑一次。"
+        )
         return
 
     d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
@@ -2869,7 +2878,11 @@ if st.button("🧪 运行 60日三版本同屏回测", type="primary", use_conta
         st.error(f"A历史回测失败：{e}")
 
 if "a_historical_replay" in st.session_state:
-    render_historical_a_replay(st.session_state["a_historical_replay"])
+    _cached_bt = st.session_state["a_historical_replay"]
+    _need_cols = {'A5决策','图形共振','RS共振'}
+    if not _need_cols.issubset(set(_cached_bt.columns)):
+        st.info("检测到旧版本历史回测缓存。A5.1 图形字段尚未生成，请重新点击上面的 60 日回测按钮。")
+    render_historical_a_replay(_cached_bt)
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
