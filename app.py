@@ -4,6 +4,26 @@ import numpy as np
 import yfinance as yf
 import time
 from datetime import datetime, timezone
+import os
+import io
+import json
+import base64
+import random
+import re
+
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from matplotlib.patches import Rectangle
+except ImportError:
+    plt = None
+    mdates = None
+    Rectangle = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 try:
     import gspread
@@ -16,14 +36,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest",
+    page_title="CMS Stock Screener A6 — Vision Prototype",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest")
+st.title("👁️ CMS Stock Screener A6 — Vision + 量 + 势 Prototype")
 st.caption(
-    "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
+    "A6为Vision验证版：正式A/B/C逻辑暂不替换。盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -2819,6 +2839,388 @@ if scan_clicked:
         st.session_state["a_all_history_save_msg"] = f"全扫描池历史保存失败：{e}"
 
 
+
+# =========================================================
+# A6 VISION PROTOTYPE
+# =========================================================
+VISION_MODEL_DEFAULT = "gpt-5.6-terra"
+
+def _get_openai_api_key():
+    """Read key from Streamlit secrets first, then environment."""
+    try:
+        if "OPENAI_API_KEY" in st.secrets:
+            return str(st.secrets["OPENAI_API_KEY"]).strip()
+    except Exception:
+        pass
+    return os.getenv("OPENAI_API_KEY", "").strip()
+
+
+def _normalize_ohlcv(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x = df.copy()
+    if isinstance(x.columns, pd.MultiIndex):
+        x.columns = [c[0] if isinstance(c, tuple) else c for c in x.columns]
+    needed = ["Open", "High", "Low", "Close", "Volume"]
+    if not set(needed).issubset(x.columns):
+        return pd.DataFrame()
+    x = x[needed].copy()
+    for c in needed:
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+    x = x.dropna(subset=["Open", "High", "Low", "Close"])
+    x.index = pd.to_datetime(x.index).tz_localize(None)
+    return x.sort_index()
+
+
+def _draw_candles(ax, x, title):
+    """Draw actual candles from OHLCV. No support/resistance formula is overlaid."""
+    if x.empty:
+        return
+    dates = mdates.date2num(x.index.to_pydatetime())
+    width = 0.62
+
+    # Moving averages are visual context only, not support/resistance outputs.
+    ma20 = x["Close"].rolling(20).mean()
+    ma50 = x["Close"].rolling(50).mean()
+    ma200 = x["Close"].rolling(200).mean()
+
+    for d, (_, r) in zip(dates, x.iterrows()):
+        up = r["Close"] >= r["Open"]
+        body_low = min(r["Open"], r["Close"])
+        body_h = max(abs(r["Close"] - r["Open"]), max(r["Close"], 1) * 0.001)
+        edge = "tab:green" if up else "tab:red"
+        face = "white" if up else edge
+        ax.vlines(d, r["Low"], r["High"], linewidth=0.8, color=edge)
+        ax.add_patch(Rectangle(
+            (d - width/2, body_low), width, body_h,
+            facecolor=face, edgecolor=edge, linewidth=0.8
+        ))
+
+    ax.plot(dates, ma20.values, linewidth=1.1, label="MA20")
+    ax.plot(dates, ma50.values, linewidth=1.1, label="MA50")
+    if ma200.notna().any():
+        ax.plot(dates, ma200.values, linewidth=1.0, label="MA200")
+
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.12)
+    ax.legend(loc="upper left", fontsize=7, ncol=3)
+    ax.xaxis_date()
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+
+
+def _draw_volume(ax, x):
+    dates = mdates.date2num(x.index.to_pydatetime())
+    for d, (_, r) in zip(dates, x.iterrows()):
+        up = r["Close"] >= r["Open"]
+        c = "tab:green" if up else "tab:red"
+        ax.bar(d, r["Volume"], width=0.62, color=c, alpha=0.65)
+    ax.set_ylabel("Volume", fontsize=8)
+    ax.grid(alpha=0.08)
+    ax.xaxis_date()
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+
+
+def make_vision_chart_png(ticker, asof_date, full_df=None):
+    """
+    Create one true chart image with two horizons:
+      left: 120 trading days
+      right: 60 trading days
+    Both end exactly at asof_date. Future bars are never shown.
+    """
+    if plt is None or Rectangle is None:
+        raise RuntimeError("缺少 matplotlib。请在 requirements.txt 增加 matplotlib。")
+
+    if full_df is None or full_df.empty:
+        full_df = safe_download_single(str(ticker), "2y")
+    x = _normalize_ohlcv(full_df)
+    if x.empty:
+        raise RuntimeError(f"{ticker}: 无法取得OHLCV")
+
+    cutoff = pd.Timestamp(asof_date).tz_localize(None)
+    hist = x[x.index <= cutoff].copy()
+    if len(hist) < 70:
+        raise RuntimeError(f"{ticker}: 选股日前历史K线不足70根")
+
+    x120 = hist.tail(120)
+    x60 = hist.tail(60)
+
+    fig = plt.figure(figsize=(16, 8.5), dpi=120)
+    gs = fig.add_gridspec(
+        2, 2, height_ratios=[4.5, 1.15],
+        hspace=0.06, wspace=0.10
+    )
+    ax120 = fig.add_subplot(gs[0, 0])
+    av120 = fig.add_subplot(gs[1, 0], sharex=ax120)
+    ax60 = fig.add_subplot(gs[0, 1])
+    av60 = fig.add_subplot(gs[1, 1], sharex=ax60)
+
+    _draw_candles(ax120, x120, f"{ticker} | 120D structure | as of {cutoff.date()}")
+    _draw_volume(av120, x120)
+    _draw_candles(ax60, x60, f"{ticker} | 60D setup | as of {cutoff.date()}")
+    _draw_volume(av60, x60)
+
+    ax120.set_ylabel("Price")
+    ax60.set_ylabel("Price")
+    plt.setp(ax120.get_xticklabels(), visible=False)
+    plt.setp(ax60.get_xticklabels(), visible=False)
+
+    fig.suptitle(
+        "VISION INPUT — only bars available on/before the as-of date are shown",
+        fontsize=12, y=0.995
+    )
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+A6_VISION_PROMPT = """
+你是CMS股票系统的第一审：视觉K线分析员。
+
+你看到的是同一只股票截至某个历史选股日的两张真实蜡烛K线：
+左边120个交易日用于看大结构；右边60个交易日用于看当前形态。
+底部为真实成交量。图中可能包含MA20/MA50/MA200作为视觉参考。
+
+严格规则：
+1. 只根据图片中实际可见的K线和成交量判断，不允许假设未来。
+2. 支撑区、压力区、买点、止损参考区必须从真实图形视觉结构中判断，
+   不得用“最近20日最高价”等机械公式冒充视觉支撑/压力。
+3. 先看大结构，再看当前位置，再看形态。局部Higher Low/收缩不能覆盖更大的下降结构。
+4. 重点区分：
+   - 上升趋势中的健康缩量回踩/再启动
+   - VCP/平台收缩后的潜在突破
+   - Bull Flag
+   - Higher Low + 突破前一个小高点
+   与
+   - 暴跌后的修复反弹
+   - 高位滞涨/衰竭
+   - 上方压力过近
+   - 假突破/长上影
+   - 放量但价格不前进
+5. “图形结论”只允许：买 / 不买。
+6. 不因为MACD、RSI等单一指标决定图形结论；它们由第二审“量+势”再确认。
+7. 返回纯JSON，不要markdown，不要额外文字。
+
+JSON字段：
+{
+  "图形结论": "买或不买",
+  "大结构": "一句话",
+  "当前阶段": "一句话",
+  "图形类型": "例如VCP/Bull Flag/缩量回踩/Higher Low/无有效形态",
+  "图形质量": "强/中/弱",
+  "支撑区": "从图形目测出的价格区间；看不清写不确定",
+  "压力区": "从图形目测出的价格区间；看不清写不确定",
+  "上方空间": "充足/一般/受限/不确定",
+  "潜在买点": "视觉上真正需要等待/触发的位置；没有则写无",
+  "无效条件": "图形被破坏的视觉条件",
+  "核心理由": "最多3句，说明为什么买或不买"
+}
+"""
+
+
+def _extract_json_object(s):
+    if not s:
+        raise ValueError("AI返回为空")
+    s = s.strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", s, flags=re.S)
+    if not m:
+        raise ValueError("AI没有返回JSON对象")
+    return json.loads(m.group(0))
+
+
+def call_vision_ai(png_bytes, model=VISION_MODEL_DEFAULT):
+    if OpenAI is None:
+        raise RuntimeError("缺少 openai Python package。请在 requirements.txt 增加 openai。")
+    key = _get_openai_api_key()
+    if not key:
+        raise RuntimeError(
+            "没有找到 OPENAI_API_KEY。请在 Streamlit Cloud → App settings → Secrets "
+            "加入：OPENAI_API_KEY = \"你的API key\""
+        )
+
+    client = OpenAI(api_key=key)
+    data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+
+    response = client.responses.create(
+        model=model,
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": A6_VISION_PROMPT},
+                {"type": "input_image", "image_url": data_url}
+            ]
+        }]
+    )
+    result = _extract_json_object(response.output_text)
+    return result
+
+
+def _a6_volume_force_from_row(r):
+    """
+    Second review = 量 + 势.
+    This deliberately does NOT calculate support/resistance or chart positions.
+    """
+    vol_ok = str(r.get("量价共振", "否")) == "是"
+    rs_ok = str(r.get("RS共振", "否")) == "是"
+    mom = sum(str(r.get(c, "否")) == "是" for c in ["MACD共振", "KDJ共振", "RSI共振"])
+    force_ok = bool(rs_ok and mom >= 1)
+    return vol_ok, force_ok, mom
+
+
+def _pick_blind_vision_cases(bt, n=10):
+    """
+    Choose cases without using future return to decide which rows are shown to Vision.
+    Prefer historical A4/A5 candidates so this tests realistic stock-selection cases.
+    """
+    if bt is None or bt.empty:
+        return pd.DataFrame()
+    d = bt.copy()
+    needed = {"Ticker", "Replay Date"}
+    if not needed.issubset(d.columns):
+        return pd.DataFrame()
+
+    # Prefer rows that were already meaningful candidates. No future-return filter here.
+    if "A4 Rank" in d.columns:
+        rank = pd.to_numeric(d["A4 Rank"], errors="coerce")
+        pool = d[rank <= 10].copy()
+        if pool.empty:
+            pool = d.copy()
+    else:
+        pool = d.copy()
+
+    pool = pool.drop_duplicates(["Replay Date", "Ticker"]).copy()
+    # deterministic blind sample so reruns are comparable
+    pool["_key"] = pool["Replay Date"].astype(str) + "|" + pool["Ticker"].astype(str)
+    pool["_rnd"] = pool["_key"].map(lambda z: abs(hash(z)) % 10_000_000)
+    pool = pool.sort_values("_rnd").drop(columns=["_key", "_rnd"])
+    return pool.head(int(n)).copy()
+
+
+def render_a6_vision_prototype(bt):
+    st.divider()
+    st.header("👁️ A6 Vision Prototype — 真正看K线图 + 量 + 势")
+    st.caption(
+        "这是验证模块，不替换正式A/B/C。Vision只看选股日及之前的真实120D+60D K线图片；"
+        "支撑、压力、买点全部由图片视觉判断。随后才用量价 + RS/Momentum做第二审。"
+    )
+
+    if bt is None or bt.empty:
+        st.info("请先运行上面的60日历史Replay。")
+        return
+
+    cases = _pick_blind_vision_cases(bt, 10)
+    if cases.empty:
+        st.warning("当前Replay数据不足以建立Vision测试案例。")
+        return
+
+    st.write(f"本轮盲测案例：**{len(cases)}只**。选案例时没有使用未来5日涨跌结果。")
+    model = st.selectbox(
+        "Vision模型",
+        ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
+        index=0,
+        help="Terra作为第一轮平衡成本与能力的默认模型。"
+    )
+
+    if st.button("👁️ 运行10只 Vision 盲测", type="primary", use_container_width=True):
+        results = []
+        progress = st.progress(0)
+        status = st.empty()
+
+        for i, (_, r) in enumerate(cases.iterrows(), start=1):
+            ticker = str(r["Ticker"])
+            asof = r["Replay Date"]
+            status.write(f"Vision正在看图：{i}/{len(cases)} — {ticker} — {asof}")
+            row_out = {
+                "Ticker": ticker,
+                "Replay Date": asof,
+            }
+            try:
+                full = safe_download_single(ticker, "2y")
+                png = make_vision_chart_png(ticker, asof, full)
+                vision = call_vision_ai(png, model=model)
+
+                vol_ok, force_ok, mom_n = _a6_volume_force_from_row(r)
+                vision_buy = str(vision.get("图形结论", "")).strip() == "买"
+
+                # Final 图+量+势 rule: three layers must agree.
+                final_buy = bool(vision_buy and vol_ok and force_ok)
+
+                row_out.update(vision)
+                row_out["量"] = "是" if vol_ok else "否"
+                row_out["势"] = "是" if force_ok else "否"
+                row_out["动量确认数"] = mom_n
+                row_out["A6最终结果"] = "买" if final_buy else "不买"
+
+                # Reveal future result only AFTER Vision decision is complete.
+                for c in ["5D Max Gain", "5D Close Return", "5D Max Drawdown"]:
+                    if c in r.index:
+                        row_out[c] = r.get(c)
+
+                # Save image in session state for visual audit.
+                st.session_state[f"a6_img_{ticker}_{asof}"] = png
+
+            except Exception as e:
+                row_out["A6最终结果"] = "错误"
+                row_out["错误"] = str(e)
+
+            results.append(row_out)
+            progress.progress(i / len(cases))
+
+        st.session_state["a6_vision_results"] = pd.DataFrame(results)
+        status.success("A6 Vision 盲测完成。未来5日结果是在Vision判断结束后才揭示。")
+
+    if "a6_vision_results" in st.session_state:
+        out = st.session_state["a6_vision_results"].copy()
+        first_cols = [
+            "A6最终结果","Ticker","Replay Date","图形结论","图形质量","图形类型",
+            "量","势","大结构","当前阶段","支撑区","压力区","上方空间",
+            "潜在买点","无效条件","核心理由",
+            "5D Max Gain","5D Close Return","5D Max Drawdown","错误"
+        ]
+        first_cols = [c for c in first_cols if c in out.columns]
+        rest = [c for c in out.columns if c not in first_cols]
+        st.dataframe(out[first_cols + rest], use_container_width=True, hide_index=True)
+
+        if "5D Max Gain" in out.columns:
+            g = pd.to_numeric(out["5D Max Gain"], errors="coerce")
+            buymask = out["A6最终结果"].eq("买") & g.notna()
+            if buymask.any():
+                b = g[buymask]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("A6买入样本", int(buymask.sum()))
+                c2.metric("≥5%", f"{(b >= .05).mean():.1%}")
+                c3.metric("≥8%", f"{(b >= .08).mean():.1%}")
+                c4.metric("弱<2%", f"{(b < .02).mean():.1%}")
+
+        st.subheader("🔍 人工复核：AI到底看到了什么")
+        for _, rr in out.iterrows():
+            key = f"a6_img_{rr.get('Ticker')}_{rr.get('Replay Date')}"
+            png = st.session_state.get(key)
+            if png:
+                with st.expander(
+                    f"{rr.get('Ticker')} | Vision={rr.get('图形结论','')} | "
+                    f"A6={rr.get('A6最终结果','')} | 5D Max={rr.get('5D Max Gain','')}"
+                ):
+                    st.image(png, use_container_width=True)
+                    st.write({
+                        "大结构": rr.get("大结构"),
+                        "当前阶段": rr.get("当前阶段"),
+                        "图形类型": rr.get("图形类型"),
+                        "支撑区": rr.get("支撑区"),
+                        "压力区": rr.get("压力区"),
+                        "潜在买点": rr.get("潜在买点"),
+                        "核心理由": rr.get("核心理由"),
+                    })
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -2974,6 +3376,7 @@ if "a_historical_replay" in st.session_state:
     if not _need_cols.issubset(set(_cached_bt.columns)):
         st.info("检测到旧版本历史回测缓存。A5.1 图形字段尚未生成，请重新点击上面的 60 日回测按钮。")
     render_historical_a_replay(_cached_bt)
+    render_a6_vision_prototype(_cached_bt)
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
