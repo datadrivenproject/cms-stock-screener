@@ -750,6 +750,95 @@ def calc_a5_resonance(df, row=None):
 # =========================================================
 # MODULE 3 — ACCUMULATION (MAX 20)
 # =========================================================
+
+def calc_a52_tvs_decision(r):
+    """Experimental CMS A5.2: 图 + 量 + 势. Does not replace formal A4."""
+    vol_ok = str(r.get("量价共振", "否")) == "是"
+    rs_ok = str(r.get("RS共振", "否")) == "是"
+    macd_ok = str(r.get("MACD共振", "否")) == "是"
+    kdj_ok = str(r.get("KDJ共振", "否")) == "是"
+    rsi_ok = str(r.get("RSI共振", "否")) == "是"
+    momentum_n = int(macd_ok) + int(kdj_ok) + int(rsi_ok)
+
+    price = pd.to_numeric(pd.Series([r.get("Price")]), errors="coerce").iloc[0]
+    ma20 = pd.to_numeric(pd.Series([r.get("MA20")]), errors="coerce").iloc[0]
+    ma50 = pd.to_numeric(pd.Series([r.get("MA50")]), errors="coerce").iloc[0]
+    slope = pd.to_numeric(pd.Series([r.get("MA20 Slope 5D")]), errors="coerce").iloc[0]
+
+    # 图：先判断大结构/位置，避免把暴跌后的局部Higher Low当成好图。
+    chart_ok = bool(
+        pd.notna(price) and pd.notna(ma20) and pd.notna(ma50) and pd.notna(slope)
+        and price >= ma20
+        and ma20 >= ma50 * 0.985
+        and slope >= 0.002
+        and price <= ma20 * 1.12
+    )
+
+    # 势：RS必须支持；MACD/KDJ/RSI至少一个确认。
+    force_ok = bool(rs_ok and momentum_n >= 1)
+
+    # 图、量、势三者缺一不可。
+    buy = bool(chart_ok and vol_ok and force_ok)
+
+    return pd.Series({
+        "A5.2结果": "买" if buy else "不买",
+        "图": "是" if chart_ok else "否",
+        "量": "是" if vol_ok else "否",
+        "势": "是" if force_ok else "否",
+        "动量确认数": momentum_n
+    })
+
+
+def apply_a52_columns(df):
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    vals = out.apply(calc_a52_tvs_decision, axis=1)
+    for c in vals.columns:
+        out[c] = vals[c]
+    return out
+
+
+def render_a52_ab_comparison(bt):
+    if bt is None or bt.empty or "5D Max Gain" not in bt.columns:
+        return
+    d = apply_a52_columns(bt)
+    d["5D Max Gain"] = pd.to_numeric(d["5D Max Gain"], errors="coerce")
+    d = d.dropna(subset=["5D Max Gain"])
+
+    a52 = d[d["A5.2结果"].eq("买")].copy()
+
+    def _stats(name, x):
+        if x.empty:
+            return {"模型":name,"样本数":0,"≥3%":None,"≥5%":None,"≥8%":None,
+                    "平均5D最大涨幅":None,"中位5D最大涨幅":None,"弱<2%":None}
+        g=x["5D Max Gain"]
+        return {"模型":name,"样本数":len(x),"≥3%":(g>=.03).mean(),"≥5%":(g>=.05).mean(),
+                "≥8%":(g>=.08).mean(),"平均5D最大涨幅":g.mean(),
+                "中位5D最大涨幅":g.median(),"弱<2%":(g<.02).mean()}
+
+    rows = [_stats("A5.2 图+量+势", a52)]
+    comp = pd.DataFrame(rows)
+
+    st.header("🧪 A5.2 图·量·势 A/B Test")
+    st.caption("实验规则：图形位置健康 + 量价确认 + RS确认 + MACD/KDJ/RSI至少1个确认。正式A4和B/C均未修改。")
+    st.caption("目标基准（旧A5 60日）：≥5% 41.3%｜≥8% 19.8%｜平均5D最大涨幅 5.67%｜弱<2% 25.4%。")
+    st.dataframe(
+        comp.style.format({
+            "≥3%":"{:.1%}","≥5%":"{:.1%}","≥8%":"{:.1%}",
+            "平均5D最大涨幅":"{:+.2%}","中位5D最大涨幅":"{:+.2%}","弱<2%":"{:.1%}"
+        }, na_rep="—"),
+        use_container_width=True, hide_index=True
+    )
+
+    if not a52.empty:
+        st.subheader("A5.2 买入案例")
+        cols=[c for c in ["A5.2结果","Ticker","Replay Date","Price","图","量","势",
+                          "量价共振","RS共振","MACD共振","KDJ共振","RSI共振",
+                          "5D Max Gain","5D Close Return","5D Max Drawdown"] if c in a52.columns]
+        st.dataframe(a52[cols].head(300), use_container_width=True, hide_index=True)
+
+
 def score_accumulation(df):
     close = pd.to_numeric(df["Close"], errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce")
@@ -2568,157 +2657,6 @@ def render_ranking_diagnostics(bt):
         )
 
 
-
-def _render_real_candlestick(ticker, replay_date, bars=60):
-    """Draw actual OHLCV candles up to replay_date. No future bars are shown."""
-    df = safe_download_single(str(ticker), "2y")
-    if df is None or df.empty:
-        st.warning(f"{ticker}: 无法取得历史日K。")
-        return
-
-    x = df.copy()
-    x.index = pd.to_datetime(x.index).tz_localize(None)
-    cutoff = pd.Timestamp(replay_date).tz_localize(None)
-    x = x[x.index <= cutoff].tail(int(bars)).copy()
-    if x.empty or len(x) < 20:
-        st.warning(f"{ticker}: 选股日前历史K线不足。")
-        return
-
-    x["MA20"] = pd.to_numeric(x["Close"], errors="coerce").rolling(20).mean()
-    x["MA50"] = pd.to_numeric(x["Close"], errors="coerce").rolling(50).mean()
-    x["Date"] = x.index.strftime("%Y-%m-%d")
-    x["BodyLow"] = x[["Open","Close"]].min(axis=1)
-    x["BodyHigh"] = x[["Open","Close"]].max(axis=1)
-    x["Up"] = x["Close"] >= x["Open"]
-
-    chart_data = x.reset_index(drop=True)[
-        ["Date","Open","High","Low","Close","Volume","MA20","MA50","BodyLow","BodyHigh","Up"]
-    ]
-
-    # True candlestick: wick + candle body + MA20/MA50.
-    price_spec = {
-        "height": 360,
-        "layer": [
-            {
-                "mark": {"type": "rule"},
-                "encoding": {
-                    "x": {"field": "Date", "type": "ordinal", "axis": {"labelAngle": -60, "title": None}},
-                    "y": {"field": "Low", "type": "quantitative", "scale": {"zero": False}, "title": "Price"},
-                    "y2": {"field": "High"}
-                }
-            },
-            {
-                "mark": {"type": "bar", "size": 6},
-                "encoding": {
-                    "x": {"field": "Date", "type": "ordinal"},
-                    "y": {"field": "BodyLow", "type": "quantitative", "scale": {"zero": False}},
-                    "y2": {"field": "BodyHigh"},
-                    "color": {
-                        "condition": {"test": "datum.Up === true", "value": "#16a34a"},
-                        "value": "#dc2626",
-                        "legend": None
-                    },
-                    "tooltip": [
-                        {"field":"Date","type":"nominal"},
-                        {"field":"Open","type":"quantitative","format":".2f"},
-                        {"field":"High","type":"quantitative","format":".2f"},
-                        {"field":"Low","type":"quantitative","format":".2f"},
-                        {"field":"Close","type":"quantitative","format":".2f"}
-                    ]
-                }
-            },
-            {
-                "mark": {"type": "line", "strokeWidth": 1.5},
-                "encoding": {
-                    "x": {"field": "Date", "type": "ordinal"},
-                    "y": {"field": "MA20", "type": "quantitative", "scale": {"zero": False}},
-                    "color": {"value": "#2563eb"}
-                }
-            },
-            {
-                "mark": {"type": "line", "strokeWidth": 1.3, "strokeDash": [5,3]},
-                "encoding": {
-                    "x": {"field": "Date", "type": "ordinal"},
-                    "y": {"field": "MA50", "type": "quantitative", "scale": {"zero": False}},
-                    "color": {"value": "#7c3aed"}
-                }
-            }
-        ],
-        "resolve": {"scale": {"y": "shared"}}
-    }
-    st.vega_lite_chart(chart_data, price_spec, use_container_width=True)
-
-    volume_spec = {
-        "height": 110,
-        "mark": {"type": "bar"},
-        "encoding": {
-            "x": {"field": "Date", "type": "ordinal", "axis": {"labels": False, "title": None}},
-            "y": {"field": "Volume", "type": "quantitative", "title": "Volume"},
-            "color": {
-                "condition": {"test": "datum.Up === true", "value": "#16a34a"},
-                "value": "#dc2626",
-                "legend": None
-            },
-            "tooltip": [
-                {"field":"Date","type":"nominal"},
-                {"field":"Volume","type":"quantitative","format":","}
-            ]
-        }
-    }
-    st.vega_lite_chart(chart_data, volume_spec, use_container_width=True)
-
-
-def render_visual_pattern_validation(bt):
-    """Visually validate whether mathematical 'pattern resonance' matches real candles."""
-    if bt is None or bt.empty:
-        return
-
-    d = bt.copy()
-    needed = {"Replay Date","Ticker","5D Max Gain","图形共振","图形形态","A5决策"}
-    if not needed.issubset(set(d.columns)):
-        st.info("图形视觉验证需要重新运行 A5.1 历史回测后才能显示。")
-        return
-
-    d["5D Max Gain"] = pd.to_numeric(d["5D Max Gain"], errors="coerce")
-    d = d.dropna(subset=["5D Max Gain"])
-
-    # Directly test the classifier: program said the pattern was good.
-    good_pattern = d[d["图形共振"].eq("是")].copy()
-    bad = good_pattern[good_pattern["5D Max Gain"] < .02].sort_values("5D Max Gain").head(5)
-    strong = good_pattern[good_pattern["5D Max Gain"] >= .08].sort_values("5D Max Gain", ascending=False).head(5)
-
-    st.header("👁 图形视觉验证：程序认的“好图”到底长什么样")
-    st.caption(
-        "这里画的是 Yahoo OHLCV 在选股日及之前的真实60根日K；不会显示未来5天K线。"
-        "目的不是重新选股，而是核对“数学图形共振”是否和肉眼看到的真实图形一致。"
-    )
-
-    tab_bad, tab_strong = st.tabs([
-        f"❌ 程序说图形好，但未来<2%（{len(bad)}例）",
-        f"🚀 程序说图形好，未来≥8%（{len(strong)}例）"
-    ])
-
-    def _show_cases(cases, container):
-        with container:
-            if cases.empty:
-                st.info("当前60日窗口没有符合这一类的案例。")
-                return
-            for _, r in cases.iterrows():
-                st.subheader(
-                    f"{r['Ticker']} | 选股日 {r['Replay Date']} | "
-                    f"程序形态：{r['图形形态']} | 未来5日最大涨幅 {r['5D Max Gain']:+.1%}"
-                )
-                cols = st.columns(4)
-                cols[0].metric("程序最终判断", str(r.get("A5决策","")))
-                cols[1].metric("图形共振", str(r.get("图形共振","")))
-                cols[2].metric("量价", str(r.get("量价共振","")))
-                cols[3].metric("RS", str(r.get("RS共振","")))
-                _render_real_candlestick(r["Ticker"], r["Replay Date"], 60)
-                st.divider()
-
-    _show_cases(bad, tab_bad)
-    _show_cases(strong, tab_strong)
-
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -2728,7 +2666,7 @@ def render_historical_a_replay(bt):
     st.divider()
     render_a4_a5_resonance_comparison(bt)
     st.divider()
-    render_visual_pattern_validation(bt)
+    render_a52_ab_comparison(bt)
     st.divider()
     render_ranking_diagnostics(bt)
     st.divider()
@@ -2813,7 +2751,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.5.1 图形共振A/B测试设置")
+    st.header("V4.3A.5.2 图形共振A/B测试设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
