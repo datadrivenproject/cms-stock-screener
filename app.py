@@ -41,9 +41,9 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("👁️ CMS Stock Screener A6 — Vision + 量 + 势 Prototype")
+st.title("👁️ CMS Stock Screener A6 — 免费Vision验证版")
 st.caption(
-    "A6为Vision验证版：正式A/B/C逻辑暂不替换。盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
+    "A6免费验证版：不调用付费Vision API，正式A/B/C逻辑暂不替换。先验证真实K线视觉判断是否有效。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -3106,10 +3106,11 @@ def _pick_blind_vision_cases(bt, n=10):
 
 def render_a6_vision_prototype(bt):
     st.divider()
-    st.header("👁️ A6 Vision Prototype — 真正看K线图 + 量 + 势")
+    st.header("👁️ A6 免费 Vision 验证 — 真实K线盲测")
     st.caption(
-        "这是验证模块，不替换正式A/B/C。Vision只看选股日及之前的真实120D+60D K线图片；"
-        "支撑、压力、买点全部由图片视觉判断。随后才用量价 + RS/Momentum做第二审。"
+        "这一版不调用OpenAI API，因此不会产生Vision API费用。"
+        "程序只负责随机选10个历史案例并生成选股日以前的真实120D+60D K线图；"
+        "先人工/ChatGPT看图判断，再揭示未来5日结果。"
     )
 
     if bt is None or bt.empty:
@@ -3121,104 +3122,86 @@ def render_a6_vision_prototype(bt):
         st.warning("当前Replay数据不足以建立Vision测试案例。")
         return
 
-    st.write(f"本轮盲测案例：**{len(cases)}只**。选案例时没有使用未来5日涨跌结果。")
-    model = st.selectbox(
-        "Vision模型",
-        ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
-        index=0,
-        help="Terra作为第一轮平衡成本与能力的默认模型。"
-    )
+    st.write(f"本轮盲测：**{len(cases)}只**。选案例时没有使用未来5日结果。")
 
-    if st.button("👁️ 运行10只 Vision 盲测", type="primary", use_container_width=True):
-        results = []
+    if st.button("🆓 生成10只免费Vision盲测K线", type="primary", use_container_width=True):
+        pack = []
         progress = st.progress(0)
         status = st.empty()
 
         for i, (_, r) in enumerate(cases.iterrows(), start=1):
             ticker = str(r["Ticker"])
             asof = r["Replay Date"]
-            status.write(f"Vision正在看图：{i}/{len(cases)} — {ticker} — {asof}")
-            row_out = {
-                "Ticker": ticker,
-                "Replay Date": asof,
-            }
+            status.write(f"正在生成真实K线：{i}/{len(cases)} — {ticker} — {asof}")
             try:
                 full = safe_download_single(ticker, "2y")
                 png = make_vision_chart_png(ticker, asof, full)
-                vision = call_vision_ai(png, model=model)
+                key = f"a6_free_img_{i}"
+                st.session_state[key] = png
 
-                vol_ok, force_ok, mom_n = _a6_volume_force_from_row(r)
-                vision_buy = str(vision.get("图形结论", "")).strip() == "买"
-
-                # Final 图+量+势 rule: three layers must agree.
-                final_buy = bool(vision_buy and vol_ok and force_ok)
-
-                row_out.update(vision)
-                row_out["量"] = "是" if vol_ok else "否"
-                row_out["势"] = "是" if force_ok else "否"
-                row_out["动量确认数"] = mom_n
-                row_out["A6最终结果"] = "买" if final_buy else "不买"
-
-                # Reveal future result only AFTER Vision decision is complete.
+                # Keep future outcomes hidden in a separate object.
+                future = {}
                 for c in ["5D Max Gain", "5D Close Return", "5D Max Drawdown"]:
                     if c in r.index:
-                        row_out[c] = r.get(c)
+                        future[c] = r.get(c)
 
-                # Save image in session state for visual audit.
-                st.session_state[f"a6_img_{ticker}_{asof}"] = png
-
+                pack.append({
+                    "序号": i,
+                    "Ticker": ticker,
+                    "Replay Date": asof,
+                    "image_key": key,
+                    "future": future,
+                })
             except Exception as e:
-                row_out["A6最终结果"] = "错误"
-                row_out["错误"] = str(e)
-
-            results.append(row_out)
+                pack.append({
+                    "序号": i, "Ticker": ticker, "Replay Date": asof,
+                    "image_key": None, "future": {}, "错误": str(e)
+                })
             progress.progress(i / len(cases))
 
-        st.session_state["a6_vision_results"] = pd.DataFrame(results)
-        status.success("A6 Vision 盲测完成。未来5日结果是在Vision判断结束后才揭示。")
+        st.session_state["a6_free_pack"] = pack
+        st.session_state["a6_free_reveal"] = False
+        status.success("10只真实K线已生成。先看图判断，不要先揭示未来结果。")
 
-    if "a6_vision_results" in st.session_state:
-        out = st.session_state["a6_vision_results"].copy()
-        first_cols = [
-            "A6最终结果","Ticker","Replay Date","图形结论","图形质量","图形类型",
-            "量","势","大结构","当前阶段","支撑区","压力区","上方空间",
-            "潜在买点","无效条件","核心理由",
-            "5D Max Gain","5D Close Return","5D Max Drawdown","错误"
-        ]
-        first_cols = [c for c in first_cols if c in out.columns]
-        rest = [c for c in out.columns if c not in first_cols]
-        st.dataframe(out[first_cols + rest], use_container_width=True, hide_index=True)
+    pack = st.session_state.get("a6_free_pack", [])
+    if not pack:
+        return
 
-        if "5D Max Gain" in out.columns:
-            g = pd.to_numeric(out["5D Max Gain"], errors="coerce")
-            buymask = out["A6最终结果"].eq("买") & g.notna()
-            if buymask.any():
-                b = g[buymask]
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("A6买入样本", int(buymask.sum()))
-                c2.metric("≥5%", f"{(b >= .05).mean():.1%}")
-                c3.metric("≥8%", f"{(b >= .08).mean():.1%}")
-                c4.metric("弱<2%", f"{(b < .02).mean():.1%}")
+    st.subheader("第一步：只看图，不看未来")
+    st.info(
+        "把这些图截图发给ChatGPT即可。建议每次发2–4只。"
+        "判断字段：大结构｜当前阶段｜图形｜支撑区｜压力区｜上方空间｜潜在买点｜买/不买。"
+    )
 
-        st.subheader("🔍 人工复核：AI到底看到了什么")
-        for _, rr in out.iterrows():
-            key = f"a6_img_{rr.get('Ticker')}_{rr.get('Replay Date')}"
-            png = st.session_state.get(key)
-            if png:
-                with st.expander(
-                    f"{rr.get('Ticker')} | Vision={rr.get('图形结论','')} | "
-                    f"A6={rr.get('A6最终结果','')} | 5D Max={rr.get('5D Max Gain','')}"
-                ):
-                    st.image(png, use_container_width=True)
-                    st.write({
-                        "大结构": rr.get("大结构"),
-                        "当前阶段": rr.get("当前阶段"),
-                        "图形类型": rr.get("图形类型"),
-                        "支撑区": rr.get("支撑区"),
-                        "压力区": rr.get("压力区"),
-                        "潜在买点": rr.get("潜在买点"),
-                        "核心理由": rr.get("核心理由"),
-                    })
+    for item in pack:
+        with st.expander(
+            f"#{item['序号']}  {item['Ticker']}  | 选股日 {item['Replay Date']}",
+            expanded=(item["序号"] <= 2)
+        ):
+            if item.get("image_key") and st.session_state.get(item["image_key"]):
+                st.image(st.session_state[item["image_key"]], use_container_width=True)
+            else:
+                st.error(item.get("错误", "K线生成失败"))
+
+    st.divider()
+    st.subheader("第二步：完成视觉判断以后，再揭示未来5日")
+    if not st.session_state.get("a6_free_reveal", False):
+        if st.button("🔓 我已经判断完10只 — 揭示未来5日结果", use_container_width=True):
+            st.session_state["a6_free_reveal"] = True
+            st.rerun()
+
+    if st.session_state.get("a6_free_reveal", False):
+        rows = []
+        for item in pack:
+            row = {
+                "序号": item["序号"],
+                "Ticker": item["Ticker"],
+                "Replay Date": item["Replay Date"],
+            }
+            row.update(item.get("future", {}))
+            rows.append(row)
+        st.success("未来结果已揭示。现在可以把你的/ChatGPT的视觉判断与真实未来表现逐只比较。")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def render_results(top_df, all_df):
