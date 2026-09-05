@@ -594,26 +594,28 @@ def score_trend_momentum(df):
 # One indicator = one column. Final decision is only 买 / 不买.
 # =========================================================
 def calc_a5_resonance(df, row=None):
+    """A5.1: remove weak crude breakout rule, add chart-pattern recognition."""
+    row = row or {}
     close = pd.to_numeric(df["Close"], errors="coerce")
     high = pd.to_numeric(df["High"], errors="coerce")
     low = pd.to_numeric(df["Low"], errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce")
-    if len(close.dropna()) < 60:
+    open_ = pd.to_numeric(df["Open"], errors="coerce")
+
+    if len(close.dropna()) < 80:
         return {}
 
-    # MACD: reward fresh/accelerating bullish momentum, not merely a high MACD level.
+    px = safe_num(close.iloc[-1])
+
+    # MACD
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     sig = macd.ewm(span=9, adjust=False).mean()
     hist = macd - sig
-    macd_ok = bool(
-        (macd.iloc[-1] > sig.iloc[-1]) and
-        (hist.iloc[-1] > 0) and
-        ((hist.iloc[-1] > hist.iloc[-2]) or (hist.iloc[-2] > hist.iloc[-3]))
-    )
+    macd_ok = bool(macd.iloc[-1] > sig.iloc[-1] and hist.iloc[-1] > 0 and hist.iloc[-1] >= hist.iloc[-2])
 
-    # KDJ (9,3,3): K above D and J not extremely extended.
+    # KDJ
     ll9 = low.rolling(9).min()
     hh9 = high.rolling(9).max()
     rsv = (close - ll9) / (hh9 - ll9).replace(0, np.nan) * 100
@@ -621,51 +623,128 @@ def calc_a5_resonance(df, row=None):
     d = k.ewm(alpha=1/3, adjust=False).mean()
     j = 3 * k - 2 * d
     k0, d0, j0 = safe_num(k.iloc[-1]), safe_num(d.iloc[-1]), safe_num(j.iloc[-1])
-    kdj_ok = bool((k0 > d0) and (k0 >= 45) and (j0 <= 110))
+    kdj_ok = bool(k0 > d0 and k0 >= 45 and j0 <= 110)
 
-    # RSI: healthy bullish zone and not excessively extended.
-    rsi = safe_num(calc_rsi(close, 14).iloc[-1])
-    rsi_prev = safe_num(calc_rsi(close, 14).iloc[-3])
-    rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
+    # RSI
+    rsi_s = calc_rsi(close, 14)
+    rsi = safe_num(rsi_s.iloc[-1])
+    rsi_prev = safe_num(rsi_s.iloc[-3])
+    rsi_ok = bool(50 <= rsi <= 72 and rsi >= rsi_prev)
 
-    # Price-volume confirmation: up move with supportive volume OR 5D volume build.
+    # Price-volume
     avg20v = safe_num(volume.rolling(20).mean().iloc[-1])
-    rvol = safe_num(volume.iloc[-1] / avg20v) if avg20v > 0 else np.nan
-    ret1 = safe_num(close.iloc[-1] / close.iloc[-2] - 1)
     avg5v = safe_num(volume.rolling(5).mean().iloc[-1])
+    rvol = safe_num(volume.iloc[-1] / avg20v) if avg20v > 0 else np.nan
     vbuild = safe_num(avg5v / avg20v) if avg20v > 0 else np.nan
-    pv_ok = bool(((ret1 > 0) and (rvol >= 1.10)) or ((vbuild >= 1.05) and (close.iloc[-1] >= close.rolling(10).mean().iloc[-1])))
+    ret1 = safe_num(close.iloc[-1] / close.iloc[-2] - 1)
+    ret = close.pct_change()
+    up_vol = volume.where(ret > 0, 0).tail(10).sum()
+    dn_vol = volume.where(ret < 0, 0).tail(10).sum()
+    udv = safe_num(up_vol / dn_vol) if dn_vol > 0 else np.nan
+    pv_ok = bool(((ret1 > 0) and (rvol >= 1.10)) or ((vbuild >= 1.05) and (not pd.isna(udv)) and (udv >= 1.10)))
 
-    # Breakout / launch position: near or above prior 20D high, but avoid very extended price.
-    prior20_high = safe_num(high.shift(1).rolling(20).max().iloc[-1])
-    px = safe_num(close.iloc[-1])
-    breakout_dist = (px / prior20_high - 1) if prior20_high > 0 else np.nan
-    breakout_ok = bool((not pd.isna(breakout_dist)) and (-0.03 <= breakout_dist <= 0.04))
+    # Relative strength
+    rs_acc = safe_num(row.get("RS Acceleration", np.nan))
+    rs_spy = safe_num(row.get("Stock vs SPY 20D", np.nan))
+    rs_sector = safe_num(row.get("Stock vs Sector 20D", np.nan))
+    if not pd.isna(rs_acc) and abs(rs_acc) > 2: rs_acc /= 100.0
+    if not pd.isna(rs_spy) and abs(rs_spy) > 2: rs_spy /= 100.0
+    if not pd.isna(rs_sector) and abs(rs_sector) > 2: rs_sector /= 100.0
+    rs_ok = bool(
+        (not pd.isna(rs_spy)) and rs_spy > 0 and
+        (((not pd.isna(rs_acc)) and rs_acc > 0) or ((not pd.isna(rs_sector)) and rs_sector > 0))
+    )
 
-    # Relative-strength acceleration, using existing A row when available.
-    rs_acc = safe_num((row or {}).get("RS Acceleration", np.nan))
-    rs20 = safe_num((row or {}).get("Stock vs SPY 20D", np.nan))
-    rs_ok = bool((not pd.isna(rs_acc)) and (rs_acc > 0) and (not pd.isna(rs20)) and (rs20 > 0))
+    # Chart pattern 1: platform compression
+    h10, l10 = safe_num(high.tail(10).max()), safe_num(low.tail(10).min())
+    h20, l20 = safe_num(high.tail(20).max()), safe_num(low.tail(20).min())
+    range10 = (h10 / l10 - 1) if l10 > 0 else np.nan
+    range20 = (h20 / l20 - 1) if l20 > 0 else np.nan
+    near_top10 = (px / h10) if h10 > 0 else np.nan
+    vol20m = safe_num(volume.tail(20).mean())
+    vol_contract = safe_num(volume.tail(5).mean() / vol20m) if vol20m > 0 else np.nan
+    platform_ok = bool(
+        not pd.isna(range10) and not pd.isna(range20)
+        and range10 <= 0.10 and range20 >= range10 * 1.20
+        and near_top10 >= 0.97 and vol_contract <= 1.05
+    )
 
-    flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, breakout_ok, rs_ok]
+    # Chart pattern 2: pullback then relaunch
+    ma20 = close.rolling(20).mean()
+    ma20_now = safe_num(ma20.iloc[-1])
+    prior10_high = safe_num(high.shift(1).rolling(10).max().iloc[-1])
+    prior_strength = bool(prior10_high > 0 and close.iloc[-6:-1].max() >= prior10_high * 0.98)
+    touched_ma20 = bool(
+        ma20_now > 0
+        and low.iloc[-5:-1].min() <= ma20.iloc[-5:-1].max() * 1.02
+        and low.iloc[-5:-1].min() >= ma20.iloc[-5:-1].min() * 0.94
+    )
+    pullback_vol = safe_num(volume.iloc[-5:-1].mean())
+    prior_vol = safe_num(volume.iloc[-10:-5].mean())
+    lighter_pullback = bool(prior_vol > 0 and pullback_vol / prior_vol <= 0.95)
+    relaunch = bool(px > ma20_now and ret1 > 0 and ((rvol >= 1.05) or (hist.iloc[-1] > hist.iloc[-2])))
+    pullback_relaunch_ok = bool(prior_strength and touched_ma20 and lighter_pullback and relaunch)
+
+    # Chart pattern 3: higher high + higher low
+    prev_high = safe_num(high.iloc[-15:-10].max())
+    recent_high = safe_num(high.iloc[-10:-5].max())
+    prev_low = safe_num(low.iloc[-15:-10].min())
+    recent_low = safe_num(low.iloc[-10:-5].min())
+    hhhl_ok = bool(prev_high > 0 and prev_low > 0 and recent_high > prev_high and recent_low > prev_low and px >= recent_low)
+
+    # Chart pattern 4: volatility contraction
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    atr5 = safe_num(tr.rolling(5).mean().iloc[-1])
+    atr20 = safe_num(tr.rolling(20).mean().iloc[-1])
+    contraction_ok = bool(atr20 > 0 and atr5 / atr20 <= 0.82 and px > ma20_now)
+
+    # Reject obvious false breakout / exhaustion
+    body_top = max(safe_num(open_.iloc[-1]), px)
+    candle_range = safe_num(high.iloc[-1] - low.iloc[-1])
+    upper_shadow = safe_num(high.iloc[-1] - body_top)
+    upper_shadow_ratio = upper_shadow / candle_range if candle_range > 0 else 0
+    ext_ma20 = (px / ma20_now - 1) if ma20_now > 0 else np.nan
+    false_breakout = bool(
+        (upper_shadow_ratio >= 0.45 and px < high.iloc[-1] * 0.985)
+        or ((not pd.isna(ext_ma20)) and ext_ma20 > 0.12)
+    )
+
+    pattern_count = int(sum([platform_ok, pullback_relaunch_ok, hhhl_ok, contraction_ok]))
+    pattern_ok = bool(pattern_count >= 2 and not false_breakout)
+
+    pattern_names = []
+    if platform_ok: pattern_names.append("平台收缩")
+    if pullback_relaunch_ok: pattern_names.append("缩量回踩再启动")
+    if hhhl_ok: pattern_names.append("高低点抬升")
+    if contraction_ok: pattern_names.append("波动收缩")
+
+    if false_breakout:
+        pattern_label = "假突破/过度延伸"
+    elif pattern_names:
+        pattern_label = "+".join(pattern_names)
+    else:
+        pattern_label = "无明显启动形态"
+
+    flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok, pattern_ok]
     resonance_n = int(sum(flags))
-
-    # TEST decision: simple and interpretable. No WATCH/EARLY labels.
-    # Need at least 4/6 resonance AND trend/volume confirmation.
-    decision = "买" if (resonance_n >= 4 and macd_ok and (pv_ok or rs_ok)) else "不买"
+    momentum_ok = bool(macd_ok or (kdj_ok and rsi_ok))
+    decision = "买" if (resonance_n >= 4 and (pv_ok or pattern_ok) and momentum_ok and not false_breakout) else "不买"
 
     return {
         "A5决策": decision,
         "共振数": resonance_n,
+        "图形共振": "是" if pattern_ok else "否",
+        "图形形态": pattern_label,
+        "假突破": "是" if false_breakout else "否",
         "MACD共振": "是" if macd_ok else "否",
         "KDJ共振": "是" if kdj_ok else "否",
         "RSI共振": "是" if rsi_ok else "否",
         "量价共振": "是" if pv_ok else "否",
-        "突破共振": "是" if breakout_ok else "否",
         "RS共振": "是" if rs_ok else "否",
         "KDJ_K": k0, "KDJ_D": d0, "KDJ_J": j0,
         "当日RVOL_A5": rvol,
-        "距20日突破": breakout_dist,
+        "UpDownVol_A5": udv,
+        "图形数": pattern_count,
     }
 
 # =========================================================
@@ -2275,9 +2354,9 @@ def render_a4_a5_resonance_comparison(bt):
             '弱股<2%': (g < .02).mean() if len(g) else np.nan,
         }
 
-    comp = pd.DataFrame([summary(a4,'当前A4 Top10'), summary(a5,'A5 共振买入')])
-    st.header("🆚 当前A4 vs A5共振：谁更会找到未来大涨股")
-    st.caption("同一历史日期、同一股票池、同一未来5日结果。A5不强制每天凑10只；只有满足“买”的股票才进入A5结果。")
+    comp = pd.DataFrame([summary(a4,'当前A4 Top10'), summary(a5,'A5.1 图形共振买入')])
+    st.header("🆚 当前A4 vs A5.1图形共振：谁更会找到未来大涨股")
+    st.caption("同一历史日期、同一股票池、同一未来5日结果。A5.1不强制每天凑10只；只有满足“买”的股票才进入A5结果。")
     st.dataframe(
         comp.style.format({
             '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
@@ -2288,7 +2367,7 @@ def render_a4_a5_resonance_comparison(bt):
 
     # Indicator hit-rate table: one indicator per row, useful for deciding what to keep.
     rows = []
-    for c in ['MACD共振','KDJ共振','RSI共振','量价共振','突破共振','RS共振']:
+    for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','图形共振']:
         yes = d[d[c] == '是']
         g = pd.to_numeric(yes['5D Max Gain'], errors='coerce').dropna()
         rows.append({
@@ -2572,7 +2651,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.5 共振A/B测试设置")
+    st.header("V4.3A.5.1 图形共振A/B测试设置")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2651,13 +2730,13 @@ def render_results(top_df, all_df):
         # 结果放最前；最终只给“买 / 不买”
         "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
         # 一个指标一个col
-        "MACD共振", "KDJ共振", "RSI共振", "量价共振", "突破共振", "RS共振",
+        "图形共振", "图形形态", "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振",
         # 关键数值，便于复核
         "Early V2 Score", "Structure Score", "Trend & Momentum Score",
         "Accumulation Score", "Leadership Score",
         "KDJ_K", "KDJ_D", "KDJ_J", "RSI14", "MACD Phase",
         "Volume Build Ratio", "Up/Down Volume Ratio", "RS Acceleration",
-        "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
+        "Major Resistance Zone", "Major Support Zone",
         "Confidence"
     ]
     display_cols = [c for c in display_cols if c in top_df.columns]
@@ -2683,7 +2762,7 @@ def render_results(top_df, all_df):
 
     st.subheader("🌱 Early Engine V2 — 次日重点候选")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "突破共振":"突破", "RS共振":"相对强度", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果", "共振数":"共振数", "图形共振":"图形", "图形形态":"形态", "假突破":"假突破", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -2691,7 +2770,7 @@ def render_results(top_df, all_df):
         "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
         "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
         "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
-        "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
+        "Major Support Zone":"主要支撑区",
         "R→S Flip Zone":"R→S回踩区", "R→S Flip Touches":"R→S历史测试次数",
         "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
         "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
