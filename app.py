@@ -3920,6 +3920,399 @@ def render_mu_state_machine_replay_v2():
         except Exception as e:
             st.error(f"V2 Replay失败：{e}")
 
+
+# =========================================================
+# MULTI-STOCK REPLAY V3
+# Same V2 parameters for every stock; no stock-specific tuning.
+# For each original A date:
+#   scan next 5 trading days -> find earliest intraday BUY trigger
+#   -> evaluate forward 1D / 3D / 5D from trigger price
+# =========================================================
+
+V3_CASES = [
+    ("PATH", "2026-06-17"),
+    ("ETN",  "2026-06-08"),
+    ("MSFT", "2026-08-17"),
+    ("HD",   "2026-07-10"),
+    ("HOOD", "2026-07-31"),
+    ("CAT",  "2026-06-05"),
+    ("MU",   "2026-07-29"),
+    ("XOM",  "2026-07-23"),
+    ("MRK",  "2026-08-05"),
+    ("ASTS", "2026-08-10"),
+]
+
+
+def _tod_rvol_generic(x, ts, lookback_days=10):
+    t = pd.Timestamp(ts).time()
+    cur_date = pd.Timestamp(ts).date()
+    idx = pd.DatetimeIndex(x.index)
+    mask = [
+        pd.Timestamp(i).time() == t and pd.Timestamp(i).date() < cur_date
+        for i in idx
+    ]
+    hist = x.loc[mask].tail(lookback_days)
+    if hist.empty:
+        return np.nan
+    avg = float(hist["Volume"].mean())
+    cur = float(x.loc[ts, "Volume"])
+    return cur / avg if avg > 0 else np.nan
+
+
+def _state_machine_one_day_v2_generic(x15, target_date):
+    """
+    Exact same V2 logic applied generically to one stock/day.
+    Returns first intraday BUY trigger, or None.
+    """
+    idx = pd.DatetimeIndex(x15.index)
+    target_date = pd.Timestamp(target_date).date()
+    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
+    day = x15.loc[day_mask].copy()
+    if day.empty:
+        return None, pd.DataFrame()
+
+    day["Prev3High"] = day["High"].shift(1).rolling(3, min_periods=3).max()
+    day["Range"] = day["High"] - day["Low"]
+    day["ClosePos"] = (day["Close"] - day["Low"]) / day["Range"].replace(0, np.nan)
+    day["UpperWick"] = day["High"] - day[["Open", "Close"]].max(axis=1)
+    day["TOD_RVOL"] = [_tod_rvol_generic(x15, ts, 10) for ts in day.index]
+
+    day_open = float(day.iloc[0]["Open"])
+    first_buy = None
+    rows = []
+
+    min_bar_index_for_trigger = 4  # first possible trigger 10:30
+    pullback_seen = False
+    base_seen = False
+    base_high = None
+
+    for i, (ts, r) in enumerate(day.iterrows()):
+        prev_rows = day.iloc[:i]
+
+        if len(prev_rows) >= 2:
+            todays_low_so_far = float(prev_rows["Low"].min())
+        else:
+            todays_low_so_far = np.nan
+
+        higher_low = bool(
+            i >= 3
+            and pd.notna(todays_low_so_far)
+            and r["Low"] > todays_low_so_far
+        )
+
+        if i >= 2:
+            prev_close = float(day.iloc[i-1]["Close"])
+            early_high = float(day.iloc[:i]["High"].max())
+            early_low = float(day.iloc[:i]["Low"].min())
+            retrace = (early_high - float(r["Close"])) / max(early_high - early_low, 1e-9)
+            if r["Close"] < prev_close and 0.15 <= retrace <= 0.65:
+                pullback_seen = True
+
+        if pullback_seen and i >= 4:
+            recent2 = day.iloc[max(0, i-2):i]
+            earlier = day.iloc[:max(1, i-2)]
+            if (
+                len(recent2) == 2
+                and len(earlier) > 0
+                and float(recent2["Low"].min()) > float(earlier["Low"].min())
+            ):
+                base_seen = True
+                base_high = float(recent2["High"].max())
+
+        if base_seen and base_high is not None:
+            breakout = bool(r["Close"] > base_high)
+        else:
+            breakout = bool(
+                i >= 4
+                and pd.notna(r["Prev3High"])
+                and r["Close"] > r["Prev3High"]
+            )
+
+        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
+        positive_bar = bool(r["Close"] > r["Open"])
+
+        tod_rvol = r["TOD_RVOL"]
+        volume_ok = bool(pd.isna(tod_rvol) or tod_rvol >= 0.90)
+        volume_strong = bool(pd.notna(tod_rvol) and tod_rvol >= 1.20)
+
+        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
+        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
+
+        day_ret = float(r["Close"] / day_open - 1)
+        chase = bool(day_ret > 0.055)
+
+        if i < min_bar_index_for_trigger:
+            trigger = False
+            state = "OPENING OBSERVE"
+        else:
+            if pullback_seen and not base_seen:
+                state = "PULLBACK"
+            elif base_seen and not breakout:
+                state = "BASE"
+            elif base_seen and breakout:
+                state = "TRIGGER WAIT"
+            else:
+                state = "WATCH"
+
+            trigger = bool(
+                base_seen
+                and breakout
+                and positive_bar
+                and strong_close
+                and volume_ok
+                and not fake_break_risk
+                and not chase
+            )
+
+        fired_now = False
+        if trigger and first_buy is None:
+            first_buy = {
+                "time": pd.Timestamp(ts),
+                "price": float(r["Close"]),
+                "day_return": day_ret,
+                "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
+            }
+            fired_now = True
+            state = "BUY TRIGGER"
+        elif first_buy is not None:
+            state = "POST-BUY"
+
+        rows.append({
+            "time": pd.Timestamp(ts),
+            "state": state,
+            "close": float(r["Close"]),
+            "day_return": day_ret,
+            "higher_low": higher_low,
+            "pullback": pullback_seen,
+            "base": base_seen,
+            "breakout": breakout,
+            "strong_close": strong_close,
+            "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
+            "volume_strong": volume_strong,
+            "fake_break": fake_break_risk,
+            "fired_now": fired_now,
+        })
+
+    return first_buy, pd.DataFrame(rows)
+
+
+def _download_intraday_15m(ticker):
+    raw = yf.download(
+        ticker, period="60d", interval="15m",
+        auto_adjust=False, progress=False, threads=False
+    )
+    return _normalize_ohlcv(raw)
+
+
+def _download_daily(ticker):
+    raw = yf.download(
+        ticker, period="1y", interval="1d",
+        auto_adjust=False, progress=False, threads=False
+    )
+    return _normalize_ohlcv(raw)
+
+
+def _next_trading_dates_from_intraday(x15, original_date, n=5):
+    if x15 is None or x15.empty:
+        return []
+    original_date = pd.Timestamp(original_date).date()
+    dates = sorted(set(pd.Timestamp(v).date() for v in x15.index))
+    return [d for d in dates if d > original_date][:n]
+
+
+def _forward_metrics_from_trigger(daily, trigger_date, trigger_price):
+    if daily is None or daily.empty:
+        return {}
+
+    td = pd.Timestamp(trigger_date).date()
+    ddates = pd.Index([pd.Timestamp(v).date() for v in daily.index])
+
+    # Include trigger date and then following trading days.
+    future = daily.loc[ddates >= td].copy()
+    if future.empty:
+        return {}
+
+    out = {}
+    for n in [1, 3, 5]:
+        window = future.head(n + 1)  # trigger day + next n trading days
+        if window.empty:
+            out[f"{n}D Max Gain"] = np.nan
+            out[f"{n}D Close Return"] = np.nan
+            continue
+
+        max_gain = float(window["High"].max() / trigger_price - 1)
+        close_ret = float(window.iloc[-1]["Close"] / trigger_price - 1)
+        out[f"{n}D Max Gain"] = max_gain
+        out[f"{n}D Close Return"] = close_ret
+
+    window5 = future.head(6)
+    if not window5.empty:
+        out["5D Max Drawdown"] = float(window5["Low"].min() / trigger_price - 1)
+    else:
+        out["5D Max Drawdown"] = np.nan
+
+    return out
+
+
+def _run_multi_stock_replay_v3():
+    results = []
+    detail = {}
+
+    for ticker, original_date in V3_CASES:
+        row = {
+            "Ticker": ticker,
+            "A原选股日": original_date,
+            "15m可用": "否",
+            "是否BUY": "否",
+            "首次BUY日期": "",
+            "首次BUY时间": "",
+            "买入价": np.nan,
+            "当时日内涨幅": np.nan,
+            "同时段量比": np.nan,
+            "扫描交易日数": 0,
+            "说明": "",
+        }
+
+        try:
+            x15 = _download_intraday_15m(ticker)
+            if x15.empty:
+                row["说明"] = "Yahoo当前无15m历史数据"
+                results.append(row)
+                continue
+
+            row["15m可用"] = "是"
+            scan_dates = _next_trading_dates_from_intraday(x15, original_date, 5)
+            row["扫描交易日数"] = len(scan_dates)
+
+            if not scan_dates:
+                row["说明"] = "原选股日不在Yahoo当前15m保留窗口内"
+                results.append(row)
+                continue
+
+            first_buy = None
+            first_buy_day = None
+            all_day_details = []
+
+            for d in scan_dates:
+                buy, ddetail = _state_machine_one_day_v2_generic(x15, d)
+                if not ddetail.empty:
+                    ddetail = ddetail.copy()
+                    ddetail["Ticker"] = ticker
+                    ddetail["ReplayDate"] = str(d)
+                    all_day_details.append(ddetail)
+
+                if buy is not None:
+                    first_buy = buy
+                    first_buy_day = d
+                    break
+
+            if all_day_details:
+                detail[ticker] = pd.concat(all_day_details, ignore_index=True)
+
+            if first_buy is None:
+                row["说明"] = "未来5个交易日内无V2 BUY触发"
+                results.append(row)
+                continue
+
+            row["是否BUY"] = "是"
+            row["首次BUY日期"] = str(first_buy_day)
+            row["首次BUY时间"] = first_buy["time"].strftime("%H:%M")
+            row["买入价"] = first_buy["price"]
+            row["当时日内涨幅"] = first_buy["day_return"]
+            row["同时段量比"] = first_buy["tod_rvol"]
+
+            daily = _download_daily(ticker)
+            row.update(_forward_metrics_from_trigger(daily, first_buy_day, first_buy["price"]))
+            row["说明"] = "同一V2参数自动触发"
+
+        except Exception as e:
+            row["说明"] = f"错误: {str(e)[:120]}"
+
+        results.append(row)
+
+    return pd.DataFrame(results), detail
+
+
+def render_multi_stock_replay_v3():
+    st.divider()
+    st.header("🧪 Multi-Stock Replay V3 — 一次跑完")
+    st.caption(
+        "同一套MU V2参数，不为任何股票单独调参。"
+        "从每只股票的A原选股日开始，扫描后续5个交易日；"
+        "找到第一笔15m BUY后，再计算1D/3D/5D表现。"
+    )
+
+    st.write("测试股票：", ", ".join([t for t, _ in V3_CASES]))
+
+    if st.button("▶️ 一次运行全部 V3 Replay", type="primary", use_container_width=True):
+        with st.spinner("正在批量下载15m/日K并逐只Replay，请稍等..."):
+            rdf, detail = _run_multi_stock_replay_v3()
+            st.session_state["v3_multi_results"] = rdf
+            st.session_state["v3_multi_detail"] = detail
+
+    if "v3_multi_results" not in st.session_state:
+        return
+
+    rdf = st.session_state["v3_multi_results"].copy()
+
+    st.subheader("总结果")
+    display_cols = [
+        "Ticker","A原选股日","15m可用","是否BUY","首次BUY日期","首次BUY时间",
+        "买入价","当时日内涨幅","同时段量比",
+        "1D Max Gain","3D Max Gain","5D Max Gain","5D Max Drawdown","说明"
+    ]
+    display_cols = [c for c in display_cols if c in rdf.columns]
+
+    fmt = {}
+    for c in ["当时日内涨幅","1D Max Gain","3D Max Gain","5D Max Gain","5D Max Drawdown"]:
+        if c in rdf.columns:
+            fmt[c] = "{:.2%}"
+    for c in ["买入价"]:
+        if c in rdf.columns:
+            fmt[c] = "${:.2f}"
+    for c in ["同时段量比"]:
+        if c in rdf.columns:
+            fmt[c] = "{:.2f}"
+
+    st.dataframe(
+        rdf[display_cols].style.format(fmt, na_rep=""),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # Summary only for rows with valid BUY + 5D result.
+    valid = rdf[
+        (rdf["是否BUY"] == "是")
+        & pd.to_numeric(rdf.get("5D Max Gain"), errors="coerce").notna()
+    ].copy()
+
+    st.subheader("自动汇总")
+    if valid.empty:
+        st.warning("当前没有可计算5D结果的BUY样本。")
+    else:
+        g5 = pd.to_numeric(valid["5D Max Gain"], errors="coerce")
+        dd = pd.to_numeric(valid["5D Max Drawdown"], errors="coerce")
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("BUY样本", int(len(valid)))
+        c2.metric("5D ≥3%", f"{(g5 >= 0.03).mean():.1%}")
+        c3.metric("5D ≥5%", f"{(g5 >= 0.05).mean():.1%}")
+        c4.metric("5D ≥8%", f"{(g5 >= 0.08).mean():.1%}")
+        c5.metric("平均5D最大涨幅", f"{g5.mean():.2%}")
+
+        st.write(
+            f"平均5D最大回撤：**{dd.mean():.2%}** | "
+            f"中位数5D最大涨幅：**{g5.median():.2%}**"
+        )
+
+    unavailable = rdf[rdf["15m可用"] == "否"]
+    if len(unavailable):
+        st.info(
+            "注意：Yahoo 15m历史通常只保留较短窗口。"
+            "较早的6月案例如果显示无数据，不代表规则失败，只代表当前15m数据已过期。"
+        )
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -4080,6 +4473,7 @@ if "a_historical_replay" in st.session_state:
     render_mu_intraday_data_check()
     render_mu_state_machine_replay_v1()
     render_mu_state_machine_replay_v2()
+    render_multi_stock_replay_v3()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
