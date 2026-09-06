@@ -4,26 +4,6 @@ import numpy as np
 import yfinance as yf
 import time
 from datetime import datetime, timezone
-import os
-import io
-import json
-import base64
-import random
-import re
-
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
-    from matplotlib.patches import Rectangle
-except ImportError:
-    plt = None
-    mdates = None
-    Rectangle = None
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
 try:
     import gspread
@@ -36,14 +16,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A6 — Vision Prototype",
+    page_title="CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("👁️ CMS Stock Screener A6 — MU五日反转链路")
+st.title("📈 CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest")
 st.caption(
-    "A6免费验证版：不调用付费Vision API，正式A/B/C逻辑暂不替换。先验证真实K线视觉判断是否有效。"
+    "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -614,28 +594,37 @@ def score_trend_momentum(df):
 # One indicator = one column. Final decision is only 买 / 不买.
 # =========================================================
 def calc_a5_resonance(df, row=None):
-    """A5.1: remove weak crude breakout rule, add chart-pattern recognition."""
-    row = row or {}
+    """
+    A5.2R = Resonance + calculated Support/Resistance.
+    No Vision / no chart-image AI.
+
+    Keeps:
+      MACD + KDJ + RSI + Price/Volume + RS
+    Removes from decision:
+      the old crude "near prior 20D high" breakout resonance
+    Adds:
+      swing-based support/resistance zones + upside-room check
+    """
     close = pd.to_numeric(df["Close"], errors="coerce")
     high = pd.to_numeric(df["High"], errors="coerce")
     low = pd.to_numeric(df["Low"], errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce")
-    open_ = pd.to_numeric(df["Open"], errors="coerce")
-
-    if len(close.dropna()) < 80:
+    if len(close.dropna()) < 60:
         return {}
 
-    px = safe_num(close.iloc[-1])
-
-    # MACD
+    # ---------- 势：MACD ----------
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     sig = macd.ewm(span=9, adjust=False).mean()
     hist = macd - sig
-    macd_ok = bool(macd.iloc[-1] > sig.iloc[-1] and hist.iloc[-1] > 0 and hist.iloc[-1] >= hist.iloc[-2])
+    macd_ok = bool(
+        (macd.iloc[-1] > sig.iloc[-1]) and
+        (hist.iloc[-1] > 0) and
+        ((hist.iloc[-1] > hist.iloc[-2]) or (hist.iloc[-2] > hist.iloc[-3]))
+    )
 
-    # KDJ
+    # ---------- 势：KDJ (9,3,3) ----------
     ll9 = low.rolling(9).min()
     hh9 = high.rolling(9).max()
     rsv = (close - ll9) / (hh9 - ll9).replace(0, np.nan) * 100
@@ -643,222 +632,137 @@ def calc_a5_resonance(df, row=None):
     d = k.ewm(alpha=1/3, adjust=False).mean()
     j = 3 * k - 2 * d
     k0, d0, j0 = safe_num(k.iloc[-1]), safe_num(d.iloc[-1]), safe_num(j.iloc[-1])
-    kdj_ok = bool(k0 > d0 and k0 >= 45 and j0 <= 110)
+    kdj_ok = bool((k0 > d0) and (k0 >= 45) and (j0 <= 110))
 
-    # RSI
-    rsi_s = calc_rsi(close, 14)
-    rsi = safe_num(rsi_s.iloc[-1])
-    rsi_prev = safe_num(rsi_s.iloc[-3])
-    rsi_ok = bool(50 <= rsi <= 72 and rsi >= rsi_prev)
+    # ---------- 势：RSI ----------
+    rsi_series = calc_rsi(close, 14)
+    rsi = safe_num(rsi_series.iloc[-1])
+    rsi_prev = safe_num(rsi_series.iloc[-3])
+    rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
 
-    # Price-volume
+    # ---------- 量：Price / Volume ----------
     avg20v = safe_num(volume.rolling(20).mean().iloc[-1])
-    avg5v = safe_num(volume.rolling(5).mean().iloc[-1])
     rvol = safe_num(volume.iloc[-1] / avg20v) if avg20v > 0 else np.nan
-    vbuild = safe_num(avg5v / avg20v) if avg20v > 0 else np.nan
     ret1 = safe_num(close.iloc[-1] / close.iloc[-2] - 1)
-    ret = close.pct_change()
-    up_vol = volume.where(ret > 0, 0).tail(10).sum()
-    dn_vol = volume.where(ret < 0, 0).tail(10).sum()
-    udv = safe_num(up_vol / dn_vol) if dn_vol > 0 else np.nan
-    pv_ok = bool(((ret1 > 0) and (rvol >= 1.10)) or ((vbuild >= 1.05) and (not pd.isna(udv)) and (udv >= 1.10)))
+    avg5v = safe_num(volume.rolling(5).mean().iloc[-1])
+    vbuild = safe_num(avg5v / avg20v) if avg20v > 0 else np.nan
+    pv_ok = bool(
+        ((ret1 > 0) and (rvol >= 1.10))
+        or ((vbuild >= 1.05) and (close.iloc[-1] >= close.rolling(10).mean().iloc[-1]))
+    )
 
-    # Relative strength
-    rs_acc = safe_num(row.get("RS Acceleration", np.nan))
-    rs_spy = safe_num(row.get("Stock vs SPY 20D", np.nan))
-    rs_sector = safe_num(row.get("Stock vs Sector 20D", np.nan))
-    if not pd.isna(rs_acc) and abs(rs_acc) > 2: rs_acc /= 100.0
-    if not pd.isna(rs_spy) and abs(rs_spy) > 2: rs_spy /= 100.0
-    if not pd.isna(rs_sector) and abs(rs_sector) > 2: rs_sector /= 100.0
+    # ---------- 势：Relative Strength ----------
+    rs_acc = safe_num((row or {}).get("RS Acceleration", np.nan))
+    rs20 = safe_num((row or {}).get("Stock vs SPY 20D", np.nan))
     rs_ok = bool(
-        (not pd.isna(rs_spy)) and rs_spy > 0 and
-        (((not pd.isna(rs_acc)) and rs_acc > 0) or ((not pd.isna(rs_sector)) and rs_sector > 0))
+        (not pd.isna(rs_acc)) and (rs_acc > 0)
+        and (not pd.isna(rs20)) and (rs20 > 0)
     )
 
-    # Chart pattern 1: platform compression
-    h10, l10 = safe_num(high.tail(10).max()), safe_num(low.tail(10).min())
-    h20, l20 = safe_num(high.tail(20).max()), safe_num(low.tail(20).min())
-    range10 = (h10 / l10 - 1) if l10 > 0 else np.nan
-    range20 = (h20 / l20 - 1) if l20 > 0 else np.nan
-    near_top10 = (px / h10) if h10 > 0 else np.nan
-    vol20m = safe_num(volume.tail(20).mean())
-    vol_contract = safe_num(volume.tail(5).mean() / vol20m) if vol20m > 0 else np.nan
-    platform_ok = bool(
-        not pd.isna(range10) and not pd.isna(range20)
-        and range10 <= 0.10 and range20 >= range10 * 1.20
-        and near_top10 >= 0.97 and vol_contract <= 1.05
-    )
+    # ---------- 位置：用OHLCV计算真实价格反应区 ----------
+    px = safe_num(close.iloc[-1])
+    atr14 = safe_num(calc_atr(high, low, close, 14).iloc[-1])
+    ms = identify_market_structure(df, atr14, px)
 
-    # Chart pattern 2: pullback then relaunch
-    ma20 = close.rolling(20).mean()
-    ma20_now = safe_num(ma20.iloc[-1])
-    prior10_high = safe_num(high.shift(1).rolling(10).max().iloc[-1])
-    prior_strength = bool(prior10_high > 0 and close.iloc[-6:-1].max() >= prior10_high * 0.98)
-    touched_ma20 = bool(
-        ma20_now > 0
-        and low.iloc[-5:-1].min() <= ma20.iloc[-5:-1].max() * 1.02
-        and low.iloc[-5:-1].min() >= ma20.iloc[-5:-1].min() * 0.94
-    )
-    pullback_vol = safe_num(volume.iloc[-5:-1].mean())
-    prior_vol = safe_num(volume.iloc[-10:-5].mean())
-    lighter_pullback = bool(prior_vol > 0 and pullback_vol / prior_vol <= 0.95)
-    relaunch = bool(px > ma20_now and ret1 > 0 and ((rvol >= 1.05) or (hist.iloc[-1] > hist.iloc[-2])))
-    pullback_relaunch_ok = bool(prior_strength and touched_ma20 and lighter_pullback and relaunch)
+    major_res = ms.get("major_res")
+    major_sup = ms.get("major_sup")
 
-    # Chart pattern 3: higher high + higher low
-    prev_high = safe_num(high.iloc[-15:-10].max())
-    recent_high = safe_num(high.iloc[-10:-5].max())
-    prev_low = safe_num(low.iloc[-15:-10].min())
-    recent_low = safe_num(low.iloc[-10:-5].min())
-    hhhl_ok = bool(prev_high > 0 and prev_low > 0 and recent_high > prev_high and recent_low > prev_low and px >= recent_low)
-
-    # Chart pattern 4: volatility contraction
-    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
-    atr5 = safe_num(tr.rolling(5).mean().iloc[-1])
-    atr20 = safe_num(tr.rolling(20).mean().iloc[-1])
-    contraction_ok = bool(atr20 > 0 and atr5 / atr20 <= 0.82 and px > ma20_now)
-
-    # Reject obvious false breakout / exhaustion
-    body_top = max(safe_num(open_.iloc[-1]), px)
-    candle_range = safe_num(high.iloc[-1] - low.iloc[-1])
-    upper_shadow = safe_num(high.iloc[-1] - body_top)
-    upper_shadow_ratio = upper_shadow / candle_range if candle_range > 0 else 0
-    ext_ma20 = (px / ma20_now - 1) if ma20_now > 0 else np.nan
-    false_breakout = bool(
-        (upper_shadow_ratio >= 0.45 and px < high.iloc[-1] * 0.985)
-        or ((not pd.isna(ext_ma20)) and ext_ma20 > 0.12)
-    )
-
-    pattern_count = int(sum([platform_ok, pullback_relaunch_ok, hhhl_ok, contraction_ok]))
-    pattern_ok = bool(pattern_count >= 2 and not false_breakout)
-
-    pattern_names = []
-    if platform_ok: pattern_names.append("平台收缩")
-    if pullback_relaunch_ok: pattern_names.append("缩量回踩再启动")
-    if hhhl_ok: pattern_names.append("高低点抬升")
-    if contraction_ok: pattern_names.append("波动收缩")
-
-    if false_breakout:
-        pattern_label = "假突破/过度延伸"
-    elif pattern_names:
-        pattern_label = "+".join(pattern_names)
+    if major_res is not None:
+        res_zone = f"${major_res['low']:.2f}–${major_res['high']:.2f}"
+        resistance_distance = (major_res["low"] - px) / px if px > 0 else np.nan
+        resistance_touches = int(major_res.get("touches", 0))
+        resistance_strength = _zone_strength(major_res)
+        inside_resistance = bool(
+            major_res["low"] * 0.995 <= px <= major_res["high"] * 1.005
+        )
     else:
-        pattern_label = "无明显启动形态"
+        res_zone = "未识别"
+        resistance_distance = np.nan
+        resistance_touches = 0
+        resistance_strength = "无有效区域"
+        inside_resistance = False
 
-    flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok, pattern_ok]
-    resonance_n = int(sum(flags))
-    momentum_ok = bool(macd_ok or (kdj_ok and rsi_ok))
-    decision = "买" if (resonance_n >= 4 and (pv_ok or pattern_ok) and momentum_ok and not false_breakout) else "不买"
+    if major_sup is not None:
+        sup_zone = f"${major_sup['low']:.2f}–${major_sup['high']:.2f}"
+        # distance from price to upper edge of nearest support
+        support_distance = (px - major_sup["high"]) / px if px > 0 else np.nan
+        support_touches = int(major_sup.get("touches", 0))
+    else:
+        sup_zone = "未识别"
+        support_distance = np.nan
+        support_touches = 0
+
+    # "上方空间" is a position filter, NOT another oscillator.
+    # Do not reject merely because no repeated resistance was found.
+    # Reject only when a meaningful repeated resistance is very close.
+    pressure_too_close = bool(
+        major_res is not None
+        and resistance_touches >= 2
+        and (
+            inside_resistance
+            or (
+                not pd.isna(resistance_distance)
+                and 0 <= resistance_distance < 0.02
+            )
+        )
+    )
+    space_ok = not pressure_too_close
+
+    if major_res is None:
+        upside_room_text = "开放"
+    elif pd.isna(resistance_distance):
+        upside_room_text = "不确定"
+    else:
+        upside_room_text = f"{resistance_distance:+.1%}"
+
+    # ---------- A5.2R final ----------
+    # Old crude breakout resonance is intentionally removed.
+    # Five core confirmations: MACD / KDJ / RSI / 量价 / RS.
+    core_flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok]
+    resonance_n = int(sum(core_flags))
+
+    # Preserve A5's "do not force 10" philosophy:
+    # need 4 of 5, MACD bullish, and at least one of Volume or RS;
+    # then reject only when a repeated overhead resistance is too close.
+    base_buy = bool(
+        resonance_n >= 4
+        and macd_ok
+        and (pv_ok or rs_ok)
+    )
+    decision = "买" if (base_buy and space_ok) else "不买"
+
+    if pressure_too_close:
+        position_reason = "压力过近"
+    elif major_res is None:
+        position_reason = "上方开放"
+    else:
+        position_reason = "空间通过"
 
     return {
         "A5决策": decision,
         "共振数": resonance_n,
-        "图形共振": "是" if pattern_ok else "否",
-        "图形形态": pattern_label,
-        "假突破": "是" if false_breakout else "否",
         "MACD共振": "是" if macd_ok else "否",
         "KDJ共振": "是" if kdj_ok else "否",
         "RSI共振": "是" if rsi_ok else "否",
         "量价共振": "是" if pv_ok else "否",
         "RS共振": "是" if rs_ok else "否",
+        "空间共振": "是" if space_ok else "否",
+        "位置判断": position_reason,
+        "A5.2R压力区": res_zone,
+        "A5.2R支撑区": sup_zone,
+        "上方空间": resistance_distance,
+        "距支撑区": support_distance,
+        "压力测试次数_A52R": resistance_touches,
+        "支撑测试次数_A52R": support_touches,
+        "压力强度_A52R": resistance_strength,
         "KDJ_K": k0, "KDJ_D": d0, "KDJ_J": j0,
         "当日RVOL_A5": rvol,
-        "UpDownVol_A5": udv,
-        "图形数": pattern_count,
     }
+
 
 # =========================================================
 # MODULE 3 — ACCUMULATION (MAX 20)
 # =========================================================
-
-def calc_a52_tvs_decision(r):
-    """Experimental CMS A5.2: 图 + 量 + 势. Does not replace formal A4."""
-    vol_ok = str(r.get("量价共振", "否")) == "是"
-    rs_ok = str(r.get("RS共振", "否")) == "是"
-    macd_ok = str(r.get("MACD共振", "否")) == "是"
-    kdj_ok = str(r.get("KDJ共振", "否")) == "是"
-    rsi_ok = str(r.get("RSI共振", "否")) == "是"
-    momentum_n = int(macd_ok) + int(kdj_ok) + int(rsi_ok)
-
-    price = pd.to_numeric(pd.Series([r.get("Price")]), errors="coerce").iloc[0]
-    ma20 = pd.to_numeric(pd.Series([r.get("MA20")]), errors="coerce").iloc[0]
-    ma50 = pd.to_numeric(pd.Series([r.get("MA50")]), errors="coerce").iloc[0]
-    slope = pd.to_numeric(pd.Series([r.get("MA20 Slope 5D")]), errors="coerce").iloc[0]
-
-    # 图：先判断大结构/位置，避免把暴跌后的局部Higher Low当成好图。
-    chart_ok = bool(
-        pd.notna(price) and pd.notna(ma20) and pd.notna(ma50) and pd.notna(slope)
-        and price >= ma20
-        and ma20 >= ma50 * 0.985
-        and slope >= 0.002
-        and price <= ma20 * 1.12
-    )
-
-    # 势：RS必须支持；MACD/KDJ/RSI至少一个确认。
-    force_ok = bool(rs_ok and momentum_n >= 1)
-
-    # 图、量、势三者缺一不可。
-    buy = bool(chart_ok and vol_ok and force_ok)
-
-    return pd.Series({
-        "A5.2结果": "买" if buy else "不买",
-        "图": "是" if chart_ok else "否",
-        "量": "是" if vol_ok else "否",
-        "势": "是" if force_ok else "否",
-        "动量确认数": momentum_n
-    })
-
-
-def apply_a52_columns(df):
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-    vals = out.apply(calc_a52_tvs_decision, axis=1)
-    for c in vals.columns:
-        out[c] = vals[c]
-    return out
-
-
-def render_a52_ab_comparison(bt):
-    if bt is None or bt.empty or "5D Max Gain" not in bt.columns:
-        return
-    d = apply_a52_columns(bt)
-    d["5D Max Gain"] = pd.to_numeric(d["5D Max Gain"], errors="coerce")
-    d = d.dropna(subset=["5D Max Gain"])
-
-    a52 = d[d["A5.2结果"].eq("买")].copy()
-
-    def _stats(name, x):
-        if x.empty:
-            return {"模型":name,"样本数":0,"≥3%":None,"≥5%":None,"≥8%":None,
-                    "平均5D最大涨幅":None,"中位5D最大涨幅":None,"弱<2%":None}
-        g=x["5D Max Gain"]
-        return {"模型":name,"样本数":len(x),"≥3%":(g>=.03).mean(),"≥5%":(g>=.05).mean(),
-                "≥8%":(g>=.08).mean(),"平均5D最大涨幅":g.mean(),
-                "中位5D最大涨幅":g.median(),"弱<2%":(g<.02).mean()}
-
-    rows = [_stats("A5.2 图+量+势", a52)]
-    comp = pd.DataFrame(rows)
-
-    st.header("🧪 A5.2 图·量·势 A/B Test")
-    st.caption("实验规则：图形位置健康 + 量价确认 + RS确认 + MACD/KDJ/RSI至少1个确认。正式A4和B/C均未修改。")
-    st.caption("目标基准（旧A5 60日）：≥5% 41.3%｜≥8% 19.8%｜平均5D最大涨幅 5.67%｜弱<2% 25.4%。")
-    st.dataframe(
-        comp.style.format({
-            "≥3%":"{:.1%}","≥5%":"{:.1%}","≥8%":"{:.1%}",
-            "平均5D最大涨幅":"{:+.2%}","中位5D最大涨幅":"{:+.2%}","弱<2%":"{:.1%}"
-        }, na_rep="—"),
-        use_container_width=True, hide_index=True
-    )
-
-    if not a52.empty:
-        st.subheader("A5.2 买入案例")
-        cols=[c for c in ["A5.2结果","Ticker","Replay Date","Price","图","量","势",
-                          "量价共振","RS共振","MACD共振","KDJ共振","RSI共振",
-                          "5D Max Gain","5D Close Return","5D Max Drawdown"] if c in a52.columns]
-        st.dataframe(a52[cols].head(300), use_container_width=True, hide_index=True)
-
-
 def score_accumulation(df):
     close = pd.to_numeric(df["Close"], errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce")
@@ -2425,18 +2329,9 @@ def render_a4_a5_resonance_comparison(bt):
     if bt is None or bt.empty:
         return
     d = bt.copy()
-    req = [
-        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain',
-        'A5决策','共振数',
-        'MACD共振','KDJ共振','RSI共振','量价共振','RS共振','图形共振'
-    ]
-    missing = [c for c in req if c not in d.columns]
-    if missing:
-        st.warning(
-            "当前 Session 里还是旧版本 Replay 缓存，缺少 A5.1 新字段："
-            + "、".join(missing)
-            + "。请点击上面的“🧪 运行 60日三版本同屏回测”重新跑一次。"
-        )
+    req = ['Replay Date','Ticker','Replay Eligible Rank','5D Max Gain','A5决策','共振数']
+    if any(c not in d.columns for c in req):
+        st.warning("当前缓存是旧Replay，请重新运行历史回测一次，生成A5共振字段。")
         return
 
     d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
@@ -2472,9 +2367,9 @@ def render_a4_a5_resonance_comparison(bt):
             '弱股<2%': (g < .02).mean() if len(g) else np.nan,
         }
 
-    comp = pd.DataFrame([summary(a4,'当前A4 Top10'), summary(a5,'A5.1 图形共振买入')])
-    st.header("🆚 当前A4 vs A5.1图形共振：谁更会找到未来大涨股")
-    st.caption("同一历史日期、同一股票池、同一未来5日结果。A5.1不强制每天凑10只；只有满足“买”的股票才进入A5结果。")
+    comp = pd.DataFrame([summary(a4,'当前A4 Top10'), summary(a5,'A5.2R 共振+空间')])
+    st.header("🆚 当前A4 vs A5.2R：共振 + 支撑/压力空间")
+    st.caption("同一历史日期、同一股票池、同一未来5日结果。A5.2R不强制每天凑10只；保留MACD/KDJ/RSI/量价/RS，并加入OHLCV计算的支撑/压力空间。")
     st.dataframe(
         comp.style.format({
             '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
@@ -2485,7 +2380,7 @@ def render_a4_a5_resonance_comparison(bt):
 
     # Indicator hit-rate table: one indicator per row, useful for deciding what to keep.
     rows = []
-    for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','图形共振']:
+    for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振']:
         yes = d[d[c] == '是']
         g = pd.to_numeric(yes['5D Max Gain'], errors='coerce').dropna()
         rows.append({
@@ -2686,8 +2581,6 @@ def render_historical_a_replay(bt):
     st.divider()
     render_a4_a5_resonance_comparison(bt)
     st.divider()
-    render_a52_ab_comparison(bt)
-    st.divider()
     render_ranking_diagnostics(bt)
     st.divider()
 
@@ -2771,7 +2664,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("V4.3A.5.2 图形共振A/B测试设置")
+    st.header("A5.2R 共振 + 支撑/压力")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2785,7 +2678,7 @@ with st.sidebar:
     st.success("V4.3A.4 正式规则：仅放宽 MA200；MA20、MA50、MA20斜率≥0.2%、Structure 均保留。")
 
 st.info(
-    "LIVE A当前正式采用MA200-only：约1年日K → 五大模块 → 原Hard Filter → Fundamental Confirmation → Early V2排名 → 次日Top候选。"
+    "A5.2R：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力空间 → 买/不买。"
     "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
@@ -2839,2043 +2732,25 @@ if scan_clicked:
         st.session_state["a_all_history_save_msg"] = f"全扫描池历史保存失败：{e}"
 
 
-
-# =========================================================
-# A6 VISION PROTOTYPE
-# =========================================================
-VISION_MODEL_DEFAULT = "gpt-5.6-terra"
-
-def _get_openai_api_key():
-    """Read key from Streamlit secrets first, then environment."""
-    try:
-        if "OPENAI_API_KEY" in st.secrets:
-            return str(st.secrets["OPENAI_API_KEY"]).strip()
-    except Exception:
-        pass
-    return os.getenv("OPENAI_API_KEY", "").strip()
-
-
-def _normalize_ohlcv(df):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    x = df.copy()
-    if isinstance(x.columns, pd.MultiIndex):
-        x.columns = [c[0] if isinstance(c, tuple) else c for c in x.columns]
-    needed = ["Open", "High", "Low", "Close", "Volume"]
-    if not set(needed).issubset(x.columns):
-        return pd.DataFrame()
-    x = x[needed].copy()
-    for c in needed:
-        x[c] = pd.to_numeric(x[c], errors="coerce")
-    x = x.dropna(subset=["Open", "High", "Low", "Close"])
-    x.index = pd.to_datetime(x.index).tz_localize(None)
-    return x.sort_index()
-
-
-def _draw_candles(ax, x, title):
-    """Draw actual candles from OHLCV. No support/resistance formula is overlaid."""
-    if x.empty:
-        return
-    dates = mdates.date2num(x.index.to_pydatetime())
-    width = 0.62
-
-    # Moving averages are visual context only, not support/resistance outputs.
-    ma20 = x["Close"].rolling(20).mean()
-    ma50 = x["Close"].rolling(50).mean()
-    ma200 = x["Close"].rolling(200).mean()
-
-    for d, (_, r) in zip(dates, x.iterrows()):
-        up = r["Close"] >= r["Open"]
-        body_low = min(r["Open"], r["Close"])
-        body_h = max(abs(r["Close"] - r["Open"]), max(r["Close"], 1) * 0.001)
-        edge = "tab:green" if up else "tab:red"
-        face = "white" if up else edge
-        ax.vlines(d, r["Low"], r["High"], linewidth=0.8, color=edge)
-        ax.add_patch(Rectangle(
-            (d - width/2, body_low), width, body_h,
-            facecolor=face, edgecolor=edge, linewidth=0.8
-        ))
-
-    ax.plot(dates, ma20.values, linewidth=1.1, label="MA20")
-    ax.plot(dates, ma50.values, linewidth=1.1, label="MA50")
-    if ma200.notna().any():
-        ax.plot(dates, ma200.values, linewidth=1.0, label="MA200")
-
-    ax.set_title(title, fontsize=10)
-    ax.grid(alpha=0.12)
-    ax.legend(loc="upper left", fontsize=7, ncol=3)
-    ax.xaxis_date()
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-
-
-def _draw_volume(ax, x):
-    dates = mdates.date2num(x.index.to_pydatetime())
-    for d, (_, r) in zip(dates, x.iterrows()):
-        up = r["Close"] >= r["Open"]
-        c = "tab:green" if up else "tab:red"
-        ax.bar(d, r["Volume"], width=0.62, color=c, alpha=0.65)
-    ax.set_ylabel("Volume", fontsize=8)
-    ax.grid(alpha=0.08)
-    ax.xaxis_date()
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-
-
-def make_vision_chart_png(ticker, asof_date, full_df=None):
-    """
-    Create one true chart image with two horizons:
-      left: 120 trading days
-      right: 60 trading days
-    Both end exactly at asof_date. Future bars are never shown.
-    """
-    if plt is None or Rectangle is None:
-        raise RuntimeError("缺少 matplotlib。请在 requirements.txt 增加 matplotlib。")
-
-    if full_df is None or full_df.empty:
-        full_df = safe_download_single(str(ticker), "2y")
-    x = _normalize_ohlcv(full_df)
-    if x.empty:
-        raise RuntimeError(f"{ticker}: 无法取得OHLCV")
-
-    cutoff = pd.Timestamp(asof_date).tz_localize(None)
-    hist = x[x.index <= cutoff].copy()
-    if len(hist) < 70:
-        raise RuntimeError(f"{ticker}: 选股日前历史K线不足70根")
-
-    x120 = hist.tail(120)
-    x60 = hist.tail(60)
-
-    fig = plt.figure(figsize=(16, 8.5), dpi=120)
-    gs = fig.add_gridspec(
-        2, 2, height_ratios=[4.5, 1.15],
-        hspace=0.06, wspace=0.10
-    )
-    ax120 = fig.add_subplot(gs[0, 0])
-    av120 = fig.add_subplot(gs[1, 0], sharex=ax120)
-    ax60 = fig.add_subplot(gs[0, 1])
-    av60 = fig.add_subplot(gs[1, 1], sharex=ax60)
-
-    _draw_candles(ax120, x120, f"{ticker} | 120D structure | as of {cutoff.date()}")
-    _draw_volume(av120, x120)
-    _draw_candles(ax60, x60, f"{ticker} | 60D setup | as of {cutoff.date()}")
-    _draw_volume(av60, x60)
-
-    ax120.set_ylabel("Price")
-    ax60.set_ylabel("Price")
-    plt.setp(ax120.get_xticklabels(), visible=False)
-    plt.setp(ax60.get_xticklabels(), visible=False)
-
-    fig.suptitle(
-        "VISION INPUT — only bars available on/before the as-of date are shown",
-        fontsize=12, y=0.995
-    )
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-A6_VISION_PROMPT = """
-你是CMS股票系统的第一审：视觉K线分析员。
-
-你看到的是同一只股票截至某个历史选股日的两张真实蜡烛K线：
-左边120个交易日用于看大结构；右边60个交易日用于看当前形态。
-底部为真实成交量。图中可能包含MA20/MA50/MA200作为视觉参考。
-
-严格规则：
-1. 只根据图片中实际可见的K线和成交量判断，不允许假设未来。
-2. 支撑区、压力区、买点、止损参考区必须从真实图形视觉结构中判断，
-   不得用“最近20日最高价”等机械公式冒充视觉支撑/压力。
-3. 先看大结构，再看当前位置，再看形态。局部Higher Low/收缩不能覆盖更大的下降结构。
-4. 重点区分：
-   - 上升趋势中的健康缩量回踩/再启动
-   - VCP/平台收缩后的潜在突破
-   - Bull Flag
-   - Higher Low + 突破前一个小高点
-   与
-   - 暴跌后的修复反弹
-   - 高位滞涨/衰竭
-   - 上方压力过近
-   - 假突破/长上影
-   - 放量但价格不前进
-5. “图形结论”只允许：买 / 不买。
-6. 不因为MACD、RSI等单一指标决定图形结论；它们由第二审“量+势”再确认。
-7. 返回纯JSON，不要markdown，不要额外文字。
-
-JSON字段：
-{
-  "图形结论": "买或不买",
-  "大结构": "一句话",
-  "当前阶段": "一句话",
-  "图形类型": "例如VCP/Bull Flag/缩量回踩/Higher Low/无有效形态",
-  "图形质量": "强/中/弱",
-  "支撑区": "从图形目测出的价格区间；看不清写不确定",
-  "压力区": "从图形目测出的价格区间；看不清写不确定",
-  "上方空间": "充足/一般/受限/不确定",
-  "潜在买点": "视觉上真正需要等待/触发的位置；没有则写无",
-  "无效条件": "图形被破坏的视觉条件",
-  "核心理由": "最多3句，说明为什么买或不买"
-}
-"""
-
-
-def _extract_json_object(s):
-    if not s:
-        raise ValueError("AI返回为空")
-    s = s.strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", s, flags=re.S)
-    if not m:
-        raise ValueError("AI没有返回JSON对象")
-    return json.loads(m.group(0))
-
-
-def call_vision_ai(png_bytes, model=VISION_MODEL_DEFAULT):
-    if OpenAI is None:
-        raise RuntimeError("缺少 openai Python package。请在 requirements.txt 增加 openai。")
-    key = _get_openai_api_key()
-    if not key:
-        raise RuntimeError(
-            "没有找到 OPENAI_API_KEY。请在 Streamlit Cloud → App settings → Secrets "
-            "加入：OPENAI_API_KEY = \"你的API key\""
-        )
-
-    client = OpenAI(api_key=key)
-    data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
-
-    response = client.responses.create(
-        model=model,
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": A6_VISION_PROMPT},
-                {"type": "input_image", "image_url": data_url}
-            ]
-        }]
-    )
-    result = _extract_json_object(response.output_text)
-    return result
-
-
-def _a6_volume_force_from_row(r):
-    """
-    Second review = 量 + 势.
-    This deliberately does NOT calculate support/resistance or chart positions.
-    """
-    vol_ok = str(r.get("量价共振", "否")) == "是"
-    rs_ok = str(r.get("RS共振", "否")) == "是"
-    mom = sum(str(r.get(c, "否")) == "是" for c in ["MACD共振", "KDJ共振", "RSI共振"])
-    force_ok = bool(rs_ok and mom >= 1)
-    return vol_ok, force_ok, mom
-
-
-def _pick_blind_vision_cases(bt, n=10):
-    """
-    Choose cases without using future return to decide which rows are shown to Vision.
-    Prefer historical A4/A5 candidates so this tests realistic stock-selection cases.
-    """
-    if bt is None or bt.empty:
-        return pd.DataFrame()
-    d = bt.copy()
-    needed = {"Ticker", "Replay Date"}
-    if not needed.issubset(d.columns):
-        return pd.DataFrame()
-
-    # Prefer rows that were already meaningful candidates. No future-return filter here.
-    if "A4 Rank" in d.columns:
-        rank = pd.to_numeric(d["A4 Rank"], errors="coerce")
-        pool = d[rank <= 10].copy()
-        if pool.empty:
-            pool = d.copy()
-    else:
-        pool = d.copy()
-
-    pool = pool.drop_duplicates(["Replay Date", "Ticker"]).copy()
-    # deterministic blind sample so reruns are comparable
-    pool["_key"] = pool["Replay Date"].astype(str) + "|" + pool["Ticker"].astype(str)
-    pool["_rnd"] = pool["_key"].map(lambda z: abs(hash(z)) % 10_000_000)
-    pool = pool.sort_values("_rnd").drop(columns=["_key", "_rnd"])
-    return pool.head(int(n)).copy()
-
-
-def render_a6_vision_prototype(bt):
-    st.divider()
-    st.header("👁️ A6 免费 Vision 验证 — 真实K线盲测")
-    st.caption(
-        "这一版不调用OpenAI API，因此不会产生Vision API费用。"
-        "程序只负责随机选10个历史案例并生成选股日以前的真实120D+60D K线图；"
-        "先人工/ChatGPT看图判断，再揭示未来5日结果。"
-    )
-
-    if bt is None or bt.empty:
-        st.info("请先运行上面的60日历史Replay。")
-        return
-
-    cases = _pick_blind_vision_cases(bt, 10)
-    if cases.empty:
-        st.warning("当前Replay数据不足以建立Vision测试案例。")
-        return
-
-    st.write(f"本轮盲测：**{len(cases)}只**。选案例时没有使用未来5日结果。")
-
-    if st.button("🆓 生成10只免费Vision盲测K线", type="primary", use_container_width=True):
-        pack = []
-        progress = st.progress(0)
-        status = st.empty()
-
-        for i, (_, r) in enumerate(cases.iterrows(), start=1):
-            ticker = str(r["Ticker"])
-            asof = r["Replay Date"]
-            status.write(f"正在生成真实K线：{i}/{len(cases)} — {ticker} — {asof}")
-            try:
-                full = safe_download_single(ticker, "2y")
-                png = make_vision_chart_png(ticker, asof, full)
-                key = f"a6_free_img_{i}"
-                st.session_state[key] = png
-
-                # Keep future outcomes hidden in a separate object.
-                future = {}
-                for c in ["5D Max Gain", "5D Close Return", "5D Max Drawdown"]:
-                    if c in r.index:
-                        future[c] = r.get(c)
-
-                pack.append({
-                    "序号": i,
-                    "Ticker": ticker,
-                    "Replay Date": asof,
-                    "image_key": key,
-                    "future": future,
-                })
-            except Exception as e:
-                pack.append({
-                    "序号": i, "Ticker": ticker, "Replay Date": asof,
-                    "image_key": None, "future": {}, "错误": str(e)
-                })
-            progress.progress(i / len(cases))
-
-        st.session_state["a6_free_pack"] = pack
-        st.session_state["a6_free_reveal"] = False
-        status.success("10只真实K线已生成。先看图判断，不要先揭示未来结果。")
-
-    pack = st.session_state.get("a6_free_pack", [])
-    if not pack:
-        return
-
-    st.subheader("第一步：只看图，不看未来")
-    st.info(
-        "把这些图截图发给ChatGPT即可。建议每次发2–4只。"
-        "判断字段：大结构｜当前阶段｜图形｜支撑区｜压力区｜上方空间｜潜在买点｜买/不买。"
-    )
-
-    for item in pack:
-        with st.expander(
-            f"#{item['序号']}  {item['Ticker']}  | 选股日 {item['Replay Date']}",
-            expanded=(item["序号"] <= 2)
-        ):
-            if item.get("image_key") and st.session_state.get(item["image_key"]):
-                st.image(st.session_state[item["image_key"]], use_container_width=True)
-            else:
-                st.error(item.get("错误", "K线生成失败"))
-
-    st.divider()
-    st.subheader("第二步：完成视觉判断以后，再揭示未来5日")
-    if not st.session_state.get("a6_free_reveal", False):
-        if st.button("🔓 我已经判断完10只 — 揭示未来5日结果", use_container_width=True):
-            st.session_state["a6_free_reveal"] = True
-            st.rerun()
-
-    if st.session_state.get("a6_free_reveal", False):
-        rows = []
-        for item in pack:
-            row = {
-                "序号": item["序号"],
-                "Ticker": item["Ticker"],
-                "Replay Date": item["Replay Date"],
-            }
-            row.update(item.get("future", {}))
-            rows.append(row)
-        st.success("未来结果已揭示。现在可以把你的/ChatGPT的视觉判断与真实未来表现逐只比较。")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-
-
-# =========================================================
-# A6 STARTUP-DAY REVIEW EXAMPLE — MU
-# =========================================================
-def _startup_signal_on_day(hist, idx):
-    """Evaluate one day using only data available on/before that day."""
-    if idx < 20:
-        return None
-
-    d = hist.iloc[idx]
-    prev = hist.iloc[:idx]
-    prev1 = hist.iloc[idx-1]
-
-    close = float(d["Close"])
-    open_ = float(d["Open"])
-    high = float(d["High"])
-    low = float(d["Low"])
-    vol = float(d["Volume"])
-
-    prev_close = float(prev1["Close"])
-    day_ret = close / prev_close - 1 if prev_close else 0.0
-
-    vol20 = float(prev["Volume"].tail(20).mean()) if len(prev) >= 20 else float(prev["Volume"].mean())
-    vol_ratio = vol / vol20 if vol20 and vol20 > 0 else 0.0
-
-    close_series = pd.concat([prev["Close"], pd.Series([close], index=[hist.index[idx]])])
-    ma20 = float(close_series.tail(20).mean())
-    ma50 = float(close_series.tail(50).mean()) if idx >= 49 else float("nan")
-
-    prior3_high = float(prev["High"].tail(3).max())
-    prior5_high = float(prev["High"].tail(5).max())
-
-    day_range = max(high - low, 1e-9)
-    close_position = (close - low) / day_range
-    bullish_body = close > open_
-
-    conds = {
-        "单日上涨≥2%": day_ret >= 0.02,
-        "突破前3日高点": close > prior3_high,
-        "突破前5日高点": close > prior5_high,
-        "量比≥1.20": vol_ratio >= 1.20,
-        "收盘靠近日内高位": close_position >= 0.70,
-        "阳线": bullish_body,
-        "站上MA20": close >= ma20,
-    }
-
-    score = 0
-    score += 2 if conds["单日上涨≥2%"] else 0
-    score += 2 if conds["突破前3日高点"] else 0
-    score += 1 if conds["突破前5日高点"] else 0
-    score += 2 if conds["量比≥1.20"] else 0
-    score += 1 if conds["收盘靠近日内高位"] else 0
-    score += 1 if conds["阳线"] else 0
-    score += 1 if conds["站上MA20"] else 0
-
-    trigger = (
-        conds["单日上涨≥2%"]
-        and (conds["突破前3日高点"] or conds["量比≥1.20"])
-        and score >= 5
-    )
-
-    return {
-        "date": hist.index[idx],
-        "close": close,
-        "day_ret": day_ret,
-        "vol_ratio": vol_ratio,
-        "ma20": ma20,
-        "ma50": ma50,
-        "score": score,
-        "trigger": trigger,
-        "conditions": conds,
-    }
-
-
-def _find_first_startup_day(ticker, original_date, lookforward_days=5):
-    """Inspect next N trading days sequentially and return earliest startup trigger."""
-    full = safe_download_single(ticker, "2y")
-    x = _normalize_ohlcv(full)
-    if x.empty:
-        raise RuntimeError(f"{ticker}: 无法取得OHLCV")
-
-    original_date = pd.Timestamp(original_date).tz_localize(None)
-    candidates = x[x.index > original_date].head(int(lookforward_days))
-    if candidates.empty:
-        raise RuntimeError(f"{ticker}: 原选股日后没有足够交易日")
-
-    checks = []
-    for dt in candidates.index:
-        idx = x.index.get_loc(dt)
-        sig = _startup_signal_on_day(x, idx)
-        if sig:
-            checks.append(sig)
-            if sig["trigger"]:
-                return sig, checks, x
-
-    return None, checks, x
-
-
-
-
-def _classify_mu_phase(sig, prev_sig=None):
-    """
-    Simple state label for the MU case study.
-    This is a diagnostic review, not yet production B logic.
-    """
-    if sig is None:
-        return "无信号"
-
-    day_ret = sig["day_ret"]
-    vol_ratio = sig["vol_ratio"]
-    conds = sig["conditions"]
-
-    if sig["trigger"]:
-        return "REVERSAL START"
-
-    # Pullback after a start: red/down day, but not necessarily invalid.
-    if prev_sig is not None and prev_sig.get("trigger") and day_ret < 0:
-        return "PULLBACK"
-
-    # Restart proxy: after a pullback, price turns up with either volume or short breakout support.
-    if prev_sig is not None and prev_sig.get("phase") == "PULLBACK":
-        if day_ret >= 0.015 and (
-            conds["突破前3日高点"] or vol_ratio >= 1.10 or conds["高位收盘"]
-        ):
-            return "RESTART CANDIDATE"
-
-    return "WATCH"
-
-
-def render_mu_startup_example():
-    st.divider()
-    st.header("🚀 MU 五日链路：START → PULLBACK → RESTART")
-    st.caption(
-        "从A原选股日7/29以后，逐日截断查看接下来5个交易日。"
-        "目标不是事后挑最好看的日子，而是验证B能否识别："
-        "反转启动 → 回踩 → 再启动 → BUY候选。"
-    )
-
-    ticker = "MU"
-    original_date = pd.Timestamp("2026-07-29")
-
-    if st.button("📊 生成 MU 后续5个交易日逐日截断图", use_container_width=True):
-        try:
-            full = safe_download_single(ticker, "2y")
-            x = _normalize_ohlcv(full)
-            if x.empty:
-                raise RuntimeError("MU: 无法取得OHLCV")
-
-            # Original date + next 5 trading days
-            future_dates = list(x.index[x.index > original_date][:5])
-            review_dates = [original_date] + future_dates
-
-            summaries = []
-            prev_state = None
-
-            for i, dt in enumerate(review_dates):
-                idx = x.index.get_loc(dt)
-                sig = _startup_signal_on_day(x, idx)
-                if sig is None:
-                    continue
-
-                # Temporary phase classification using only previous state.
-                phase = "A原选股日" if i == 0 else None
-                if i > 0:
-                    if sig["trigger"]:
-                        phase = "REVERSAL START"
-                    elif prev_state is not None and prev_state.get("phase") == "REVERSAL START" and sig["day_ret"] < 0:
-                        phase = "PULLBACK"
-                    elif prev_state is not None and prev_state.get("phase") == "PULLBACK":
-                        if sig["day_ret"] >= 0.015 and (
-                            sig["conditions"]["突破前3日高点"]
-                            or sig["vol_ratio"] >= 1.10
-                            or sig["conditions"]["收盘靠近日内高位"]
-                        ):
-                            phase = "RESTART CANDIDATE"
-                        else:
-                            phase = "WATCH"
-                    else:
-                        phase = "WATCH"
-
-                st.subheader(f"{dt.date()} — {phase}")
-                png = make_vision_chart_png(ticker, dt, full)
-                st.image(png, use_container_width=True)
-
-                conds = sig["conditions"]
-                summaries.append({
-                    "日期": dt.date(),
-                    "阶段": phase,
-                    "收盘价": round(sig["close"], 2),
-                    "单日涨幅": sig["day_ret"],
-                    "量比20D": round(sig["vol_ratio"], 2),
-                    "启动分数": sig["score"],
-                    "上涨≥2%": "✅" if conds["单日上涨≥2%"] else "—",
-                    "破3日高": "✅" if conds["突破前3日高点"] else "—",
-                    "破5日高": "✅" if conds["突破前5日高点"] else "—",
-                    "量比≥1.20": "✅" if conds["量比≥1.20"] else "—",
-                    "高位收盘": "✅" if conds["收盘靠近日内高位"] else "—",
-                    "站上MA20": "✅" if conds["站上MA20"] else "—",
-                    "程序启动触发": "是" if sig["trigger"] else "否",
-                })
-
-                prev_state = {"phase": phase, "signal": sig}
-
-            st.subheader("MU 五日链路客观信号表")
-            sdf = pd.DataFrame(summaries)
-            st.dataframe(
-                sdf.style.format({"单日涨幅": "{:.2%}"}),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.info(
-                "复核重点：若某天标记为 RESTART CANDIDATE，"
-                "我们再人工/ChatGPT看当天真实K线，决定是否足够成为B的BUY。"
-                "这个版本仍是研究版，不会改正式B。"
-            )
-
-        except Exception as e:
-            st.error(f"MU五日链路生成失败：{e}")
-
-
-# =========================================================
-# MU 2026-08-04 INTRADAY DATA AVAILABILITY CHECK
-# =========================================================
-def render_mu_intraday_data_check():
-    st.divider()
-    st.header("🧪 MU 2026-08-04 盘中数据检查")
-    st.caption(
-        "先只检查数据源，不改正式B逻辑。目标：确认Yahoo当前是否还能提供"
-        "2026-08-04附近的15分钟/1小时OHLCV，以便下一步做无未来泄漏的盘中Replay。"
-    )
-
-    if st.button("🔎 检查 MU 8/4 的 15min + 1H 数据", use_container_width=True):
-        ticker = "MU"
-        target = pd.Timestamp("2026-08-04")
-        results = []
-
-        for interval, period in [("15m", "60d"), ("60m", "730d")]:
-            try:
-                raw = yf.download(
-                    ticker,
-                    period=period,
-                    interval=interval,
-                    auto_adjust=False,
-                    progress=False,
-                    threads=False,
-                )
-                x = _normalize_ohlcv(raw)
-
-                if x.empty:
-                    results.append({
-                        "周期": interval,
-                        "状态": "❌ 无数据",
-                        "最早时间": "",
-                        "最晚时间": "",
-                        "8/4记录数": 0,
-                        "结论": "当前Yahoo请求没有返回数据",
-                    })
-                    continue
-
-                idx = pd.DatetimeIndex(x.index)
-                # Normalize timezone only for date comparison.
-                dates = pd.Index([pd.Timestamp(v).date() for v in idx])
-                mask = dates == target.date()
-                day_rows = x.loc[mask]
-
-                results.append({
-                    "周期": interval,
-                    "状态": "✅ 有数据" if len(day_rows) else "⚠️ 有数据但没有8/4",
-                    "最早时间": str(idx.min()),
-                    "最晚时间": str(idx.max()),
-                    "8/4记录数": int(len(day_rows)),
-                    "结论": "可以做8/4盘中Replay" if len(day_rows) else "当前Yahoo保留窗口未覆盖8/4",
-                })
-
-                if len(day_rows):
-                    st.subheader(f"MU 2026-08-04 — {interval}")
-                    show = day_rows.reset_index().copy()
-                    st.dataframe(show, use_container_width=True, hide_index=True)
-
-            except Exception as e:
-                results.append({
-                    "周期": interval,
-                    "状态": "❌ 请求失败",
-                    "最早时间": "",
-                    "最晚时间": "",
-                    "8/4记录数": 0,
-                    "结论": str(e)[:180],
-                })
-
-        st.subheader("检查结果")
-        rdf = pd.DataFrame(results)
-        st.dataframe(rdf, use_container_width=True, hide_index=True)
-
-        ok15 = any(r["周期"] == "15m" and r["8/4记录数"] > 0 for r in results)
-        ok60 = any(r["周期"] == "60m" and r["8/4记录数"] > 0 for r in results)
-
-        if ok15 and ok60:
-            st.success("15min和1H都覆盖8/4：下一步可以直接做MU 8/4盘中逐根Replay。")
-        elif ok60:
-            st.warning("1H覆盖8/4，但15min没有。下一步需要补15min历史数据源，或先做1H Replay。")
-        else:
-            st.warning(
-                "Yahoo当前没有足够的8/4分钟级历史数据。下一步不要硬改B；"
-                "我们改接能提供历史分钟K的数据源。"
-            )
-
-
-
-# =========================================================
-# MU 2026-08-04 — 15M PRICE-ACTION STATE MACHINE REPLAY V1
-# No Vision / No OpenAI API / No image tokens
-# =========================================================
-def _mu_state_machine_replay_v1():
-    raw15 = yf.download(
-        "MU", period="60d", interval="15m",
-        auto_adjust=False, progress=False, threads=False
-    )
-    x = _normalize_ohlcv(raw15)
-    if x.empty:
-        return pd.DataFrame(), None
-
-    # Indicators use only data available at or before each bar.
-    x = x.copy()
-    x["PrevHigh4"] = x["High"].shift(1).rolling(4).max()
-    x["PrevLow4"] = x["Low"].shift(1).rolling(4).min()
-    x["VolAvg20"] = x["Volume"].shift(1).rolling(20, min_periods=8).mean()
-    x["VolRatio"] = x["Volume"] / x["VolAvg20"]
-    x["Range"] = x["High"] - x["Low"]
-    x["RangeAvg8"] = x["Range"].shift(1).rolling(8, min_periods=4).mean()
-    x["Body"] = (x["Close"] - x["Open"]).abs()
-    x["UpperWick"] = x["High"] - x[["Open","Close"]].max(axis=1)
-    x["ClosePos"] = (x["Close"] - x["Low"]) / (x["High"] - x["Low"]).replace(0, np.nan)
-
-    dates = pd.Index([pd.Timestamp(v).date() for v in x.index])
-    target = pd.Timestamp("2026-08-04").date()
-    day = x.loc[dates == target].copy()
-
-    if day.empty:
-        return pd.DataFrame(), None
-
-    # Context from previous sessions, but no future bars.
-    hist_before = x.loc[pd.DatetimeIndex(x.index) < pd.Timestamp("2026-08-04")].copy()
-    recent = hist_before.tail(26 * 3)  # roughly prior 3 sessions
-
-    # Prior structural reference: recent intraday highs/lows.
-    prior_res = float(recent["High"].tail(26).max()) if len(recent) else np.nan
-    prior_support = float(recent["Low"].tail(26).min()) if len(recent) else np.nan
-
-    state = "SETUP"
-    pullback_seen = True   # daily chain already established 7/30 START -> 7/31 PULLBACK -> 8/3 stabilization
-    base_seen = False
-    first_buy = None
-    rows = []
-
-    day_open = float(day.iloc[0]["Open"])
-
-    for ts, r in day.iterrows():
-        prev4h = r["PrevHigh4"]
-        prev4l = r["PrevLow4"]
-        vr = r["VolRatio"]
-        rng_avg = r["RangeAvg8"]
-
-        # Price-action events.
-        higher_low = bool(pd.notna(prev4l) and r["Low"] > prev4l)
-        breakout = bool(pd.notna(prev4h) and r["Close"] > prev4h)
-        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
-        positive_bar = bool(r["Close"] > r["Open"])
-        range_expand = bool(pd.notna(rng_avg) and r["Range"] >= 1.05 * rng_avg)
-
-        # Volume is contextual, not a hard 1.2x gate.
-        volume_ok = bool(pd.isna(vr) or vr >= 0.75)
-        volume_strong = bool(pd.notna(vr) and vr >= 1.20)
-
-        # Failure / chase controls.
-        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
-        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
-        chase = bool((r["Close"] / day_open - 1) > 0.055)
-
-        # BASE can be established after the daily pullback context when intraday price
-        # starts holding a higher low or closes firmly above the short rolling structure.
-        if pullback_seen and (higher_low or strong_close):
-            base_seen = True
-            if state == "SETUP":
-                state = "BASE"
-
-        trigger = bool(
-            base_seen
-            and breakout
-            and positive_bar
-            and strong_close
-            and volume_ok
-            and not fake_break_risk
-            and not chase
-        )
-
-        if trigger and first_buy is None:
-            state = "BUY"
-            first_buy = {
-                "time": pd.Timestamp(ts),
-                "price": float(r["Close"]),
-                "day_return": float(r["Close"] / day_open - 1),
-                "vol_ratio": float(vr) if pd.notna(vr) else np.nan,
-            }
-        elif first_buy is None and base_seen:
-            state = "TRIGGER WAIT"
-
-        reasons = []
-        if higher_low: reasons.append("Higher Low")
-        if breakout: reasons.append("突破前4根15m高点")
-        if strong_close: reasons.append("高位收盘")
-        if range_expand: reasons.append("振幅扩张")
-        if volume_strong: reasons.append("明显放量")
-        elif volume_ok: reasons.append("量能可接受")
-        if fake_break_risk: reasons.append("假突破风险")
-        if chase: reasons.append("涨幅过大/防追高")
-
-        rows.append({
-            "时间": pd.Timestamp(ts).strftime("%H:%M"),
-            "状态": state,
-            "收盘价": float(r["Close"]),
-            "当日涨幅": float(r["Close"] / day_open - 1),
-            "Higher Low": "✅" if higher_low else "—",
-            "突破短压": "✅" if breakout else "—",
-            "高位收盘": "✅" if strong_close else "—",
-            "量比": float(vr) if pd.notna(vr) else np.nan,
-            "量": "强" if volume_strong else ("可接受" if volume_ok else "弱"),
-            "假突破风险": "⚠️" if fake_break_risk else "—",
-            "触发BUY": "✅" if trigger else "—",
-            "原因": "；".join(reasons) if reasons else "等待",
-        })
-
-    return pd.DataFrame(rows), first_buy
-
-
-def render_mu_state_machine_replay_v1():
-    st.divider()
-    st.header("⚙️ MU 8/4 — 15分钟状态机 Replay V1")
-    st.caption(
-        "不使用Vision、不调用OpenAI API、不生成图片。程序逐根读取15分钟OHLCV，"
-        "按 SETUP → BASE → TRIGGER WAIT → BUY 自动判断。"
-    )
-
-    if st.button("▶️ 运行 MU 8/4 状态机 Replay", use_container_width=True):
-        try:
-            rdf, buy = _mu_state_machine_replay_v1()
-            if rdf.empty:
-                st.error("没有取得 MU 2026-08-04 的15分钟数据。")
-                return
-
-            if buy:
-                st.success(
-                    f"首次BUY触发：{buy['time'].strftime('%H:%M')} | "
-                    f"价格 ${buy['price']:.2f} | "
-                    f"当时日内涨幅 {buy['day_return']:.2%} | "
-                    f"量比 {buy['vol_ratio']:.2f}"
-                )
-            else:
-                st.warning("V1规则在8/4没有触发BUY。不要为了MU强行放宽，先检查逐根结果。")
-
-            st.dataframe(
-                rdf.style.format({
-                    "收盘价": "${:.2f}",
-                    "当日涨幅": "{:.2%}",
-                    "量比": "{:.2f}",
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.info(
-                "这一版是研究版。重点看首次BUY时间是否合理；"
-                "确认MU后还要用更多历史案例做Forward/Replay验证，不能只为MU调参数。"
-            )
-        except Exception as e:
-            st.error(f"状态机Replay失败：{e}")
-
-
-# =========================================================
-# MU 2026-08-04 — 15M PRICE-ACTION STATE MACHINE REPLAY V2
-# Fixes V1:
-# 1) no BUY at 09:30; require opening observation window
-# 2) intraday structure uses same-day bars only
-# 3) volume uses time-of-day relative volume
-# 4) first trigger separated from post-trigger state
-# =========================================================
-def _time_of_day_rvol(x, ts, lookback_days=10):
-    """Compare current 15m volume with same clock-time across prior sessions."""
-    t = pd.Timestamp(ts).time()
-    cur_date = pd.Timestamp(ts).date()
-
-    idx = pd.DatetimeIndex(x.index)
-    same_time = x[
-        [(pd.Timestamp(i).time() == t and pd.Timestamp(i).date() < cur_date) for i in idx]
-    ].tail(lookback_days)
-
-    if same_time.empty:
-        return np.nan
-
-    avg = float(same_time["Volume"].mean())
-    cur = float(x.loc[ts, "Volume"])
-    return cur / avg if avg > 0 else np.nan
-
-
-def _mu_state_machine_replay_v2():
-    raw15 = yf.download(
-        "MU", period="60d", interval="15m",
-        auto_adjust=False, progress=False, threads=False
-    )
-    x = _normalize_ohlcv(raw15)
-    if x.empty:
-        return pd.DataFrame(), None
-
-    target_date = pd.Timestamp("2026-08-04").date()
-    idx = pd.DatetimeIndex(x.index)
-    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
-    day = x.loc[day_mask].copy()
-    if day.empty:
-        return pd.DataFrame(), None
-
-    # Same-day rolling structure only.
-    day["PrevDayHigh"] = day["High"].shift(1).cummax()
-    day["PrevDayLow"] = day["Low"].shift(1).cummin()
-    day["Prev3High"] = day["High"].shift(1).rolling(3, min_periods=3).max()
-    day["Prev3Low"] = day["Low"].shift(1).rolling(3, min_periods=3).min()
-    day["Range"] = day["High"] - day["Low"]
-    day["ClosePos"] = (day["Close"] - day["Low"]) / day["Range"].replace(0, np.nan)
-    day["UpperWick"] = day["High"] - day[["Open", "Close"]].max(axis=1)
-
-    # Add time-of-day RVOL from prior sessions.
-    day["TOD_RVOL"] = [
-        _time_of_day_rvol(x, ts, lookback_days=10) for ts in day.index
-    ]
-
-    day_open = float(day.iloc[0]["Open"])
-
-    state = "OPENING OBSERVE"
-    first_buy = None
-    rows = []
-
-    # Require four completed 15m bars = wait through 10:15, first possible trigger at 10:30.
-    min_bar_index_for_trigger = 4
-
-    base_low = None
-    base_high = None
-    pullback_seen = False
-    base_seen = False
-
-    for i, (ts, r) in enumerate(day.iterrows()):
-        # Build today's structure incrementally.
-        prev_rows = day.iloc[:i]
-
-        if len(prev_rows) >= 2:
-            # A simple intraday base/pullback concept:
-            # if current low is above today's low-so-far after an initial push, mark higher low.
-            todays_low_so_far = float(prev_rows["Low"].min())
-            todays_high_so_far = float(prev_rows["High"].max())
-        else:
-            todays_low_so_far = np.nan
-            todays_high_so_far = np.nan
-
-        higher_low = bool(
-            i >= 3
-            and pd.notna(todays_low_so_far)
-            and r["Low"] > todays_low_so_far
-        )
-
-        # Pullback: current bar closes below prior bar after an early push,
-        # but remains above day's opening low region.
-        if i >= 2:
-            prev_close = float(day.iloc[i-1]["Close"])
-            early_high = float(day.iloc[:i]["High"].max())
-            early_low = float(day.iloc[:i]["Low"].min())
-            retrace = (early_high - float(r["Close"])) / max(early_high - early_low, 1e-9)
-            if r["Close"] < prev_close and 0.15 <= retrace <= 0.65:
-                pullback_seen = True
-
-        # Base: after pullback, require two bars that avoid making a fresh session low.
-        if pullback_seen and i >= 4:
-            recent2 = day.iloc[max(0, i-2):i]
-            if len(recent2) == 2 and float(recent2["Low"].min()) > float(day.iloc[:max(1, i-2)]["Low"].min()):
-                base_seen = True
-                base_low = float(recent2["Low"].min())
-                base_high = float(recent2["High"].max())
-
-        # Breakout only against same-day structure, never prior session bars.
-        if base_seen and base_high is not None:
-            breakout = bool(r["Close"] > base_high)
-        else:
-            breakout = bool(
-                i >= 4
-                and pd.notna(r["Prev3High"])
-                and r["Close"] > r["Prev3High"]
-            )
-
-        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
-        positive_bar = bool(r["Close"] > r["Open"])
-
-        tod_rvol = r["TOD_RVOL"]
-        # Contextual volume: 0.9x same-time average is acceptable; >=1.2 strong.
-        volume_ok = bool(pd.isna(tod_rvol) or tod_rvol >= 0.90)
-        volume_strong = bool(pd.notna(tod_rvol) and tod_rvol >= 1.20)
-
-        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
-        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
-
-        day_ret = float(r["Close"] / day_open - 1)
-        chase = bool(day_ret > 0.055)
-
-        if i < min_bar_index_for_trigger:
-            state = "OPENING OBSERVE"
-            trigger = False
-        else:
-            if pullback_seen and not base_seen:
-                state = "PULLBACK"
-            elif base_seen and not breakout:
-                state = "BASE"
-            elif base_seen and breakout:
-                state = "TRIGGER WAIT"
-
-            trigger = bool(
-                base_seen
-                and breakout
-                and positive_bar
-                and strong_close
-                and volume_ok
-                and not fake_break_risk
-                and not chase
-            )
-
-        fired_now = False
-        if trigger and first_buy is None:
-            first_buy = {
-                "time": pd.Timestamp(ts),
-                "price": float(r["Close"]),
-                "day_return": day_ret,
-                "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
-            }
-            fired_now = True
-            state = "BUY TRIGGER"
-        elif first_buy is not None:
-            state = "POST-BUY"
-
-        reasons = []
-        if higher_low: reasons.append("Higher Low")
-        if pullback_seen: reasons.append("已出现回踩")
-        if base_seen: reasons.append("形成日内Base")
-        if breakout: reasons.append("突破日内短压")
-        if strong_close: reasons.append("高位收盘")
-        if volume_strong: reasons.append("同时段量能强")
-        elif volume_ok: reasons.append("同时段量能可接受")
-        if fake_break_risk: reasons.append("假突破风险")
-        if chase: reasons.append("防追高")
-
-        rows.append({
-            "时间": pd.Timestamp(ts).strftime("%H:%M"),
-            "状态": state,
-            "收盘价": float(r["Close"]),
-            "当日涨幅": day_ret,
-            "Higher Low": "✅" if higher_low else "—",
-            "回踩": "✅" if pullback_seen else "—",
-            "Base": "✅" if base_seen else "—",
-            "突破短压": "✅" if breakout else "—",
-            "高位收盘": "✅" if strong_close else "—",
-            "同时段量比": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
-            "量": "强" if volume_strong else ("可接受" if volume_ok else "弱"),
-            "假突破风险": "⚠️" if fake_break_risk else "—",
-            "首次触发BUY": "✅" if fired_now else "—",
-            "原因": "；".join(reasons) if reasons else "等待",
-        })
-
-    return pd.DataFrame(rows), first_buy
-
-
-def render_mu_state_machine_replay_v2():
-    st.divider()
-    st.header("⚙️ MU 8/4 — 15分钟状态机 Replay V2")
-    st.caption(
-        "V2修正：不开盘即买；至少观察到10:30；只用当天结构；"
-        "成交量改用“同一时间段相对量”；首次BUY与持仓后状态分开。"
-    )
-
-    if st.button("▶️ 运行 MU 8/4 状态机 Replay V2", use_container_width=True):
-        try:
-            rdf, buy = _mu_state_machine_replay_v2()
-            if rdf.empty:
-                st.error("没有取得 MU 2026-08-04 的15分钟数据。")
-                return
-
-            if buy:
-                st.success(
-                    f"首次BUY触发：{buy['time'].strftime('%H:%M')} | "
-                    f"价格 ${buy['price']:.2f} | "
-                    f"当时日内涨幅 {buy['day_return']:.2%} | "
-                    f"同时段量比 {buy['tod_rvol']:.2f}"
-                )
-            else:
-                st.warning("V2在8/4没有触发BUY。先看状态机过程，不要为了MU单例硬放宽。")
-
-            st.dataframe(
-                rdf.style.format({
-                    "收盘价": "${:.2f}",
-                    "当日涨幅": "{:.2%}",
-                    "同时段量比": "{:.2f}",
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.info(
-                "这仍是研究版。先确认MU的首次触发是否合理；"
-                "下一步必须用HOOD、ASTS及更多历史样本验证，防止过拟合MU。"
-            )
-        except Exception as e:
-            st.error(f"V2 Replay失败：{e}")
-
-
-# =========================================================
-# MULTI-STOCK REPLAY V3
-# Same V2 parameters for every stock; no stock-specific tuning.
-# For each original A date:
-#   scan next 5 trading days -> find earliest intraday BUY trigger
-#   -> evaluate forward 1D / 3D / 5D from trigger price
-# =========================================================
-
-V3_CASES = [
-    ("PATH", "2026-06-17"),
-    ("ETN",  "2026-06-08"),
-    ("MSFT", "2026-08-17"),
-    ("HD",   "2026-07-10"),
-    ("HOOD", "2026-07-31"),
-    ("CAT",  "2026-06-05"),
-    ("MU",   "2026-07-29"),
-    ("XOM",  "2026-07-23"),
-    ("MRK",  "2026-08-05"),
-    ("ASTS", "2026-08-10"),
-]
-
-
-def _tod_rvol_generic(x, ts, lookback_days=10):
-    t = pd.Timestamp(ts).time()
-    cur_date = pd.Timestamp(ts).date()
-    idx = pd.DatetimeIndex(x.index)
-    mask = [
-        pd.Timestamp(i).time() == t and pd.Timestamp(i).date() < cur_date
-        for i in idx
-    ]
-    hist = x.loc[mask].tail(lookback_days)
-    if hist.empty:
-        return np.nan
-    avg = float(hist["Volume"].mean())
-    cur = float(x.loc[ts, "Volume"])
-    return cur / avg if avg > 0 else np.nan
-
-
-def _state_machine_one_day_v2_generic(x15, target_date):
-    """
-    Exact same V2 logic applied generically to one stock/day.
-    Returns first intraday BUY trigger, or None.
-    """
-    idx = pd.DatetimeIndex(x15.index)
-    target_date = pd.Timestamp(target_date).date()
-    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
-    day = x15.loc[day_mask].copy()
-    if day.empty:
-        return None, pd.DataFrame()
-
-    day["Prev3High"] = day["High"].shift(1).rolling(3, min_periods=3).max()
-    day["Range"] = day["High"] - day["Low"]
-    day["ClosePos"] = (day["Close"] - day["Low"]) / day["Range"].replace(0, np.nan)
-    day["UpperWick"] = day["High"] - day[["Open", "Close"]].max(axis=1)
-    day["TOD_RVOL"] = [_tod_rvol_generic(x15, ts, 10) for ts in day.index]
-
-    day_open = float(day.iloc[0]["Open"])
-    first_buy = None
-    rows = []
-
-    min_bar_index_for_trigger = 4  # first possible trigger 10:30
-    pullback_seen = False
-    base_seen = False
-    base_high = None
-
-    for i, (ts, r) in enumerate(day.iterrows()):
-        prev_rows = day.iloc[:i]
-
-        if len(prev_rows) >= 2:
-            todays_low_so_far = float(prev_rows["Low"].min())
-        else:
-            todays_low_so_far = np.nan
-
-        higher_low = bool(
-            i >= 3
-            and pd.notna(todays_low_so_far)
-            and r["Low"] > todays_low_so_far
-        )
-
-        if i >= 2:
-            prev_close = float(day.iloc[i-1]["Close"])
-            early_high = float(day.iloc[:i]["High"].max())
-            early_low = float(day.iloc[:i]["Low"].min())
-            retrace = (early_high - float(r["Close"])) / max(early_high - early_low, 1e-9)
-            if r["Close"] < prev_close and 0.15 <= retrace <= 0.65:
-                pullback_seen = True
-
-        if pullback_seen and i >= 4:
-            recent2 = day.iloc[max(0, i-2):i]
-            earlier = day.iloc[:max(1, i-2)]
-            if (
-                len(recent2) == 2
-                and len(earlier) > 0
-                and float(recent2["Low"].min()) > float(earlier["Low"].min())
-            ):
-                base_seen = True
-                base_high = float(recent2["High"].max())
-
-        if base_seen and base_high is not None:
-            breakout = bool(r["Close"] > base_high)
-        else:
-            breakout = bool(
-                i >= 4
-                and pd.notna(r["Prev3High"])
-                and r["Close"] > r["Prev3High"]
-            )
-
-        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
-        positive_bar = bool(r["Close"] > r["Open"])
-
-        tod_rvol = r["TOD_RVOL"]
-        volume_ok = bool(pd.isna(tod_rvol) or tod_rvol >= 0.90)
-        volume_strong = bool(pd.notna(tod_rvol) and tod_rvol >= 1.20)
-
-        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
-        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
-
-        day_ret = float(r["Close"] / day_open - 1)
-        chase = bool(day_ret > 0.055)
-
-        if i < min_bar_index_for_trigger:
-            trigger = False
-            state = "OPENING OBSERVE"
-        else:
-            if pullback_seen and not base_seen:
-                state = "PULLBACK"
-            elif base_seen and not breakout:
-                state = "BASE"
-            elif base_seen and breakout:
-                state = "TRIGGER WAIT"
-            else:
-                state = "WATCH"
-
-            trigger = bool(
-                base_seen
-                and breakout
-                and positive_bar
-                and strong_close
-                and volume_ok
-                and not fake_break_risk
-                and not chase
-            )
-
-        fired_now = False
-        if trigger and first_buy is None:
-            first_buy = {
-                "time": pd.Timestamp(ts),
-                "price": float(r["Close"]),
-                "day_return": day_ret,
-                "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
-            }
-            fired_now = True
-            state = "BUY TRIGGER"
-        elif first_buy is not None:
-            state = "POST-BUY"
-
-        rows.append({
-            "time": pd.Timestamp(ts),
-            "state": state,
-            "close": float(r["Close"]),
-            "day_return": day_ret,
-            "higher_low": higher_low,
-            "pullback": pullback_seen,
-            "base": base_seen,
-            "breakout": breakout,
-            "strong_close": strong_close,
-            "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
-            "volume_strong": volume_strong,
-            "fake_break": fake_break_risk,
-            "fired_now": fired_now,
-        })
-
-    return first_buy, pd.DataFrame(rows)
-
-
-def _download_intraday_15m(ticker):
-    raw = yf.download(
-        ticker, period="60d", interval="15m",
-        auto_adjust=False, progress=False, threads=False
-    )
-    return _normalize_ohlcv(raw)
-
-
-def _download_daily(ticker):
-    raw = yf.download(
-        ticker, period="1y", interval="1d",
-        auto_adjust=False, progress=False, threads=False
-    )
-    return _normalize_ohlcv(raw)
-
-
-def _next_trading_dates_from_intraday(x15, original_date, n=5):
-    if x15 is None or x15.empty:
-        return []
-    original_date = pd.Timestamp(original_date).date()
-    dates = sorted(set(pd.Timestamp(v).date() for v in x15.index))
-    return [d for d in dates if d > original_date][:n]
-
-
-def _forward_metrics_from_trigger(daily, trigger_date, trigger_price):
-    if daily is None or daily.empty:
-        return {}
-
-    td = pd.Timestamp(trigger_date).date()
-    ddates = pd.Index([pd.Timestamp(v).date() for v in daily.index])
-
-    # Include trigger date and then following trading days.
-    future = daily.loc[ddates >= td].copy()
-    if future.empty:
-        return {}
-
-    out = {}
-    for n in [1, 3, 5]:
-        window = future.head(n + 1)  # trigger day + next n trading days
-        if window.empty:
-            out[f"{n}D Max Gain"] = np.nan
-            out[f"{n}D Close Return"] = np.nan
-            continue
-
-        max_gain = float(window["High"].max() / trigger_price - 1)
-        close_ret = float(window.iloc[-1]["Close"] / trigger_price - 1)
-        out[f"{n}D Max Gain"] = max_gain
-        out[f"{n}D Close Return"] = close_ret
-
-    window5 = future.head(6)
-    if not window5.empty:
-        out["5D Max Drawdown"] = float(window5["Low"].min() / trigger_price - 1)
-    else:
-        out["5D Max Drawdown"] = np.nan
-
-    return out
-
-
-def _run_multi_stock_replay_v3():
-    results = []
-    detail = {}
-
-    for ticker, original_date in V3_CASES:
-        row = {
-            "Ticker": ticker,
-            "A原选股日": original_date,
-            "15m可用": "否",
-            "是否BUY": "否",
-            "首次BUY日期": "",
-            "首次BUY时间": "",
-            "买入价": np.nan,
-            "当时日内涨幅": np.nan,
-            "同时段量比": np.nan,
-            "扫描交易日数": 0,
-            "说明": "",
-        }
-
-        try:
-            x15 = _download_intraday_15m(ticker)
-            if x15.empty:
-                row["说明"] = "Yahoo当前无15m历史数据"
-                results.append(row)
-                continue
-
-            row["15m可用"] = "是"
-            scan_dates = _next_trading_dates_from_intraday(x15, original_date, 5)
-            row["扫描交易日数"] = len(scan_dates)
-
-            if not scan_dates:
-                row["说明"] = "原选股日不在Yahoo当前15m保留窗口内"
-                results.append(row)
-                continue
-
-            first_buy = None
-            first_buy_day = None
-            all_day_details = []
-
-            for d in scan_dates:
-                buy, ddetail = _state_machine_one_day_v2_generic(x15, d)
-                if not ddetail.empty:
-                    ddetail = ddetail.copy()
-                    ddetail["Ticker"] = ticker
-                    ddetail["ReplayDate"] = str(d)
-                    all_day_details.append(ddetail)
-
-                if buy is not None:
-                    first_buy = buy
-                    first_buy_day = d
-                    break
-
-            if all_day_details:
-                detail[ticker] = pd.concat(all_day_details, ignore_index=True)
-
-            if first_buy is None:
-                row["说明"] = "未来5个交易日内无V2 BUY触发"
-                results.append(row)
-                continue
-
-            row["是否BUY"] = "是"
-            row["首次BUY日期"] = str(first_buy_day)
-            row["首次BUY时间"] = first_buy["time"].strftime("%H:%M")
-            row["买入价"] = first_buy["price"]
-            row["当时日内涨幅"] = first_buy["day_return"]
-            row["同时段量比"] = first_buy["tod_rvol"]
-
-            daily = _download_daily(ticker)
-            row.update(_forward_metrics_from_trigger(daily, first_buy_day, first_buy["price"]))
-            row["说明"] = "同一V2参数自动触发"
-
-        except Exception as e:
-            row["说明"] = f"错误: {str(e)[:120]}"
-
-        results.append(row)
-
-    return pd.DataFrame(results), detail
-
-
-def render_multi_stock_replay_v3():
-    st.divider()
-    st.header("🧪 Multi-Stock Replay V3 — 一次跑完")
-    st.caption(
-        "同一套MU V2参数，不为任何股票单独调参。"
-        "从每只股票的A原选股日开始，扫描后续5个交易日；"
-        "找到第一笔15m BUY后，再计算1D/3D/5D表现。"
-    )
-
-    st.write("测试股票：", ", ".join([t for t, _ in V3_CASES]))
-
-    if st.button("▶️ 一次运行全部 V3 Replay", type="primary", use_container_width=True):
-        with st.spinner("正在批量下载15m/日K并逐只Replay，请稍等..."):
-            rdf, detail = _run_multi_stock_replay_v3()
-            st.session_state["v3_multi_results"] = rdf
-            st.session_state["v3_multi_detail"] = detail
-
-    if "v3_multi_results" not in st.session_state:
-        return
-
-    rdf = st.session_state["v3_multi_results"].copy()
-
-    st.subheader("总结果")
-    display_cols = [
-        "Ticker","A原选股日","15m可用","是否BUY","首次BUY日期","首次BUY时间",
-        "买入价","当时日内涨幅","同时段量比",
-        "1D Max Gain","3D Max Gain","5D Max Gain","5D Max Drawdown","说明"
-    ]
-    display_cols = [c for c in display_cols if c in rdf.columns]
-
-    fmt = {}
-    for c in ["当时日内涨幅","1D Max Gain","3D Max Gain","5D Max Gain","5D Max Drawdown"]:
-        if c in rdf.columns:
-            fmt[c] = "{:.2%}"
-    for c in ["买入价"]:
-        if c in rdf.columns:
-            fmt[c] = "${:.2f}"
-    for c in ["同时段量比"]:
-        if c in rdf.columns:
-            fmt[c] = "{:.2f}"
-
-    st.dataframe(
-        rdf[display_cols].style.format(fmt, na_rep=""),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # Summary only for rows with valid BUY + 5D result.
-    valid = rdf[
-        (rdf["是否BUY"] == "是")
-        & pd.to_numeric(rdf.get("5D Max Gain"), errors="coerce").notna()
-    ].copy()
-
-    st.subheader("自动汇总")
-    if valid.empty:
-        st.warning("当前没有可计算5D结果的BUY样本。")
-    else:
-        g5 = pd.to_numeric(valid["5D Max Gain"], errors="coerce")
-        dd = pd.to_numeric(valid["5D Max Drawdown"], errors="coerce")
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("BUY样本", int(len(valid)))
-        c2.metric("5D ≥3%", f"{(g5 >= 0.03).mean():.1%}")
-        c3.metric("5D ≥5%", f"{(g5 >= 0.05).mean():.1%}")
-        c4.metric("5D ≥8%", f"{(g5 >= 0.08).mean():.1%}")
-        c5.metric("平均5D最大涨幅", f"{g5.mean():.2%}")
-
-        st.write(
-            f"平均5D最大回撤：**{dd.mean():.2%}** | "
-            f"中位数5D最大涨幅：**{g5.median():.2%}**"
-        )
-
-    unavailable = rdf[rdf["15m可用"] == "否"]
-    if len(unavailable):
-        st.info(
-            "注意：Yahoo 15m历史通常只保留较短窗口。"
-            "较早的6月案例如果显示无数据，不代表规则失败，只代表当前15m数据已过期。"
-        )
-
-
-
-# =========================================================
-# V4 QUALITY GATE DIAGNOSTIC
-# Goal:
-#   Compare strong BUYs (5D Max Gain >= 5%) vs weak BUYs (<3%)
-#   using ONLY trigger-time information.
-#   Then test simple candidate gates WITHOUT changing formal B.
-# =========================================================
-
-def _extract_trigger_quality_features(ticker, buy_date, buy_time):
-    """
-    Re-download 15m data and derive trigger-time quality features
-    using only information available up to the trigger bar.
-    """
-    x = _download_intraday_15m(ticker)
-    if x.empty:
-        return {}
-
-    target_date = pd.Timestamp(buy_date).date()
-    idx = pd.DatetimeIndex(x.index)
-    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
-    day = x.loc[day_mask].copy()
-    if day.empty:
-        return {}
-
-    # Match trigger time.
-    hhmm = str(buy_time)
-    match = [ts for ts in day.index if pd.Timestamp(ts).strftime("%H:%M") == hhmm]
-    if not match:
-        return {}
-    ts = match[0]
-    i = day.index.get_loc(ts)
-
-    upto = day.iloc[:i+1].copy()
-    r = upto.iloc[-1]
-
-    day_open = float(day.iloc[0]["Open"])
-    session_high = float(upto["High"].max())
-    session_low = float(upto["Low"].min())
-    prior_high = float(upto.iloc[:-1]["High"].max()) if len(upto) > 1 else np.nan
-    prior3_high = float(upto.iloc[:-1]["High"].tail(3).max()) if len(upto) > 1 else np.nan
-
-    bar_range = float(r["High"] - r["Low"])
-    close_pos = float((r["Close"] - r["Low"]) / bar_range) if bar_range > 0 else np.nan
-    upper_wick = float(r["High"] - max(r["Open"], r["Close"]))
-    upper_wick_ratio = upper_wick / bar_range if bar_range > 0 else np.nan
-
-    tod_rvol = _tod_rvol_generic(x, ts, 10)
-    day_ret = float(r["Close"] / day_open - 1)
-
-    # Breakout margin above short pressure.
-    breakout_margin = (
-        float(r["Close"] / prior3_high - 1)
-        if pd.notna(prior3_high) and prior3_high > 0 else np.nan
-    )
-
-    # Distance from high of day at trigger (smaller is stronger close/less rejection).
-    dist_from_hod = float(r["Close"] / session_high - 1) if session_high > 0 else np.nan
-
-    # Early intraday pullback depth before trigger.
-    if len(upto) >= 3:
-        pre_high = float(upto.iloc[:-1]["High"].max())
-        pre_low_after = float(upto.iloc[:-1]["Low"].min())
-        swing = max(pre_high - float(day_open), 1e-9)
-        pullback_depth = max(0.0, (pre_high - pre_low_after) / swing)
-    else:
-        pullback_depth = np.nan
-
-    # Number of completed bars before trigger.
-    bars_from_open = i + 1
-
-    # Same-day price range expansion vs first four bars.
-    first4 = day.iloc[:min(4, len(day))]
-    opening_range = float(first4["High"].max() - first4["Low"].min()) if len(first4) else np.nan
-    total_range = session_high - session_low
-    range_expansion = total_range / opening_range if opening_range and opening_range > 0 else np.nan
-
-    return {
-        "触发时间分钟": pd.Timestamp(ts).hour * 60 + pd.Timestamp(ts).minute,
-        "开盘后Bar数": bars_from_open,
-        "触发时日内涨幅": day_ret,
-        "同时段量比": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
-        "收盘位置": close_pos,
-        "上影占比": upper_wick_ratio,
-        "突破幅度": breakout_margin,
-        "距当日高点": dist_from_hod,
-        "回踩深度": pullback_depth,
-        "日内区间扩张": range_expansion,
-    }
-
-
-def _build_v4_diagnostic(v3_results):
-    if v3_results is None or v3_results.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for _, r in v3_results.iterrows():
-        if str(r.get("是否BUY", "")) != "是":
-            continue
-        if not r.get("首次BUY日期") or not r.get("首次BUY时间"):
-            continue
-
-        feat = _extract_trigger_quality_features(
-            str(r["Ticker"]),
-            str(r["首次BUY日期"]),
-            str(r["首次BUY时间"])
-        )
-        row = dict(r)
-        row.update(feat)
-
-        g5 = pd.to_numeric(pd.Series([r.get("5D Max Gain")]), errors="coerce").iloc[0]
-        if pd.isna(g5):
-            group = "未知"
-        elif g5 >= 0.05:
-            group = "强启动 ≥5%"
-        elif g5 < 0.03:
-            group = "弱启动 <3%"
-        else:
-            group = "中间 3–5%"
-        row["质量分组"] = group
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-def _quality_group_summary(df):
-    feature_cols = [
-        "触发时日内涨幅","同时段量比","收盘位置","上影占比",
-        "突破幅度","距当日高点","回踩深度","日内区间扩张","开盘后Bar数"
-    ]
-    out = []
-    for grp in ["强启动 ≥5%", "弱启动 <3%"]:
-        g = df[df["质量分组"] == grp]
-        if g.empty:
-            continue
-        for c in feature_cols:
-            vals = pd.to_numeric(g[c], errors="coerce").dropna()
-            if vals.empty:
-                continue
-            out.append({
-                "分组": grp,
-                "指标": c,
-                "样本数": len(vals),
-                "平均": vals.mean(),
-                "中位数": vals.median(),
-                "最小": vals.min(),
-                "最大": vals.max(),
-            })
-    return pd.DataFrame(out)
-
-
-def _candidate_gate_eval(df):
-    """
-    Test several SIMPLE gates. These are diagnostics only.
-    No gate is automatically promoted to formal B.
-    """
-    d = df.copy()
-    if d.empty:
-        return pd.DataFrame(), d
-
-    # Conservative candidate gates using trigger-time features only.
-    gates = {
-        "Gate A: 量比≥0.9 + 收盘位置≥0.65": (
-            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
-            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65)
-        ),
-        "Gate B: A + 上影≤0.35": (
-            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
-            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
-            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35)
-        ),
-        "Gate C: B + 突破幅度>0": (
-            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
-            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
-            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35) &
-            (pd.to_numeric(d["突破幅度"], errors="coerce") > 0)
-        ),
-        "Gate D: B + 触发涨幅≤4.5%": (
-            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
-            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
-            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35) &
-            (pd.to_numeric(d["触发时日内涨幅"], errors="coerce") <= 0.045)
-        ),
-    }
-
-    rows = []
-    for name, mask in gates.items():
-        kept = d[mask].copy()
-        g5 = pd.to_numeric(kept["5D Max Gain"], errors="coerce").dropna()
-        dd = pd.to_numeric(kept["5D Max Drawdown"], errors="coerce").dropna()
-
-        rows.append({
-            "Gate": name,
-            "保留BUY数": len(kept),
-            "保留率": len(kept) / len(d) if len(d) else np.nan,
-            "5D≥3%": (g5 >= 0.03).mean() if len(g5) else np.nan,
-            "5D≥5%": (g5 >= 0.05).mean() if len(g5) else np.nan,
-            "5D≥8%": (g5 >= 0.08).mean() if len(g5) else np.nan,
-            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
-            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
-            "保留股票": ", ".join(kept["Ticker"].astype(str).tolist()),
-        })
-
-    return pd.DataFrame(rows), d
-
-
-def render_v4_quality_gate():
-    st.divider()
-    st.header("🧬 V4 Quality Gate — 强启动 vs 弱启动")
-    st.caption(
-        "不改正式B。先比较强启动(5D≥5%)和弱启动(<3%)在BUY触发瞬间的差异，"
-        "再测试几个简单Quality Gate。所有Gate都只用触发当时可见的数据。"
-    )
-
-    if "v3_multi_results" not in st.session_state:
-        st.info("请先运行上面的 Multi-Stock Replay V3。")
-        return
-
-    if st.button("🧪 运行 V4 Quality Gate 诊断", use_container_width=True):
-        with st.spinner("正在提取每只股票BUY瞬间的质量特征..."):
-            d = _build_v4_diagnostic(st.session_state["v3_multi_results"])
-            st.session_state["v4_diag"] = d
-
-    if "v4_diag" not in st.session_state:
-        return
-
-    d = st.session_state["v4_diag"].copy()
-
-    st.subheader("逐只BUY质量特征")
-    show_cols = [
-        "Ticker","质量分组","首次BUY日期","首次BUY时间",
-        "5D Max Gain","5D Max Drawdown",
-        "触发时日内涨幅","同时段量比","收盘位置","上影占比",
-        "突破幅度","距当日高点","回踩深度","日内区间扩张","开盘后Bar数"
-    ]
-    show_cols = [c for c in show_cols if c in d.columns]
-
-    pct_cols = [
-        "5D Max Gain","5D Max Drawdown","触发时日内涨幅","收盘位置",
-        "上影占比","突破幅度","距当日高点","回踩深度"
-    ]
-    fmts = {c: "{:.2%}" for c in pct_cols if c in d.columns}
-    if "同时段量比" in d.columns:
-        fmts["同时段量比"] = "{:.2f}"
-    if "日内区间扩张" in d.columns:
-        fmts["日内区间扩张"] = "{:.2f}"
-
-    st.dataframe(
-        d[show_cols].style.format(fmts, na_rep=""),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.subheader("强启动 vs 弱启动：指标差异")
-    gs = _quality_group_summary(d)
-    if not gs.empty:
-        st.dataframe(gs, use_container_width=True, hide_index=True)
-
-    st.subheader("候选 Quality Gate 对比")
-    gates, _ = _candidate_gate_eval(d)
-    if not gates.empty:
-        pct_fmt = {
-            "保留率":"{:.1%}","5D≥3%":"{:.1%}","5D≥5%":"{:.1%}","5D≥8%":"{:.1%}",
-            "平均5D最大涨幅":"{:.2%}","平均5D最大回撤":"{:.2%}"
-        }
-        st.dataframe(
-            gates.style.format(pct_fmt, na_rep=""),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    st.warning(
-        "V4目前只是诊断，不会自动选择正式Gate。"
-        "我们先看哪个Gate能减少PATH/MSFT/HD/XOM这类弱启动，"
-        "同时尽量保留ETN/CAT/MU/HOOD/MRK/ASTS。之后再扩大样本验证。"
-    )
-
-
-
-# =========================================================
-# V5 BUY QUALITY SCORE
-# Purpose:
-#   Replace brittle hard gates with a 0-100 trigger-quality score.
-#   Score uses only information available at BUY trigger time.
-#   This is diagnostic only; it does NOT modify formal B.
-# =========================================================
-
-def _v5_score_one_row(r):
-    """
-    100-point BUY Quality Score.
-    All inputs are trigger-time features from V4.
-    Higher score = cleaner trigger quality.
-    """
-    score = 0.0
-    parts = {}
-
-    # 1) Close quality / candle strength: 0-20
-    close_pos = pd.to_numeric(pd.Series([r.get("收盘位置")]), errors="coerce").iloc[0]
-    if pd.isna(close_pos):
-        close_pts = 8
-    elif close_pos >= 0.90:
-        close_pts = 20
-    elif close_pos >= 0.80:
-        close_pts = 17
-    elif close_pos >= 0.70:
-        close_pts = 14
-    elif close_pos >= 0.60:
-        close_pts = 10
-    else:
-        close_pts = 4
-    parts["收盘质量"] = close_pts
-    score += close_pts
-
-    # 2) Upper wick / rejection risk: 0-15
-    uw = pd.to_numeric(pd.Series([r.get("上影占比")]), errors="coerce").iloc[0]
-    if pd.isna(uw):
-        wick_pts = 7
-    elif uw <= 0.10:
-        wick_pts = 15
-    elif uw <= 0.20:
-        wick_pts = 13
-    elif uw <= 0.30:
-        wick_pts = 10
-    elif uw <= 0.40:
-        wick_pts = 6
-    else:
-        wick_pts = 2
-    parts["上影质量"] = wick_pts
-    score += wick_pts
-
-    # 3) Distance from high-of-day: 0-15
-    dh = pd.to_numeric(pd.Series([r.get("距当日高点")]), errors="coerce").iloc[0]
-    # dh is usually <=0; closer to 0 is better.
-    if pd.isna(dh):
-        hod_pts = 7
-    elif dh >= -0.0025:
-        hod_pts = 15
-    elif dh >= -0.005:
-        hod_pts = 13
-    elif dh >= -0.010:
-        hod_pts = 10
-    elif dh >= -0.020:
-        hod_pts = 6
-    else:
-        hod_pts = 2
-    parts["接近日高"] = hod_pts
-    score += hod_pts
-
-    # 4) Time-of-day relative volume: 0-15
-    rv = pd.to_numeric(pd.Series([r.get("同时段量比")]), errors="coerce").iloc[0]
-    if pd.isna(rv):
-        vol_pts = 8
-    elif 1.00 <= rv <= 1.80:
-        vol_pts = 15
-    elif 0.85 <= rv < 1.00:
-        vol_pts = 12
-    elif 0.70 <= rv < 0.85:
-        vol_pts = 8
-    elif rv > 1.80:
-        # Very high RVOL can be great, but also panic/news noise; don't over-reward.
-        vol_pts = 12
-    else:
-        vol_pts = 4
-    parts["量能质量"] = vol_pts
-    score += vol_pts
-
-    # 5) Breakout margin: 0-15
-    bm = pd.to_numeric(pd.Series([r.get("突破幅度")]), errors="coerce").iloc[0]
-    if pd.isna(bm):
-        brk_pts = 6
-    elif 0.001 <= bm <= 0.012:
-        brk_pts = 15
-    elif 0 < bm < 0.001:
-        brk_pts = 11
-    elif 0.012 < bm <= 0.025:
-        brk_pts = 10
-    elif bm > 0.025:
-        # avoid rewarding late/chasing breakouts
-        brk_pts = 5
-    else:
-        brk_pts = 3
-    parts["突破质量"] = brk_pts
-    score += brk_pts
-
-    # 6) Trigger-time day return / chase control: 0-10
-    dr = pd.to_numeric(pd.Series([r.get("触发时日内涨幅")]), errors="coerce").iloc[0]
-    if pd.isna(dr):
-        chase_pts = 5
-    elif -0.005 <= dr <= 0.025:
-        chase_pts = 10
-    elif 0.025 < dr <= 0.040:
-        chase_pts = 8
-    elif 0.040 < dr <= 0.055:
-        chase_pts = 5
-    elif dr > 0.055:
-        chase_pts = 1
-    else:
-        chase_pts = 6
-    parts["防追高"] = chase_pts
-    score += chase_pts
-
-    # 7) Intraday range expansion: 0-10
-    rexp = pd.to_numeric(pd.Series([r.get("日内区间扩张")]), errors="coerce").iloc[0]
-    if pd.isna(rexp):
-        range_pts = 5
-    elif 1.00 <= rexp <= 1.40:
-        range_pts = 10
-    elif 0.85 <= rexp < 1.00:
-        range_pts = 8
-    elif 1.40 < rexp <= 1.80:
-        range_pts = 7
-    elif rexp > 1.80:
-        range_pts = 4
-    else:
-        range_pts = 4
-    parts["区间质量"] = range_pts
-    score += range_pts
-
-    return round(score, 1), parts
-
-
-def _build_v5_score_table(v4_diag):
-    if v4_diag is None or v4_diag.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for _, r in v4_diag.iterrows():
-        total, parts = _v5_score_one_row(r)
-        row = dict(r)
-        row["V5 Quality Score"] = total
-        for k, v in parts.items():
-            row[k] = v
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-def _v5_threshold_summary(df):
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for th in [55, 60, 65, 70, 75, 80]:
-        kept = df[pd.to_numeric(df["V5 Quality Score"], errors="coerce") >= th].copy()
-        g5 = pd.to_numeric(kept["5D Max Gain"], errors="coerce").dropna()
-        dd = pd.to_numeric(kept["5D Max Drawdown"], errors="coerce").dropna()
-
-        rows.append({
-            "Score门槛": th,
-            "保留BUY数": len(kept),
-            "保留率": len(kept)/len(df) if len(df) else np.nan,
-            "5D≥3%": (g5 >= 0.03).mean() if len(g5) else np.nan,
-            "5D≥5%": (g5 >= 0.05).mean() if len(g5) else np.nan,
-            "5D≥8%": (g5 >= 0.08).mean() if len(g5) else np.nan,
-            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
-            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
-            "保留股票": ", ".join(kept["Ticker"].astype(str).tolist()),
-        })
-    return pd.DataFrame(rows)
-
-
-def render_v5_buy_quality_score():
-    st.divider()
-    st.header("🎯 V5 BUY Quality Score — 100分质量评分")
-    st.caption(
-        "不用新的硬Gate。把BUY触发瞬间的K线质量、量能、突破质量、"
-        "接近日高程度和追高风险综合成0–100分。只做诊断，不改正式B。"
-    )
-
-    if "v4_diag" not in st.session_state:
-        st.info("请先运行 V3，再运行 V4 Quality Gate 诊断。")
-        return
-
-    if st.button("🎯 运行 V5 BUY Quality Score", use_container_width=True):
-        v5 = _build_v5_score_table(st.session_state["v4_diag"])
-        st.session_state["v5_score_table"] = v5
-
-    if "v5_score_table" not in st.session_state:
-        return
-
-    d = st.session_state["v5_score_table"].copy()
-    d = d.sort_values("V5 Quality Score", ascending=False)
-
-    st.subheader("逐只BUY质量评分")
-    cols = [
-        "Ticker","质量分组","V5 Quality Score",
-        "5D Max Gain","5D Max Drawdown",
-        "收盘质量","上影质量","接近日高","量能质量","突破质量","防追高","区间质量",
-        "触发时日内涨幅","同时段量比","收盘位置","上影占比","突破幅度","距当日高点"
-    ]
-    cols = [c for c in cols if c in d.columns]
-
-    fmt = {}
-    for c in [
-        "5D Max Gain","5D Max Drawdown","触发时日内涨幅",
-        "收盘位置","上影占比","突破幅度","距当日高点"
-    ]:
-        if c in d.columns:
-            fmt[c] = "{:.2%}"
-    if "同时段量比" in d.columns:
-        fmt["同时段量比"] = "{:.2f}"
-
-    st.dataframe(
-        d[cols].style.format(fmt, na_rep=""),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.subheader("Score门槛回测")
-    sm = _v5_threshold_summary(d)
-    if not sm.empty:
-        st.dataframe(
-            sm.style.format({
-                "保留率":"{:.1%}",
-                "5D≥3%":"{:.1%}",
-                "5D≥5%":"{:.1%}",
-                "5D≥8%":"{:.1%}",
-                "平均5D最大涨幅":"{:.2%}",
-                "平均5D最大回撤":"{:.2%}",
-            }, na_rep=""),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # Simple separation diagnostic.
-    strong = pd.to_numeric(
-        d.loc[d["质量分组"]=="强启动 ≥5%", "V5 Quality Score"], errors="coerce"
-    ).dropna()
-    weak = pd.to_numeric(
-        d.loc[d["质量分组"]=="弱启动 <3%", "V5 Quality Score"], errors="coerce"
-    ).dropna()
-
-    if len(strong) and len(weak):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("强启动平均分", f"{strong.mean():.1f}")
-        c2.metric("弱启动平均分", f"{weak.mean():.1f}")
-        c3.metric("平均分差", f"{strong.mean()-weak.mean():+.1f}")
-
-    st.warning(
-        "现在只看能不能“分开”强/弱BUY。"
-        "如果分不开，就停止继续调15m质量评分；"
-        "如果明显分开，再扩大到更多历史样本验证后才考虑接入正式B。"
-    )
-
-
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ V4.3A.4 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ A5.2R 扫描完成：{len(top_df)}只次日重点候选")
 
     display_cols = [
         # 结果放最前；最终只给“买 / 不买”
         "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
         # 一个指标一个col
-        "图形共振", "图形形态", "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振",
+        "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
+        "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
         # 关键数值，便于复核
         "Early V2 Score", "Structure Score", "Trend & Momentum Score",
         "Accumulation Score", "Leadership Score",
         "KDJ_K", "KDJ_D", "KDJ_J", "RSI14", "MACD Phase",
         "Volume Build Ratio", "Up/Down Volume Ratio", "RS Acceleration",
-        "Major Resistance Zone", "Major Support Zone",
+        "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
         "Confidence"
     ]
     display_cols = [c for c in display_cols if c in top_df.columns]
@@ -4887,6 +2762,8 @@ def render_results(top_df, all_df):
         "RSI14": "{:.1f}",
         "Volume Build Ratio": "{:.2f}",
         "Up/Down Volume Ratio": "{:.2f}",
+        "上方空间": "{:+.1%}",
+        "距支撑区": "{:.1%}",
         "Stock vs SPY 20D": "{:+.1%}",
         "Sector vs SPY 20D": "{:+.1%}",
         "Stock vs Sector 20D": "{:+.1%}",
@@ -4899,9 +2776,9 @@ def render_results(top_df, all_df):
         "Earnings Growth": "{:.1%}",
     }
 
-    st.subheader("🌱 Early Engine V2 — 次日重点候选")
+    st.subheader("🎯 A5.2R — 次日重点候选（不强制凑10只）")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "图形共振":"图形", "图形形态":"形态", "假突破":"假突破", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -4909,7 +2786,7 @@ def render_results(top_df, all_df):
         "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
         "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
         "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
-        "Major Support Zone":"主要支撑区",
+        "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
         "R→S Flip Zone":"R→S回踩区", "R→S Flip Touches":"R→S历史测试次数",
         "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
         "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
@@ -5008,19 +2885,7 @@ if st.button("🧪 运行 60日三版本同屏回测", type="primary", use_conta
         st.error(f"A历史回测失败：{e}")
 
 if "a_historical_replay" in st.session_state:
-    _cached_bt = st.session_state["a_historical_replay"]
-    _need_cols = {'A5决策','图形共振','RS共振'}
-    if not _need_cols.issubset(set(_cached_bt.columns)):
-        st.info("检测到旧版本历史回测缓存。A5.1 图形字段尚未生成，请重新点击上面的 60 日回测按钮。")
-    render_historical_a_replay(_cached_bt)
-    render_a6_vision_prototype(_cached_bt)
-    render_mu_startup_example()
-    render_mu_intraday_data_check()
-    render_mu_state_machine_replay_v1()
-    render_mu_state_machine_replay_v2()
-    render_multi_stock_replay_v3()
-    render_v4_quality_gate()
-    render_v5_buy_quality_score()
+    render_historical_a_replay(st.session_state["a_historical_replay"])
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
