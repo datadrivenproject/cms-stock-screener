@@ -3514,150 +3514,172 @@ def render_mu_intraday_data_check():
 
 
 # =========================================================
-# MU 2026-08-04 INTRADAY VISION REPLAY
+# MU 2026-08-04 — 15M PRICE-ACTION STATE MACHINE REPLAY V1
+# No Vision / No OpenAI API / No image tokens
 # =========================================================
-def _download_intraday_mu():
-    out = {}
-    for interval, period in [("15m", "60d"), ("60m", "730d")]:
-        raw = yf.download(
-            "MU",
-            period=period,
-            interval=interval,
-            auto_adjust=False,
-            progress=False,
-            threads=False,
+def _mu_state_machine_replay_v1():
+    raw15 = yf.download(
+        "MU", period="60d", interval="15m",
+        auto_adjust=False, progress=False, threads=False
+    )
+    x = _normalize_ohlcv(raw15)
+    if x.empty:
+        return pd.DataFrame(), None
+
+    # Indicators use only data available at or before each bar.
+    x = x.copy()
+    x["PrevHigh4"] = x["High"].shift(1).rolling(4).max()
+    x["PrevLow4"] = x["Low"].shift(1).rolling(4).min()
+    x["VolAvg20"] = x["Volume"].shift(1).rolling(20, min_periods=8).mean()
+    x["VolRatio"] = x["Volume"] / x["VolAvg20"]
+    x["Range"] = x["High"] - x["Low"]
+    x["RangeAvg8"] = x["Range"].shift(1).rolling(8, min_periods=4).mean()
+    x["Body"] = (x["Close"] - x["Open"]).abs()
+    x["UpperWick"] = x["High"] - x[["Open","Close"]].max(axis=1)
+    x["ClosePos"] = (x["Close"] - x["Low"]) / (x["High"] - x["Low"]).replace(0, np.nan)
+
+    dates = pd.Index([pd.Timestamp(v).date() for v in x.index])
+    target = pd.Timestamp("2026-08-04").date()
+    day = x.loc[dates == target].copy()
+
+    if day.empty:
+        return pd.DataFrame(), None
+
+    # Context from previous sessions, but no future bars.
+    hist_before = x.loc[pd.DatetimeIndex(x.index) < pd.Timestamp("2026-08-04")].copy()
+    recent = hist_before.tail(26 * 3)  # roughly prior 3 sessions
+
+    # Prior structural reference: recent intraday highs/lows.
+    prior_res = float(recent["High"].tail(26).max()) if len(recent) else np.nan
+    prior_support = float(recent["Low"].tail(26).min()) if len(recent) else np.nan
+
+    state = "SETUP"
+    pullback_seen = True   # daily chain already established 7/30 START -> 7/31 PULLBACK -> 8/3 stabilization
+    base_seen = False
+    first_buy = None
+    rows = []
+
+    day_open = float(day.iloc[0]["Open"])
+
+    for ts, r in day.iterrows():
+        prev4h = r["PrevHigh4"]
+        prev4l = r["PrevLow4"]
+        vr = r["VolRatio"]
+        rng_avg = r["RangeAvg8"]
+
+        # Price-action events.
+        higher_low = bool(pd.notna(prev4l) and r["Low"] > prev4l)
+        breakout = bool(pd.notna(prev4h) and r["Close"] > prev4h)
+        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
+        positive_bar = bool(r["Close"] > r["Open"])
+        range_expand = bool(pd.notna(rng_avg) and r["Range"] >= 1.05 * rng_avg)
+
+        # Volume is contextual, not a hard 1.2x gate.
+        volume_ok = bool(pd.isna(vr) or vr >= 0.75)
+        volume_strong = bool(pd.notna(vr) and vr >= 1.20)
+
+        # Failure / chase controls.
+        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
+        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
+        chase = bool((r["Close"] / day_open - 1) > 0.055)
+
+        # BASE can be established after the daily pullback context when intraday price
+        # starts holding a higher low or closes firmly above the short rolling structure.
+        if pullback_seen and (higher_low or strong_close):
+            base_seen = True
+            if state == "SETUP":
+                state = "BASE"
+
+        trigger = bool(
+            base_seen
+            and breakout
+            and positive_bar
+            and strong_close
+            and volume_ok
+            and not fake_break_risk
+            and not chase
         )
-        x = _normalize_ohlcv(raw)
-        if x.empty:
-            out[interval] = pd.DataFrame()
-            continue
-        out[interval] = x
-    return out
+
+        if trigger and first_buy is None:
+            state = "BUY"
+            first_buy = {
+                "time": pd.Timestamp(ts),
+                "price": float(r["Close"]),
+                "day_return": float(r["Close"] / day_open - 1),
+                "vol_ratio": float(vr) if pd.notna(vr) else np.nan,
+            }
+        elif first_buy is None and base_seen:
+            state = "TRIGGER WAIT"
+
+        reasons = []
+        if higher_low: reasons.append("Higher Low")
+        if breakout: reasons.append("突破前4根15m高点")
+        if strong_close: reasons.append("高位收盘")
+        if range_expand: reasons.append("振幅扩张")
+        if volume_strong: reasons.append("明显放量")
+        elif volume_ok: reasons.append("量能可接受")
+        if fake_break_risk: reasons.append("假突破风险")
+        if chase: reasons.append("涨幅过大/防追高")
+
+        rows.append({
+            "时间": pd.Timestamp(ts).strftime("%H:%M"),
+            "状态": state,
+            "收盘价": float(r["Close"]),
+            "当日涨幅": float(r["Close"] / day_open - 1),
+            "Higher Low": "✅" if higher_low else "—",
+            "突破短压": "✅" if breakout else "—",
+            "高位收盘": "✅" if strong_close else "—",
+            "量比": float(vr) if pd.notna(vr) else np.nan,
+            "量": "强" if volume_strong else ("可接受" if volume_ok else "弱"),
+            "假突破风险": "⚠️" if fake_break_risk else "—",
+            "触发BUY": "✅" if trigger else "—",
+            "原因": "；".join(reasons) if reasons else "等待",
+        })
+
+    return pd.DataFrame(rows), first_buy
 
 
-def _slice_until(df, cutoff):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    idx = pd.DatetimeIndex(df.index)
-    if idx.tz is not None:
-        cutoff = pd.Timestamp(cutoff, tz=idx.tz)
-    else:
-        cutoff = pd.Timestamp(cutoff)
-    return df[idx <= cutoff].copy()
-
-
-def _plot_intraday_pair(df15, df60, cutoff):
-    if plt is None or Rectangle is None:
-        raise RuntimeError("缺少 matplotlib。")
-
-    c15 = _slice_until(df15, cutoff).tail(40)
-    c60 = _slice_until(df60, cutoff).tail(30)
-
-    fig = plt.figure(figsize=(15, 8.5), dpi=120)
-    gs = fig.add_gridspec(2, 2, height_ratios=[4.4, 1.15], hspace=0.06, wspace=0.10)
-    ax60 = fig.add_subplot(gs[0, 0])
-    av60 = fig.add_subplot(gs[1, 0], sharex=ax60)
-    ax15 = fig.add_subplot(gs[0, 1])
-    av15 = fig.add_subplot(gs[1, 1], sharex=ax15)
-
-    _draw_candles(ax60, c60, f"MU | 1H | only through {pd.Timestamp(cutoff)}")
-    _draw_volume(av60, c60)
-    _draw_candles(ax15, c15, f"MU | 15m | only through {pd.Timestamp(cutoff)}")
-    _draw_volume(av15, c15)
-
-    plt.setp(ax60.get_xticklabels(), visible=False)
-    plt.setp(ax15.get_xticklabels(), visible=False)
-    fig.suptitle(
-        "INTRADAY REPLAY — no bars after the timestamp are shown",
-        fontsize=12, y=0.995
-    )
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def render_mu_intraday_replay():
+def render_mu_state_machine_replay_v1():
     st.divider()
-    st.header("⏱️ MU 2026-08-04 盘中 Vision Replay")
+    st.header("⚙️ MU 8/4 — 15分钟状态机 Replay V1")
     st.caption(
-        "每张图严格截止到该时间点。左边1H，右边15min。"
-        "目标：不看当天后面的K线，找出最早什么时候B有足够证据进入BUY候选。"
+        "不使用Vision、不调用OpenAI API、不生成图片。程序逐根读取15分钟OHLCV，"
+        "按 SETUP → BASE → TRIGGER WAIT → BUY 自动判断。"
     )
 
-    if st.button("▶️ 生成 MU 8/4 盘中截断图", use_container_width=True):
+    if st.button("▶️ 运行 MU 8/4 状态机 Replay", use_container_width=True):
         try:
-            data = _download_intraday_mu()
-            df15 = data.get("15m", pd.DataFrame())
-            df60 = data.get("60m", pd.DataFrame())
-
-            if df15.empty or df60.empty:
-                st.error("15min或1H数据为空，无法Replay。")
+            rdf, buy = _mu_state_machine_replay_v1()
+            if rdf.empty:
+                st.error("没有取得 MU 2026-08-04 的15分钟数据。")
                 return
 
-            # Fixed checkpoints, using market-local timestamps from Yahoo's index convention.
-            checkpoints = [
-                "2026-08-04 10:00:00",
-                "2026-08-04 10:30:00",
-                "2026-08-04 11:00:00",
-                "2026-08-04 11:30:00",
-                "2026-08-04 12:00:00",
-                "2026-08-04 13:00:00",
-                "2026-08-04 14:00:00",
-            ]
+            if buy:
+                st.success(
+                    f"首次BUY触发：{buy['time'].strftime('%H:%M')} | "
+                    f"价格 ${buy['price']:.2f} | "
+                    f"当时日内涨幅 {buy['day_return']:.2%} | "
+                    f"量比 {buy['vol_ratio']:.2f}"
+                )
+            else:
+                st.warning("V1规则在8/4没有触发BUY。不要为了MU强行放宽，先检查逐根结果。")
 
-            rows = []
-            for cp in checkpoints:
-                st.subheader(f"截止 {cp[11:16]}")
-                png = _plot_intraday_pair(df15, df60, cp)
-                st.image(png, use_container_width=True)
-
-                d15 = _slice_until(df15, cp)
-                day15 = d15[pd.Index([pd.Timestamp(v).date() for v in d15.index]) == pd.Timestamp(cp).date()]
-                if len(day15):
-                    first_open = float(day15.iloc[0]["Open"])
-                    last_close = float(day15.iloc[-1]["Close"])
-                    intraday_ret = last_close / first_open - 1 if first_open else 0.0
-                    high_so_far = float(day15["High"].max())
-                    low_so_far = float(day15["Low"].min())
-                    vol_so_far = float(day15["Volume"].sum())
-                else:
-                    intraday_ret = None
-                    high_so_far = None
-                    low_so_far = None
-                    vol_so_far = None
-
-                rows.append({
-                    "时间点": cp[11:16],
-                    "截至当时涨跌": intraday_ret,
-                    "当日高点(截至当时)": high_so_far,
-                    "当日低点(截至当时)": low_so_far,
-                    "累计成交量": vol_so_far,
-                })
-
-            st.subheader("时间点客观数据")
-            rdf = pd.DataFrame(rows)
             st.dataframe(
                 rdf.style.format({
-                    "截至当时涨跌": "{:.2%}",
-                    "当日高点(截至当时)": "{:.2f}",
-                    "当日低点(截至当时)": "{:.2f}",
-                    "累计成交量": "{:,.0f}",
+                    "收盘价": "${:.2f}",
+                    "当日涨幅": "{:.2%}",
+                    "量比": "{:.2f}",
                 }),
                 use_container_width=True,
                 hide_index=True
             )
 
             st.info(
-                "现在先不要看14:00之后的走势来判断10:00。"
-                "从10:00开始一张一张盲看，记录第一个你/ChatGPT认为可以BUY的时间点。"
+                "这一版是研究版。重点看首次BUY时间是否合理；"
+                "确认MU后还要用更多历史案例做Forward/Replay验证，不能只为MU调参数。"
             )
-
         except Exception as e:
-            st.error(f"盘中Replay生成失败：{e}")
-
+            st.error(f"状态机Replay失败：{e}")
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
@@ -3817,7 +3839,7 @@ if "a_historical_replay" in st.session_state:
     render_a6_vision_prototype(_cached_bt)
     render_mu_startup_example()
     render_mu_intraday_data_check()
-    render_mu_intraday_replay()
+    render_mu_state_machine_replay_v1()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
