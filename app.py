@@ -3353,7 +3353,7 @@ def render_mu_startup_example():
                 raise RuntimeError("MU: 无法取得OHLCV")
 
             # Original date + next 5 trading days
-            future_dates = list(x.index[x.index > original_date].head(5))
+            future_dates = list(x.index[x.index > original_date][:5])
             review_dates = [original_date] + future_dates
 
             summaries = []
