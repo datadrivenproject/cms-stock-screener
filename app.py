@@ -2329,9 +2329,13 @@ def render_a4_a5_resonance_comparison(bt):
     if bt is None or bt.empty:
         return
     d = bt.copy()
-    req = ['Replay Date','Ticker','Replay Eligible Rank','5D Max Gain','A5决策','共振数']
+    req = [
+        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain',
+        'A5决策','共振数',
+        'MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振'
+    ]
     if any(c not in d.columns for c in req):
-        st.warning("当前缓存是旧Replay，请重新运行历史回测一次，生成A5共振字段。")
+        st.warning("当前缓存还是旧版 A5 Replay。请点击上面的历史回测按钮重新跑一次，生成 A5.2R 的支撑/压力与空间字段。")
         return
 
     d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
@@ -2381,6 +2385,8 @@ def render_a4_a5_resonance_comparison(bt):
     # Indicator hit-rate table: one indicator per row, useful for deciding what to keep.
     rows = []
     for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振']:
+        if c not in d.columns:
+            continue
         yes = d[d[c] == '是']
         g = pd.to_numeric(yes['5D Max Gain'], errors='coerce').dropna()
         rows.append({
@@ -2392,12 +2398,15 @@ def render_a4_a5_resonance_comparison(bt):
         })
     idf = pd.DataFrame(rows)
     st.subheader("各共振指标单独效果")
-    st.dataframe(
-        idf.style.format({
-            '≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}','平均5日最大涨幅':'{:+.2%}'
-        }, na_rep=''),
-        hide_index=True, use_container_width=True
-    )
+    if idf.empty:
+        st.info("旧缓存没有 A5.2R 指标字段，请重新运行历史回测。")
+    else:
+        st.dataframe(
+            idf.style.format({
+                '≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}','平均5日最大涨幅':'{:+.2%}'
+            }, na_rep=''),
+            hide_index=True, use_container_width=True
+        )
 
 
 def render_ranking_diagnostics(bt):
