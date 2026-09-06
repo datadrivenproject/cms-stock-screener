@@ -3681,6 +3681,245 @@ def render_mu_state_machine_replay_v1():
         except Exception as e:
             st.error(f"状态机Replay失败：{e}")
 
+
+# =========================================================
+# MU 2026-08-04 — 15M PRICE-ACTION STATE MACHINE REPLAY V2
+# Fixes V1:
+# 1) no BUY at 09:30; require opening observation window
+# 2) intraday structure uses same-day bars only
+# 3) volume uses time-of-day relative volume
+# 4) first trigger separated from post-trigger state
+# =========================================================
+def _time_of_day_rvol(x, ts, lookback_days=10):
+    """Compare current 15m volume with same clock-time across prior sessions."""
+    t = pd.Timestamp(ts).time()
+    cur_date = pd.Timestamp(ts).date()
+
+    idx = pd.DatetimeIndex(x.index)
+    same_time = x[
+        [(pd.Timestamp(i).time() == t and pd.Timestamp(i).date() < cur_date) for i in idx]
+    ].tail(lookback_days)
+
+    if same_time.empty:
+        return np.nan
+
+    avg = float(same_time["Volume"].mean())
+    cur = float(x.loc[ts, "Volume"])
+    return cur / avg if avg > 0 else np.nan
+
+
+def _mu_state_machine_replay_v2():
+    raw15 = yf.download(
+        "MU", period="60d", interval="15m",
+        auto_adjust=False, progress=False, threads=False
+    )
+    x = _normalize_ohlcv(raw15)
+    if x.empty:
+        return pd.DataFrame(), None
+
+    target_date = pd.Timestamp("2026-08-04").date()
+    idx = pd.DatetimeIndex(x.index)
+    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
+    day = x.loc[day_mask].copy()
+    if day.empty:
+        return pd.DataFrame(), None
+
+    # Same-day rolling structure only.
+    day["PrevDayHigh"] = day["High"].shift(1).cummax()
+    day["PrevDayLow"] = day["Low"].shift(1).cummin()
+    day["Prev3High"] = day["High"].shift(1).rolling(3, min_periods=3).max()
+    day["Prev3Low"] = day["Low"].shift(1).rolling(3, min_periods=3).min()
+    day["Range"] = day["High"] - day["Low"]
+    day["ClosePos"] = (day["Close"] - day["Low"]) / day["Range"].replace(0, np.nan)
+    day["UpperWick"] = day["High"] - day[["Open", "Close"]].max(axis=1)
+
+    # Add time-of-day RVOL from prior sessions.
+    day["TOD_RVOL"] = [
+        _time_of_day_rvol(x, ts, lookback_days=10) for ts in day.index
+    ]
+
+    day_open = float(day.iloc[0]["Open"])
+
+    state = "OPENING OBSERVE"
+    first_buy = None
+    rows = []
+
+    # Require four completed 15m bars = wait through 10:15, first possible trigger at 10:30.
+    min_bar_index_for_trigger = 4
+
+    base_low = None
+    base_high = None
+    pullback_seen = False
+    base_seen = False
+
+    for i, (ts, r) in enumerate(day.iterrows()):
+        # Build today's structure incrementally.
+        prev_rows = day.iloc[:i]
+
+        if len(prev_rows) >= 2:
+            # A simple intraday base/pullback concept:
+            # if current low is above today's low-so-far after an initial push, mark higher low.
+            todays_low_so_far = float(prev_rows["Low"].min())
+            todays_high_so_far = float(prev_rows["High"].max())
+        else:
+            todays_low_so_far = np.nan
+            todays_high_so_far = np.nan
+
+        higher_low = bool(
+            i >= 3
+            and pd.notna(todays_low_so_far)
+            and r["Low"] > todays_low_so_far
+        )
+
+        # Pullback: current bar closes below prior bar after an early push,
+        # but remains above day's opening low region.
+        if i >= 2:
+            prev_close = float(day.iloc[i-1]["Close"])
+            early_high = float(day.iloc[:i]["High"].max())
+            early_low = float(day.iloc[:i]["Low"].min())
+            retrace = (early_high - float(r["Close"])) / max(early_high - early_low, 1e-9)
+            if r["Close"] < prev_close and 0.15 <= retrace <= 0.65:
+                pullback_seen = True
+
+        # Base: after pullback, require two bars that avoid making a fresh session low.
+        if pullback_seen and i >= 4:
+            recent2 = day.iloc[max(0, i-2):i]
+            if len(recent2) == 2 and float(recent2["Low"].min()) > float(day.iloc[:max(1, i-2)]["Low"].min()):
+                base_seen = True
+                base_low = float(recent2["Low"].min())
+                base_high = float(recent2["High"].max())
+
+        # Breakout only against same-day structure, never prior session bars.
+        if base_seen and base_high is not None:
+            breakout = bool(r["Close"] > base_high)
+        else:
+            breakout = bool(
+                i >= 4
+                and pd.notna(r["Prev3High"])
+                and r["Close"] > r["Prev3High"]
+            )
+
+        strong_close = bool(pd.notna(r["ClosePos"]) and r["ClosePos"] >= 0.65)
+        positive_bar = bool(r["Close"] > r["Open"])
+
+        tod_rvol = r["TOD_RVOL"]
+        # Contextual volume: 0.9x same-time average is acceptable; >=1.2 strong.
+        volume_ok = bool(pd.isna(tod_rvol) or tod_rvol >= 0.90)
+        volume_strong = bool(pd.notna(tod_rvol) and tod_rvol >= 1.20)
+
+        upper_wick_ratio = float(r["UpperWick"] / r["Range"]) if r["Range"] else 0.0
+        fake_break_risk = bool(breakout and upper_wick_ratio > 0.45 and not strong_close)
+
+        day_ret = float(r["Close"] / day_open - 1)
+        chase = bool(day_ret > 0.055)
+
+        if i < min_bar_index_for_trigger:
+            state = "OPENING OBSERVE"
+            trigger = False
+        else:
+            if pullback_seen and not base_seen:
+                state = "PULLBACK"
+            elif base_seen and not breakout:
+                state = "BASE"
+            elif base_seen and breakout:
+                state = "TRIGGER WAIT"
+
+            trigger = bool(
+                base_seen
+                and breakout
+                and positive_bar
+                and strong_close
+                and volume_ok
+                and not fake_break_risk
+                and not chase
+            )
+
+        fired_now = False
+        if trigger and first_buy is None:
+            first_buy = {
+                "time": pd.Timestamp(ts),
+                "price": float(r["Close"]),
+                "day_return": day_ret,
+                "tod_rvol": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
+            }
+            fired_now = True
+            state = "BUY TRIGGER"
+        elif first_buy is not None:
+            state = "POST-BUY"
+
+        reasons = []
+        if higher_low: reasons.append("Higher Low")
+        if pullback_seen: reasons.append("已出现回踩")
+        if base_seen: reasons.append("形成日内Base")
+        if breakout: reasons.append("突破日内短压")
+        if strong_close: reasons.append("高位收盘")
+        if volume_strong: reasons.append("同时段量能强")
+        elif volume_ok: reasons.append("同时段量能可接受")
+        if fake_break_risk: reasons.append("假突破风险")
+        if chase: reasons.append("防追高")
+
+        rows.append({
+            "时间": pd.Timestamp(ts).strftime("%H:%M"),
+            "状态": state,
+            "收盘价": float(r["Close"]),
+            "当日涨幅": day_ret,
+            "Higher Low": "✅" if higher_low else "—",
+            "回踩": "✅" if pullback_seen else "—",
+            "Base": "✅" if base_seen else "—",
+            "突破短压": "✅" if breakout else "—",
+            "高位收盘": "✅" if strong_close else "—",
+            "同时段量比": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
+            "量": "强" if volume_strong else ("可接受" if volume_ok else "弱"),
+            "假突破风险": "⚠️" if fake_break_risk else "—",
+            "首次触发BUY": "✅" if fired_now else "—",
+            "原因": "；".join(reasons) if reasons else "等待",
+        })
+
+    return pd.DataFrame(rows), first_buy
+
+
+def render_mu_state_machine_replay_v2():
+    st.divider()
+    st.header("⚙️ MU 8/4 — 15分钟状态机 Replay V2")
+    st.caption(
+        "V2修正：不开盘即买；至少观察到10:30；只用当天结构；"
+        "成交量改用“同一时间段相对量”；首次BUY与持仓后状态分开。"
+    )
+
+    if st.button("▶️ 运行 MU 8/4 状态机 Replay V2", use_container_width=True):
+        try:
+            rdf, buy = _mu_state_machine_replay_v2()
+            if rdf.empty:
+                st.error("没有取得 MU 2026-08-04 的15分钟数据。")
+                return
+
+            if buy:
+                st.success(
+                    f"首次BUY触发：{buy['time'].strftime('%H:%M')} | "
+                    f"价格 ${buy['price']:.2f} | "
+                    f"当时日内涨幅 {buy['day_return']:.2%} | "
+                    f"同时段量比 {buy['tod_rvol']:.2f}"
+                )
+            else:
+                st.warning("V2在8/4没有触发BUY。先看状态机过程，不要为了MU单例硬放宽。")
+
+            st.dataframe(
+                rdf.style.format({
+                    "收盘价": "${:.2f}",
+                    "当日涨幅": "{:.2%}",
+                    "同时段量比": "{:.2f}",
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.info(
+                "这仍是研究版。先确认MU的首次触发是否合理；"
+                "下一步必须用HOOD、ASTS及更多历史样本验证，防止过拟合MU。"
+            )
+        except Exception as e:
+            st.error(f"V2 Replay失败：{e}")
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -3840,6 +4079,7 @@ if "a_historical_replay" in st.session_state:
     render_mu_startup_example()
     render_mu_intraday_data_check()
     render_mu_state_machine_replay_v1()
+    render_mu_state_machine_replay_v2()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
