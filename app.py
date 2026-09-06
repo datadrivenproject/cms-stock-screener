@@ -4313,6 +4313,284 @@ def render_multi_stock_replay_v3():
         )
 
 
+
+# =========================================================
+# V4 QUALITY GATE DIAGNOSTIC
+# Goal:
+#   Compare strong BUYs (5D Max Gain >= 5%) vs weak BUYs (<3%)
+#   using ONLY trigger-time information.
+#   Then test simple candidate gates WITHOUT changing formal B.
+# =========================================================
+
+def _extract_trigger_quality_features(ticker, buy_date, buy_time):
+    """
+    Re-download 15m data and derive trigger-time quality features
+    using only information available up to the trigger bar.
+    """
+    x = _download_intraday_15m(ticker)
+    if x.empty:
+        return {}
+
+    target_date = pd.Timestamp(buy_date).date()
+    idx = pd.DatetimeIndex(x.index)
+    day_mask = pd.Index([pd.Timestamp(v).date() for v in idx]) == target_date
+    day = x.loc[day_mask].copy()
+    if day.empty:
+        return {}
+
+    # Match trigger time.
+    hhmm = str(buy_time)
+    match = [ts for ts in day.index if pd.Timestamp(ts).strftime("%H:%M") == hhmm]
+    if not match:
+        return {}
+    ts = match[0]
+    i = day.index.get_loc(ts)
+
+    upto = day.iloc[:i+1].copy()
+    r = upto.iloc[-1]
+
+    day_open = float(day.iloc[0]["Open"])
+    session_high = float(upto["High"].max())
+    session_low = float(upto["Low"].min())
+    prior_high = float(upto.iloc[:-1]["High"].max()) if len(upto) > 1 else np.nan
+    prior3_high = float(upto.iloc[:-1]["High"].tail(3).max()) if len(upto) > 1 else np.nan
+
+    bar_range = float(r["High"] - r["Low"])
+    close_pos = float((r["Close"] - r["Low"]) / bar_range) if bar_range > 0 else np.nan
+    upper_wick = float(r["High"] - max(r["Open"], r["Close"]))
+    upper_wick_ratio = upper_wick / bar_range if bar_range > 0 else np.nan
+
+    tod_rvol = _tod_rvol_generic(x, ts, 10)
+    day_ret = float(r["Close"] / day_open - 1)
+
+    # Breakout margin above short pressure.
+    breakout_margin = (
+        float(r["Close"] / prior3_high - 1)
+        if pd.notna(prior3_high) and prior3_high > 0 else np.nan
+    )
+
+    # Distance from high of day at trigger (smaller is stronger close/less rejection).
+    dist_from_hod = float(r["Close"] / session_high - 1) if session_high > 0 else np.nan
+
+    # Early intraday pullback depth before trigger.
+    if len(upto) >= 3:
+        pre_high = float(upto.iloc[:-1]["High"].max())
+        pre_low_after = float(upto.iloc[:-1]["Low"].min())
+        swing = max(pre_high - float(day_open), 1e-9)
+        pullback_depth = max(0.0, (pre_high - pre_low_after) / swing)
+    else:
+        pullback_depth = np.nan
+
+    # Number of completed bars before trigger.
+    bars_from_open = i + 1
+
+    # Same-day price range expansion vs first four bars.
+    first4 = day.iloc[:min(4, len(day))]
+    opening_range = float(first4["High"].max() - first4["Low"].min()) if len(first4) else np.nan
+    total_range = session_high - session_low
+    range_expansion = total_range / opening_range if opening_range and opening_range > 0 else np.nan
+
+    return {
+        "触发时间分钟": pd.Timestamp(ts).hour * 60 + pd.Timestamp(ts).minute,
+        "开盘后Bar数": bars_from_open,
+        "触发时日内涨幅": day_ret,
+        "同时段量比": float(tod_rvol) if pd.notna(tod_rvol) else np.nan,
+        "收盘位置": close_pos,
+        "上影占比": upper_wick_ratio,
+        "突破幅度": breakout_margin,
+        "距当日高点": dist_from_hod,
+        "回踩深度": pullback_depth,
+        "日内区间扩张": range_expansion,
+    }
+
+
+def _build_v4_diagnostic(v3_results):
+    if v3_results is None or v3_results.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in v3_results.iterrows():
+        if str(r.get("是否BUY", "")) != "是":
+            continue
+        if not r.get("首次BUY日期") or not r.get("首次BUY时间"):
+            continue
+
+        feat = _extract_trigger_quality_features(
+            str(r["Ticker"]),
+            str(r["首次BUY日期"]),
+            str(r["首次BUY时间"])
+        )
+        row = dict(r)
+        row.update(feat)
+
+        g5 = pd.to_numeric(pd.Series([r.get("5D Max Gain")]), errors="coerce").iloc[0]
+        if pd.isna(g5):
+            group = "未知"
+        elif g5 >= 0.05:
+            group = "强启动 ≥5%"
+        elif g5 < 0.03:
+            group = "弱启动 <3%"
+        else:
+            group = "中间 3–5%"
+        row["质量分组"] = group
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _quality_group_summary(df):
+    feature_cols = [
+        "触发时日内涨幅","同时段量比","收盘位置","上影占比",
+        "突破幅度","距当日高点","回踩深度","日内区间扩张","开盘后Bar数"
+    ]
+    out = []
+    for grp in ["强启动 ≥5%", "弱启动 <3%"]:
+        g = df[df["质量分组"] == grp]
+        if g.empty:
+            continue
+        for c in feature_cols:
+            vals = pd.to_numeric(g[c], errors="coerce").dropna()
+            if vals.empty:
+                continue
+            out.append({
+                "分组": grp,
+                "指标": c,
+                "样本数": len(vals),
+                "平均": vals.mean(),
+                "中位数": vals.median(),
+                "最小": vals.min(),
+                "最大": vals.max(),
+            })
+    return pd.DataFrame(out)
+
+
+def _candidate_gate_eval(df):
+    """
+    Test several SIMPLE gates. These are diagnostics only.
+    No gate is automatically promoted to formal B.
+    """
+    d = df.copy()
+    if d.empty:
+        return pd.DataFrame(), d
+
+    # Conservative candidate gates using trigger-time features only.
+    gates = {
+        "Gate A: 量比≥0.9 + 收盘位置≥0.65": (
+            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
+            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65)
+        ),
+        "Gate B: A + 上影≤0.35": (
+            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
+            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
+            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35)
+        ),
+        "Gate C: B + 突破幅度>0": (
+            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
+            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
+            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35) &
+            (pd.to_numeric(d["突破幅度"], errors="coerce") > 0)
+        ),
+        "Gate D: B + 触发涨幅≤4.5%": (
+            (pd.to_numeric(d["同时段量比"], errors="coerce").fillna(1.0) >= 0.90) &
+            (pd.to_numeric(d["收盘位置"], errors="coerce") >= 0.65) &
+            (pd.to_numeric(d["上影占比"], errors="coerce") <= 0.35) &
+            (pd.to_numeric(d["触发时日内涨幅"], errors="coerce") <= 0.045)
+        ),
+    }
+
+    rows = []
+    for name, mask in gates.items():
+        kept = d[mask].copy()
+        g5 = pd.to_numeric(kept["5D Max Gain"], errors="coerce").dropna()
+        dd = pd.to_numeric(kept["5D Max Drawdown"], errors="coerce").dropna()
+
+        rows.append({
+            "Gate": name,
+            "保留BUY数": len(kept),
+            "保留率": len(kept) / len(d) if len(d) else np.nan,
+            "5D≥3%": (g5 >= 0.03).mean() if len(g5) else np.nan,
+            "5D≥5%": (g5 >= 0.05).mean() if len(g5) else np.nan,
+            "5D≥8%": (g5 >= 0.08).mean() if len(g5) else np.nan,
+            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+            "保留股票": ", ".join(kept["Ticker"].astype(str).tolist()),
+        })
+
+    return pd.DataFrame(rows), d
+
+
+def render_v4_quality_gate():
+    st.divider()
+    st.header("🧬 V4 Quality Gate — 强启动 vs 弱启动")
+    st.caption(
+        "不改正式B。先比较强启动(5D≥5%)和弱启动(<3%)在BUY触发瞬间的差异，"
+        "再测试几个简单Quality Gate。所有Gate都只用触发当时可见的数据。"
+    )
+
+    if "v3_multi_results" not in st.session_state:
+        st.info("请先运行上面的 Multi-Stock Replay V3。")
+        return
+
+    if st.button("🧪 运行 V4 Quality Gate 诊断", use_container_width=True):
+        with st.spinner("正在提取每只股票BUY瞬间的质量特征..."):
+            d = _build_v4_diagnostic(st.session_state["v3_multi_results"])
+            st.session_state["v4_diag"] = d
+
+    if "v4_diag" not in st.session_state:
+        return
+
+    d = st.session_state["v4_diag"].copy()
+
+    st.subheader("逐只BUY质量特征")
+    show_cols = [
+        "Ticker","质量分组","首次BUY日期","首次BUY时间",
+        "5D Max Gain","5D Max Drawdown",
+        "触发时日内涨幅","同时段量比","收盘位置","上影占比",
+        "突破幅度","距当日高点","回踩深度","日内区间扩张","开盘后Bar数"
+    ]
+    show_cols = [c for c in show_cols if c in d.columns]
+
+    pct_cols = [
+        "5D Max Gain","5D Max Drawdown","触发时日内涨幅","收盘位置",
+        "上影占比","突破幅度","距当日高点","回踩深度"
+    ]
+    fmts = {c: "{:.2%}" for c in pct_cols if c in d.columns}
+    if "同时段量比" in d.columns:
+        fmts["同时段量比"] = "{:.2f}"
+    if "日内区间扩张" in d.columns:
+        fmts["日内区间扩张"] = "{:.2f}"
+
+    st.dataframe(
+        d[show_cols].style.format(fmts, na_rep=""),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader("强启动 vs 弱启动：指标差异")
+    gs = _quality_group_summary(d)
+    if not gs.empty:
+        st.dataframe(gs, use_container_width=True, hide_index=True)
+
+    st.subheader("候选 Quality Gate 对比")
+    gates, _ = _candidate_gate_eval(d)
+    if not gates.empty:
+        pct_fmt = {
+            "保留率":"{:.1%}","5D≥3%":"{:.1%}","5D≥5%":"{:.1%}","5D≥8%":"{:.1%}",
+            "平均5D最大涨幅":"{:.2%}","平均5D最大回撤":"{:.2%}"
+        }
+        st.dataframe(
+            gates.style.format(pct_fmt, na_rep=""),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.warning(
+        "V4目前只是诊断，不会自动选择正式Gate。"
+        "我们先看哪个Gate能减少PATH/MSFT/HD/XOM这类弱启动，"
+        "同时尽量保留ETN/CAT/MU/HOOD/MRK/ASTS。之后再扩大样本验证。"
+    )
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -4474,6 +4752,7 @@ if "a_historical_replay" in st.session_state:
     render_mu_state_machine_replay_v1()
     render_mu_state_machine_replay_v2()
     render_multi_stock_replay_v3()
+    render_v4_quality_gate()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
