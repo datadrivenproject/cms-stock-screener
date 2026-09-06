@@ -4591,6 +4591,273 @@ def render_v4_quality_gate():
     )
 
 
+
+# =========================================================
+# V5 BUY QUALITY SCORE
+# Purpose:
+#   Replace brittle hard gates with a 0-100 trigger-quality score.
+#   Score uses only information available at BUY trigger time.
+#   This is diagnostic only; it does NOT modify formal B.
+# =========================================================
+
+def _v5_score_one_row(r):
+    """
+    100-point BUY Quality Score.
+    All inputs are trigger-time features from V4.
+    Higher score = cleaner trigger quality.
+    """
+    score = 0.0
+    parts = {}
+
+    # 1) Close quality / candle strength: 0-20
+    close_pos = pd.to_numeric(pd.Series([r.get("收盘位置")]), errors="coerce").iloc[0]
+    if pd.isna(close_pos):
+        close_pts = 8
+    elif close_pos >= 0.90:
+        close_pts = 20
+    elif close_pos >= 0.80:
+        close_pts = 17
+    elif close_pos >= 0.70:
+        close_pts = 14
+    elif close_pos >= 0.60:
+        close_pts = 10
+    else:
+        close_pts = 4
+    parts["收盘质量"] = close_pts
+    score += close_pts
+
+    # 2) Upper wick / rejection risk: 0-15
+    uw = pd.to_numeric(pd.Series([r.get("上影占比")]), errors="coerce").iloc[0]
+    if pd.isna(uw):
+        wick_pts = 7
+    elif uw <= 0.10:
+        wick_pts = 15
+    elif uw <= 0.20:
+        wick_pts = 13
+    elif uw <= 0.30:
+        wick_pts = 10
+    elif uw <= 0.40:
+        wick_pts = 6
+    else:
+        wick_pts = 2
+    parts["上影质量"] = wick_pts
+    score += wick_pts
+
+    # 3) Distance from high-of-day: 0-15
+    dh = pd.to_numeric(pd.Series([r.get("距当日高点")]), errors="coerce").iloc[0]
+    # dh is usually <=0; closer to 0 is better.
+    if pd.isna(dh):
+        hod_pts = 7
+    elif dh >= -0.0025:
+        hod_pts = 15
+    elif dh >= -0.005:
+        hod_pts = 13
+    elif dh >= -0.010:
+        hod_pts = 10
+    elif dh >= -0.020:
+        hod_pts = 6
+    else:
+        hod_pts = 2
+    parts["接近日高"] = hod_pts
+    score += hod_pts
+
+    # 4) Time-of-day relative volume: 0-15
+    rv = pd.to_numeric(pd.Series([r.get("同时段量比")]), errors="coerce").iloc[0]
+    if pd.isna(rv):
+        vol_pts = 8
+    elif 1.00 <= rv <= 1.80:
+        vol_pts = 15
+    elif 0.85 <= rv < 1.00:
+        vol_pts = 12
+    elif 0.70 <= rv < 0.85:
+        vol_pts = 8
+    elif rv > 1.80:
+        # Very high RVOL can be great, but also panic/news noise; don't over-reward.
+        vol_pts = 12
+    else:
+        vol_pts = 4
+    parts["量能质量"] = vol_pts
+    score += vol_pts
+
+    # 5) Breakout margin: 0-15
+    bm = pd.to_numeric(pd.Series([r.get("突破幅度")]), errors="coerce").iloc[0]
+    if pd.isna(bm):
+        brk_pts = 6
+    elif 0.001 <= bm <= 0.012:
+        brk_pts = 15
+    elif 0 < bm < 0.001:
+        brk_pts = 11
+    elif 0.012 < bm <= 0.025:
+        brk_pts = 10
+    elif bm > 0.025:
+        # avoid rewarding late/chasing breakouts
+        brk_pts = 5
+    else:
+        brk_pts = 3
+    parts["突破质量"] = brk_pts
+    score += brk_pts
+
+    # 6) Trigger-time day return / chase control: 0-10
+    dr = pd.to_numeric(pd.Series([r.get("触发时日内涨幅")]), errors="coerce").iloc[0]
+    if pd.isna(dr):
+        chase_pts = 5
+    elif -0.005 <= dr <= 0.025:
+        chase_pts = 10
+    elif 0.025 < dr <= 0.040:
+        chase_pts = 8
+    elif 0.040 < dr <= 0.055:
+        chase_pts = 5
+    elif dr > 0.055:
+        chase_pts = 1
+    else:
+        chase_pts = 6
+    parts["防追高"] = chase_pts
+    score += chase_pts
+
+    # 7) Intraday range expansion: 0-10
+    rexp = pd.to_numeric(pd.Series([r.get("日内区间扩张")]), errors="coerce").iloc[0]
+    if pd.isna(rexp):
+        range_pts = 5
+    elif 1.00 <= rexp <= 1.40:
+        range_pts = 10
+    elif 0.85 <= rexp < 1.00:
+        range_pts = 8
+    elif 1.40 < rexp <= 1.80:
+        range_pts = 7
+    elif rexp > 1.80:
+        range_pts = 4
+    else:
+        range_pts = 4
+    parts["区间质量"] = range_pts
+    score += range_pts
+
+    return round(score, 1), parts
+
+
+def _build_v5_score_table(v4_diag):
+    if v4_diag is None or v4_diag.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in v4_diag.iterrows():
+        total, parts = _v5_score_one_row(r)
+        row = dict(r)
+        row["V5 Quality Score"] = total
+        for k, v in parts.items():
+            row[k] = v
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _v5_threshold_summary(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for th in [55, 60, 65, 70, 75, 80]:
+        kept = df[pd.to_numeric(df["V5 Quality Score"], errors="coerce") >= th].copy()
+        g5 = pd.to_numeric(kept["5D Max Gain"], errors="coerce").dropna()
+        dd = pd.to_numeric(kept["5D Max Drawdown"], errors="coerce").dropna()
+
+        rows.append({
+            "Score门槛": th,
+            "保留BUY数": len(kept),
+            "保留率": len(kept)/len(df) if len(df) else np.nan,
+            "5D≥3%": (g5 >= 0.03).mean() if len(g5) else np.nan,
+            "5D≥5%": (g5 >= 0.05).mean() if len(g5) else np.nan,
+            "5D≥8%": (g5 >= 0.08).mean() if len(g5) else np.nan,
+            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+            "保留股票": ", ".join(kept["Ticker"].astype(str).tolist()),
+        })
+    return pd.DataFrame(rows)
+
+
+def render_v5_buy_quality_score():
+    st.divider()
+    st.header("🎯 V5 BUY Quality Score — 100分质量评分")
+    st.caption(
+        "不用新的硬Gate。把BUY触发瞬间的K线质量、量能、突破质量、"
+        "接近日高程度和追高风险综合成0–100分。只做诊断，不改正式B。"
+    )
+
+    if "v4_diag" not in st.session_state:
+        st.info("请先运行 V3，再运行 V4 Quality Gate 诊断。")
+        return
+
+    if st.button("🎯 运行 V5 BUY Quality Score", use_container_width=True):
+        v5 = _build_v5_score_table(st.session_state["v4_diag"])
+        st.session_state["v5_score_table"] = v5
+
+    if "v5_score_table" not in st.session_state:
+        return
+
+    d = st.session_state["v5_score_table"].copy()
+    d = d.sort_values("V5 Quality Score", ascending=False)
+
+    st.subheader("逐只BUY质量评分")
+    cols = [
+        "Ticker","质量分组","V5 Quality Score",
+        "5D Max Gain","5D Max Drawdown",
+        "收盘质量","上影质量","接近日高","量能质量","突破质量","防追高","区间质量",
+        "触发时日内涨幅","同时段量比","收盘位置","上影占比","突破幅度","距当日高点"
+    ]
+    cols = [c for c in cols if c in d.columns]
+
+    fmt = {}
+    for c in [
+        "5D Max Gain","5D Max Drawdown","触发时日内涨幅",
+        "收盘位置","上影占比","突破幅度","距当日高点"
+    ]:
+        if c in d.columns:
+            fmt[c] = "{:.2%}"
+    if "同时段量比" in d.columns:
+        fmt["同时段量比"] = "{:.2f}"
+
+    st.dataframe(
+        d[cols].style.format(fmt, na_rep=""),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader("Score门槛回测")
+    sm = _v5_threshold_summary(d)
+    if not sm.empty:
+        st.dataframe(
+            sm.style.format({
+                "保留率":"{:.1%}",
+                "5D≥3%":"{:.1%}",
+                "5D≥5%":"{:.1%}",
+                "5D≥8%":"{:.1%}",
+                "平均5D最大涨幅":"{:.2%}",
+                "平均5D最大回撤":"{:.2%}",
+            }, na_rep=""),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # Simple separation diagnostic.
+    strong = pd.to_numeric(
+        d.loc[d["质量分组"]=="强启动 ≥5%", "V5 Quality Score"], errors="coerce"
+    ).dropna()
+    weak = pd.to_numeric(
+        d.loc[d["质量分组"]=="弱启动 <3%", "V5 Quality Score"], errors="coerce"
+    ).dropna()
+
+    if len(strong) and len(weak):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("强启动平均分", f"{strong.mean():.1f}")
+        c2.metric("弱启动平均分", f"{weak.mean():.1f}")
+        c3.metric("平均分差", f"{strong.mean()-weak.mean():+.1f}")
+
+    st.warning(
+        "现在只看能不能“分开”强/弱BUY。"
+        "如果分不开，就停止继续调15m质量评分；"
+        "如果明显分开，再扩大到更多历史样本验证后才考虑接入正式B。"
+    )
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -4753,6 +5020,7 @@ if "a_historical_replay" in st.session_state:
     render_mu_state_machine_replay_v2()
     render_multi_stock_replay_v3()
     render_v4_quality_gate()
+    render_v5_buy_quality_score()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
