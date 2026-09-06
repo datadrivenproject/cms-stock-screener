@@ -3512,6 +3512,153 @@ def render_mu_intraday_data_check():
             )
 
 
+
+# =========================================================
+# MU 2026-08-04 INTRADAY VISION REPLAY
+# =========================================================
+def _download_intraday_mu():
+    out = {}
+    for interval, period in [("15m", "60d"), ("60m", "730d")]:
+        raw = yf.download(
+            "MU",
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+        x = _normalize_ohlcv(raw)
+        if x.empty:
+            out[interval] = pd.DataFrame()
+            continue
+        out[interval] = x
+    return out
+
+
+def _slice_until(df, cutoff):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    idx = pd.DatetimeIndex(df.index)
+    if idx.tz is not None:
+        cutoff = pd.Timestamp(cutoff, tz=idx.tz)
+    else:
+        cutoff = pd.Timestamp(cutoff)
+    return df[idx <= cutoff].copy()
+
+
+def _plot_intraday_pair(df15, df60, cutoff):
+    if plt is None or Rectangle is None:
+        raise RuntimeError("缺少 matplotlib。")
+
+    c15 = _slice_until(df15, cutoff).tail(40)
+    c60 = _slice_until(df60, cutoff).tail(30)
+
+    fig = plt.figure(figsize=(15, 8.5), dpi=120)
+    gs = fig.add_gridspec(2, 2, height_ratios=[4.4, 1.15], hspace=0.06, wspace=0.10)
+    ax60 = fig.add_subplot(gs[0, 0])
+    av60 = fig.add_subplot(gs[1, 0], sharex=ax60)
+    ax15 = fig.add_subplot(gs[0, 1])
+    av15 = fig.add_subplot(gs[1, 1], sharex=ax15)
+
+    _draw_candles(ax60, c60, f"MU | 1H | only through {pd.Timestamp(cutoff)}")
+    _draw_volume(av60, c60)
+    _draw_candles(ax15, c15, f"MU | 15m | only through {pd.Timestamp(cutoff)}")
+    _draw_volume(av15, c15)
+
+    plt.setp(ax60.get_xticklabels(), visible=False)
+    plt.setp(ax15.get_xticklabels(), visible=False)
+    fig.suptitle(
+        "INTRADAY REPLAY — no bars after the timestamp are shown",
+        fontsize=12, y=0.995
+    )
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def render_mu_intraday_replay():
+    st.divider()
+    st.header("⏱️ MU 2026-08-04 盘中 Vision Replay")
+    st.caption(
+        "每张图严格截止到该时间点。左边1H，右边15min。"
+        "目标：不看当天后面的K线，找出最早什么时候B有足够证据进入BUY候选。"
+    )
+
+    if st.button("▶️ 生成 MU 8/4 盘中截断图", use_container_width=True):
+        try:
+            data = _download_intraday_mu()
+            df15 = data.get("15m", pd.DataFrame())
+            df60 = data.get("60m", pd.DataFrame())
+
+            if df15.empty or df60.empty:
+                st.error("15min或1H数据为空，无法Replay。")
+                return
+
+            # Fixed checkpoints, using market-local timestamps from Yahoo's index convention.
+            checkpoints = [
+                "2026-08-04 10:00:00",
+                "2026-08-04 10:30:00",
+                "2026-08-04 11:00:00",
+                "2026-08-04 11:30:00",
+                "2026-08-04 12:00:00",
+                "2026-08-04 13:00:00",
+                "2026-08-04 14:00:00",
+            ]
+
+            rows = []
+            for cp in checkpoints:
+                st.subheader(f"截止 {cp[11:16]}")
+                png = _plot_intraday_pair(df15, df60, cp)
+                st.image(png, use_container_width=True)
+
+                d15 = _slice_until(df15, cp)
+                day15 = d15[pd.Index([pd.Timestamp(v).date() for v in d15.index]) == pd.Timestamp(cp).date()]
+                if len(day15):
+                    first_open = float(day15.iloc[0]["Open"])
+                    last_close = float(day15.iloc[-1]["Close"])
+                    intraday_ret = last_close / first_open - 1 if first_open else 0.0
+                    high_so_far = float(day15["High"].max())
+                    low_so_far = float(day15["Low"].min())
+                    vol_so_far = float(day15["Volume"].sum())
+                else:
+                    intraday_ret = None
+                    high_so_far = None
+                    low_so_far = None
+                    vol_so_far = None
+
+                rows.append({
+                    "时间点": cp[11:16],
+                    "截至当时涨跌": intraday_ret,
+                    "当日高点(截至当时)": high_so_far,
+                    "当日低点(截至当时)": low_so_far,
+                    "累计成交量": vol_so_far,
+                })
+
+            st.subheader("时间点客观数据")
+            rdf = pd.DataFrame(rows)
+            st.dataframe(
+                rdf.style.format({
+                    "截至当时涨跌": "{:.2%}",
+                    "当日高点(截至当时)": "{:.2f}",
+                    "当日低点(截至当时)": "{:.2f}",
+                    "累计成交量": "{:,.0f}",
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.info(
+                "现在先不要看14:00之后的走势来判断10:00。"
+                "从10:00开始一张一张盲看，记录第一个你/ChatGPT认为可以BUY的时间点。"
+            )
+
+        except Exception as e:
+            st.error(f"盘中Replay生成失败：{e}")
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -3670,6 +3817,7 @@ if "a_historical_replay" in st.session_state:
     render_a6_vision_prototype(_cached_bt)
     render_mu_startup_example()
     render_mu_intraday_data_check()
+    render_mu_intraday_replay()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
