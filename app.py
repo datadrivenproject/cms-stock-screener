@@ -41,7 +41,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("👁️ CMS Stock Screener A6 — 免费Vision验证版")
+st.title("👁️ CMS Stock Screener A6 — 免费Vision + 启动日复盘")
 st.caption(
     "A6免费验证版：不调用付费Vision API，正式A/B/C逻辑暂不替换。先验证真实K线视觉判断是否有效。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -3204,6 +3204,172 @@ def render_a6_vision_prototype(bt):
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+
+# =========================================================
+# A6 STARTUP-DAY REVIEW EXAMPLE — MU
+# =========================================================
+def _startup_signal_on_day(hist, idx):
+    """Evaluate one day using only data available on/before that day."""
+    if idx < 20:
+        return None
+
+    d = hist.iloc[idx]
+    prev = hist.iloc[:idx]
+    prev1 = hist.iloc[idx-1]
+
+    close = float(d["Close"])
+    open_ = float(d["Open"])
+    high = float(d["High"])
+    low = float(d["Low"])
+    vol = float(d["Volume"])
+
+    prev_close = float(prev1["Close"])
+    day_ret = close / prev_close - 1 if prev_close else 0.0
+
+    vol20 = float(prev["Volume"].tail(20).mean()) if len(prev) >= 20 else float(prev["Volume"].mean())
+    vol_ratio = vol / vol20 if vol20 and vol20 > 0 else 0.0
+
+    close_series = pd.concat([prev["Close"], pd.Series([close], index=[hist.index[idx]])])
+    ma20 = float(close_series.tail(20).mean())
+    ma50 = float(close_series.tail(50).mean()) if idx >= 49 else float("nan")
+
+    prior3_high = float(prev["High"].tail(3).max())
+    prior5_high = float(prev["High"].tail(5).max())
+
+    day_range = max(high - low, 1e-9)
+    close_position = (close - low) / day_range
+    bullish_body = close > open_
+
+    conds = {
+        "单日上涨≥2%": day_ret >= 0.02,
+        "突破前3日高点": close > prior3_high,
+        "突破前5日高点": close > prior5_high,
+        "量比≥1.20": vol_ratio >= 1.20,
+        "收盘靠近日内高位": close_position >= 0.70,
+        "阳线": bullish_body,
+        "站上MA20": close >= ma20,
+    }
+
+    score = 0
+    score += 2 if conds["单日上涨≥2%"] else 0
+    score += 2 if conds["突破前3日高点"] else 0
+    score += 1 if conds["突破前5日高点"] else 0
+    score += 2 if conds["量比≥1.20"] else 0
+    score += 1 if conds["收盘靠近日内高位"] else 0
+    score += 1 if conds["阳线"] else 0
+    score += 1 if conds["站上MA20"] else 0
+
+    trigger = (
+        conds["单日上涨≥2%"]
+        and (conds["突破前3日高点"] or conds["量比≥1.20"])
+        and score >= 5
+    )
+
+    return {
+        "date": hist.index[idx],
+        "close": close,
+        "day_ret": day_ret,
+        "vol_ratio": vol_ratio,
+        "ma20": ma20,
+        "ma50": ma50,
+        "score": score,
+        "trigger": trigger,
+        "conditions": conds,
+    }
+
+
+def _find_first_startup_day(ticker, original_date, lookforward_days=5):
+    """Inspect next N trading days sequentially and return earliest startup trigger."""
+    full = safe_download_single(ticker, "2y")
+    x = _normalize_ohlcv(full)
+    if x.empty:
+        raise RuntimeError(f"{ticker}: 无法取得OHLCV")
+
+    original_date = pd.Timestamp(original_date).tz_localize(None)
+    candidates = x[x.index > original_date].head(int(lookforward_days))
+    if candidates.empty:
+        raise RuntimeError(f"{ticker}: 原选股日后没有足够交易日")
+
+    checks = []
+    for dt in candidates.index:
+        idx = x.index.get_loc(dt)
+        sig = _startup_signal_on_day(x, idx)
+        if sig:
+            checks.append(sig)
+            if sig["trigger"]:
+                return sig, checks, x
+
+    return None, checks, x
+
+
+def render_mu_startup_example():
+    st.divider()
+    st.header("🚀 启动日复盘示例 — MU")
+    st.caption(
+        "目的：检验7/29把MU判为“不买”以后，B若继续观察5个交易日，"
+        "是否能在真正启动的第一天重新抓住它。启动日由统一规则自动寻找，"
+        "不是看完未来后人工挑最好看的那一天。"
+    )
+
+    ticker = "MU"
+    original_date = pd.Timestamp("2026-07-29")
+
+    if st.button("🚀 自动寻找 MU 的第一启动日", use_container_width=True):
+        try:
+            trigger, checks, full = _find_first_startup_day(ticker, original_date, 5)
+
+            rows = []
+            for s in checks:
+                row = {
+                    "日期": s["date"].date(),
+                    "收盘价": round(s["close"], 2),
+                    "单日涨幅": s["day_ret"],
+                    "量比20D": round(s["vol_ratio"], 2),
+                    "启动分数": s["score"],
+                    "是否启动": "是" if s["trigger"] else "否",
+                }
+                row.update({k: ("✅" if v else "—") for k, v in s["conditions"].items()})
+                rows.append(row)
+
+            st.subheader("逐日检查（从7/30开始，一天一天看）")
+            df_checks = pd.DataFrame(rows)
+            if not df_checks.empty:
+                st.dataframe(
+                    df_checks.style.format({"单日涨幅": "{:.2%}"}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+            st.subheader("A原选股日：2026-07-29")
+            original_png = make_vision_chart_png(ticker, original_date, full)
+            st.image(original_png, use_container_width=True)
+            st.info("这是原选股日图：当时大结构仍弱，所以Vision判“不买”。")
+
+            if trigger is None:
+                st.warning("未来5个交易日内，没有出现符合统一启动规则的第一启动日。")
+                return
+
+            trigger_date = pd.Timestamp(trigger["date"])
+            st.success(
+                f"自动找到第一启动日：{trigger_date.date()} | "
+                f"单日涨幅 {trigger['day_ret']:.2%} | "
+                f"量比 {trigger['vol_ratio']:.2f} | "
+                f"启动分数 {trigger['score']}"
+            )
+
+            st.subheader(f"B重新看图：第一启动日 {trigger_date.date()}")
+            trigger_png = make_vision_chart_png(ticker, trigger_date, full)
+            st.image(trigger_png, use_container_width=True)
+
+            st.markdown(
+                "**现在要重新判断这张启动日K线：** "
+                "它是否已经从“下降结构里的弱股”变成“值得B触发BUY的反转启动”？"
+            )
+
+        except Exception as e:
+            st.error(f"MU启动日复盘失败：{e}")
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -3360,6 +3526,7 @@ if "a_historical_replay" in st.session_state:
         st.info("检测到旧版本历史回测缓存。A5.1 图形字段尚未生成，请重新点击上面的 60 日回测按钮。")
     render_historical_a_replay(_cached_bt)
     render_a6_vision_prototype(_cached_bt)
+    render_mu_startup_example()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
