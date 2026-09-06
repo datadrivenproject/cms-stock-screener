@@ -3424,6 +3424,94 @@ def render_mu_startup_example():
         except Exception as e:
             st.error(f"MU五日链路生成失败：{e}")
 
+
+# =========================================================
+# MU 2026-08-04 INTRADAY DATA AVAILABILITY CHECK
+# =========================================================
+def render_mu_intraday_data_check():
+    st.divider()
+    st.header("🧪 MU 2026-08-04 盘中数据检查")
+    st.caption(
+        "先只检查数据源，不改正式B逻辑。目标：确认Yahoo当前是否还能提供"
+        "2026-08-04附近的15分钟/1小时OHLCV，以便下一步做无未来泄漏的盘中Replay。"
+    )
+
+    if st.button("🔎 检查 MU 8/4 的 15min + 1H 数据", use_container_width=True):
+        ticker = "MU"
+        target = pd.Timestamp("2026-08-04")
+        results = []
+
+        for interval, period in [("15m", "60d"), ("60m", "730d")]:
+            try:
+                raw = yf.download(
+                    ticker,
+                    period=period,
+                    interval=interval,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+                x = _normalize_ohlcv(raw)
+
+                if x.empty:
+                    results.append({
+                        "周期": interval,
+                        "状态": "❌ 无数据",
+                        "最早时间": "",
+                        "最晚时间": "",
+                        "8/4记录数": 0,
+                        "结论": "当前Yahoo请求没有返回数据",
+                    })
+                    continue
+
+                idx = pd.DatetimeIndex(x.index)
+                # Normalize timezone only for date comparison.
+                dates = pd.Index([pd.Timestamp(v).date() for v in idx])
+                mask = dates == target.date()
+                day_rows = x.loc[mask]
+
+                results.append({
+                    "周期": interval,
+                    "状态": "✅ 有数据" if len(day_rows) else "⚠️ 有数据但没有8/4",
+                    "最早时间": str(idx.min()),
+                    "最晚时间": str(idx.max()),
+                    "8/4记录数": int(len(day_rows)),
+                    "结论": "可以做8/4盘中Replay" if len(day_rows) else "当前Yahoo保留窗口未覆盖8/4",
+                })
+
+                if len(day_rows):
+                    st.subheader(f"MU 2026-08-04 — {interval}")
+                    show = day_rows.reset_index().copy()
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+
+            except Exception as e:
+                results.append({
+                    "周期": interval,
+                    "状态": "❌ 请求失败",
+                    "最早时间": "",
+                    "最晚时间": "",
+                    "8/4记录数": 0,
+                    "结论": str(e)[:180],
+                })
+
+        st.subheader("检查结果")
+        rdf = pd.DataFrame(results)
+        st.dataframe(rdf, use_container_width=True, hide_index=True)
+
+        ok15 = any(r["周期"] == "15m" and r["8/4记录数"] > 0 for r in results)
+        ok60 = any(r["周期"] == "60m" and r["8/4记录数"] > 0 for r in results)
+
+        if ok15 and ok60:
+            st.success("15min和1H都覆盖8/4：下一步可以直接做MU 8/4盘中逐根Replay。")
+        elif ok60:
+            st.warning("1H覆盖8/4，但15min没有。下一步需要补15min历史数据源，或先做1H Replay。")
+        else:
+            st.warning(
+                "Yahoo当前没有足够的8/4分钟级历史数据。下一步不要硬改B；"
+                "我们改接能提供历史分钟K的数据源。"
+            )
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
@@ -3581,6 +3669,7 @@ if "a_historical_replay" in st.session_state:
     render_historical_a_replay(_cached_bt)
     render_a6_vision_prototype(_cached_bt)
     render_mu_startup_example()
+    render_mu_intraday_data_check()
 
 with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
     if "a_all_history_save_msg" in st.session_state:
