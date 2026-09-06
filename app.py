@@ -41,7 +41,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("👁️ CMS Stock Screener A6 — MU三日Vision对照")
+st.title("👁️ CMS Stock Screener A6 — MU五日反转链路")
 st.caption(
     "A6免费验证版：不调用付费Vision API，正式A/B/C逻辑暂不替换。先验证真实K线视觉判断是否有效。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -3303,75 +3303,126 @@ def _find_first_startup_day(ticker, original_date, lookforward_days=5):
 
 
 
+
+def _classify_mu_phase(sig, prev_sig=None):
+    """
+    Simple state label for the MU case study.
+    This is a diagnostic review, not yet production B logic.
+    """
+    if sig is None:
+        return "无信号"
+
+    day_ret = sig["day_ret"]
+    vol_ratio = sig["vol_ratio"]
+    conds = sig["conditions"]
+
+    if sig["trigger"]:
+        return "REVERSAL START"
+
+    # Pullback after a start: red/down day, but not necessarily invalid.
+    if prev_sig is not None and prev_sig.get("trigger") and day_ret < 0:
+        return "PULLBACK"
+
+    # Restart proxy: after a pullback, price turns up with either volume or short breakout support.
+    if prev_sig is not None and prev_sig.get("phase") == "PULLBACK":
+        if day_ret >= 0.015 and (
+            conds["突破前3日高点"] or vol_ratio >= 1.10 or conds["高位收盘"]
+        ):
+            return "RESTART CANDIDATE"
+
+    return "WATCH"
+
+
 def render_mu_startup_example():
     st.divider()
-    st.header("👁 MU 三日截断图对照：7/29 → 7/30 → 7/31")
+    st.header("🚀 MU 五日链路：START → PULLBACK → RESTART")
     st.caption(
-        "三张图都严格截止到标题日期，不显示之后任何K线。"
-        "目的：区分 A候选、反转启动、反转确认/BUY，避免未来信息泄漏。"
+        "从A原选股日7/29以后，逐日截断查看接下来5个交易日。"
+        "目标不是事后挑最好看的日子，而是验证B能否识别："
+        "反转启动 → 回踩 → 再启动 → BUY候选。"
     )
 
     ticker = "MU"
-    dates = [
-        ("① A原选股日", pd.Timestamp("2026-07-29")),
-        ("② 启动观察日", pd.Timestamp("2026-07-30")),
-        ("③ 确认观察日", pd.Timestamp("2026-07-31")),
-    ]
+    original_date = pd.Timestamp("2026-07-29")
 
-    if st.button("📊 生成 MU 7/29、7/30、7/31 三日截断图", use_container_width=True):
+    if st.button("📊 生成 MU 后续5个交易日逐日截断图", use_container_width=True):
         try:
             full = safe_download_single(ticker, "2y")
             x = _normalize_ohlcv(full)
             if x.empty:
                 raise RuntimeError("MU: 无法取得OHLCV")
 
-            summary = []
-            for label, dt in dates:
-                eligible = x.index[x.index <= dt]
-                if len(eligible) == 0:
-                    continue
-                actual_dt = eligible[-1]
-                idx = x.index.get_loc(actual_dt)
-                sig = _startup_signal_on_day(x, idx)
+            # Original date + next 5 trading days
+            future_dates = list(x.index[x.index > original_date].head(5))
+            review_dates = [original_date] + future_dates
 
-                st.subheader(f"{label} — {actual_dt.date()}")
-                png = make_vision_chart_png(ticker, actual_dt, full)
+            summaries = []
+            prev_state = None
+
+            for i, dt in enumerate(review_dates):
+                idx = x.index.get_loc(dt)
+                sig = _startup_signal_on_day(x, idx)
+                if sig is None:
+                    continue
+
+                # Temporary phase classification using only previous state.
+                phase = "A原选股日" if i == 0 else None
+                if i > 0:
+                    if sig["trigger"]:
+                        phase = "REVERSAL START"
+                    elif prev_state is not None and prev_state.get("phase") == "REVERSAL START" and sig["day_ret"] < 0:
+                        phase = "PULLBACK"
+                    elif prev_state is not None and prev_state.get("phase") == "PULLBACK":
+                        if sig["day_ret"] >= 0.015 and (
+                            sig["conditions"]["突破前3日高点"]
+                            or sig["vol_ratio"] >= 1.10
+                            or sig["conditions"]["收盘靠近日内高位"]
+                        ):
+                            phase = "RESTART CANDIDATE"
+                        else:
+                            phase = "WATCH"
+                    else:
+                        phase = "WATCH"
+
+                st.subheader(f"{dt.date()} — {phase}")
+                png = make_vision_chart_png(ticker, dt, full)
                 st.image(png, use_container_width=True)
 
-                if sig:
-                    conds = sig["conditions"]
-                    summary.append({
-                        "阶段": label,
-                        "日期": actual_dt.date(),
-                        "收盘价": round(sig["close"], 2),
-                        "单日涨幅": sig["day_ret"],
-                        "量比20D": round(sig["vol_ratio"], 2),
-                        "启动分数": sig["score"],
-                        "上涨≥2%": "✅" if conds["单日上涨≥2%"] else "—",
-                        "破3日高": "✅" if conds["突破前3日高点"] else "—",
-                        "破5日高": "✅" if conds["突破前5日高点"] else "—",
-                        "量比≥1.20": "✅" if conds["量比≥1.20"] else "—",
-                        "高位收盘": "✅" if conds["收盘靠近日内高位"] else "—",
-                        "站上MA20": "✅" if conds["站上MA20"] else "—",
-                        "程序启动触发": "是" if sig["trigger"] else "否",
-                    })
+                conds = sig["conditions"]
+                summaries.append({
+                    "日期": dt.date(),
+                    "阶段": phase,
+                    "收盘价": round(sig["close"], 2),
+                    "单日涨幅": sig["day_ret"],
+                    "量比20D": round(sig["vol_ratio"], 2),
+                    "启动分数": sig["score"],
+                    "上涨≥2%": "✅" if conds["单日上涨≥2%"] else "—",
+                    "破3日高": "✅" if conds["突破前3日高点"] else "—",
+                    "破5日高": "✅" if conds["突破前5日高点"] else "—",
+                    "量比≥1.20": "✅" if conds["量比≥1.20"] else "—",
+                    "高位收盘": "✅" if conds["收盘靠近日内高位"] else "—",
+                    "站上MA20": "✅" if conds["站上MA20"] else "—",
+                    "程序启动触发": "是" if sig["trigger"] else "否",
+                })
 
-            if summary:
-                st.subheader("三日客观信号对照")
-                sdf = pd.DataFrame(summary)
-                st.dataframe(
-                    sdf.style.format({"单日涨幅": "{:.2%}"}),
-                    use_container_width=True,
-                    hide_index=True
-                )
+                prev_state = {"phase": phase, "signal": sig}
+
+            st.subheader("MU 五日链路客观信号表")
+            sdf = pd.DataFrame(summaries)
+            st.dataframe(
+                sdf.style.format({"单日涨幅": "{:.2%}"}),
+                use_container_width=True,
+                hide_index=True
+            )
 
             st.info(
-                "看图时先不要看7/31之后的走势。我们只回答："
-                "7/29是否仅WATCH；7/30是否出现REVERSAL START；"
-                "7/31是否足够成为REVERSAL CONFIRM / BUY。"
+                "复核重点：若某天标记为 RESTART CANDIDATE，"
+                "我们再人工/ChatGPT看当天真实K线，决定是否足够成为B的BUY。"
+                "这个版本仍是研究版，不会改正式B。"
             )
+
         except Exception as e:
-            st.error(f"MU三日对照生成失败：{e}")
+            st.error(f"MU五日链路生成失败：{e}")
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
