@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FIX3 + VP1 — Volume-Price Phase",
+    page_title="CMS Stock Screener A5.2R FIX3 + VP1 + Pivot/Room — Research Backtest",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 — Volume-Price Phase")
+st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 + Pivot/Room — Research Backtest")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -2807,6 +2807,177 @@ def render_vp1_backtest(bt):
     st.info('判断标准：如果 B（尤其“前期缩量→B”）的 ≥5%/≥8% 命中率明显高于 FIX3 Benchmark，同时 C 的弱股率明显更高，VP1 才值得进入下一轮正式规则测试。当前页面不会自动修改 FIX3。')
 
 
+
+def _room_summary(x, label):
+    """Summary for Pivot/Room research; all future returns are outcome labels only."""
+    if not isinstance(x, pd.DataFrame) or x.empty:
+        return {
+            '版本/空间组': label, '样本': 0,
+            '1D平均最大涨幅': np.nan, '3D平均最大涨幅': np.nan,
+            '5D≥3%': np.nan, '5D≥5%': np.nan, '5D≥8%': np.nan,
+            '5D平均最大涨幅': np.nan, '5D中位数最大涨幅': np.nan,
+            '弱股<2%': np.nan,
+        }
+    g1 = pd.to_numeric(x.get('1D Max Gain'), errors='coerce')
+    g3 = pd.to_numeric(x.get('3D Max Gain'), errors='coerce')
+    g5 = pd.to_numeric(x.get('5D Max Gain'), errors='coerce')
+    valid = g5.notna()
+    g5v = g5[valid]
+    return {
+        '版本/空间组': label,
+        '样本': int(valid.sum()),
+        '1D平均最大涨幅': g1[valid].mean() if valid.any() else np.nan,
+        '3D平均最大涨幅': g3[valid].mean() if valid.any() else np.nan,
+        '5D≥3%': (g5v >= .03).mean() if len(g5v) else np.nan,
+        '5D≥5%': (g5v >= .05).mean() if len(g5v) else np.nan,
+        '5D≥8%': (g5v >= .08).mean() if len(g5v) else np.nan,
+        '5D平均最大涨幅': g5v.mean() if len(g5v) else np.nan,
+        '5D中位数最大涨幅': g5v.median() if len(g5v) else np.nan,
+        '弱股<2%': (g5v < .02).mean() if len(g5v) else np.nan,
+    }
+
+
+def _base_buy_candidates_for_room(d):
+    """Reconstruct the core A5.2R buy condition BEFORE the current space veto."""
+    x = d[d['Hard Filter'].eq('通过')].copy()
+    rn = pd.to_numeric(x.get('共振数'), errors='coerce')
+    macd = x.get('MACD共振', pd.Series(index=x.index, dtype=object)).eq('是')
+    pv = x.get('量价共振', pd.Series(index=x.index, dtype=object)).eq('是')
+    rs = x.get('RS共振', pd.Series(index=x.index, dtype=object)).eq('是')
+    x = x[(rn >= 4) & macd & (pv | rs)].copy()
+    if x.empty:
+        return x
+    x['_room_rank'] = pd.to_numeric(x.get('Replay Core Score 85'), errors='coerce')
+    x['_rn'] = pd.to_numeric(x.get('共振数'), errors='coerce')
+    x = x.sort_values(
+        ['Replay Date','_rn','_room_rank','Leadership Score','Accumulation Score'],
+        ascending=[True,False,False,False,False]
+    )
+    # Match the no-force-10 framework while keeping pre-space candidates comparable by day.
+    return x.groupby('Replay Date', group_keys=False).head(10).copy()
+
+
+def _room_bucket(df):
+    """Mutually exclusive room buckets using only as-of-date resistance information."""
+    if df is None or df.empty:
+        return pd.Series(dtype=object)
+    room = pd.to_numeric(df.get('上方空间'), errors='coerce')
+    pos = df.get('位置判断', pd.Series(index=df.index, dtype=object)).astype(str)
+    out = pd.Series('其他/不确定', index=df.index, dtype=object)
+    out[pos.eq('上方开放') | room.isna()] = '上方开放'
+    out[(room >= .08)] = 'Room ≥8%'
+    out[(room >= .05) & (room < .08)] = 'Room 5–8%'
+    out[(room >= .02) & (room < .05)] = 'Room 2–5%'
+    out[(room >= 0) & (room < .02)] = 'Room <2%'
+    out[room < 0] = '已进入/越过压力区'
+    return out
+
+
+def render_pivot_room_backtest(bt):
+    """Pivot/Room diagnostic backtest. Does not modify live FIX3 decision logic."""
+    if bt is None or bt.empty:
+        return
+    d = bt.copy()
+    req = [
+        'Replay Date','Ticker','Hard Filter','A5决策','共振数','MACD共振','量价共振','RS共振',
+        '位置判断','上方空间','压力测试次数_A52R','5D Max Gain'
+    ]
+    missing = [c for c in req if c not in d.columns]
+    if missing:
+        st.warning('Pivot/Room历史字段尚未完整生成：' + ', '.join(missing))
+        return
+
+    for c in ['1D Max Gain','3D Max Gain','5D Max Gain','上方空间','压力测试次数_A52R']:
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors='coerce')
+    d = d.dropna(subset=['5D Max Gain'])
+    if d.empty:
+        return
+
+    st.header('🧭 Pivot / Room — 压力位与上方空间历史验证')
+    st.caption(
+        '本模块只做研究，不改变 A5.2R FIX3 正式买/不买。压力区、测试次数和 Room 均只使用回放当日之前的OHLCV计算；'
+        '随后1/3/5日涨幅仅作为结果标签。'
+    )
+
+    # A. Current FIX3 buys grouped by mutually-exclusive room bucket.
+    fix3 = _current_fix3_selection_for_vp(d)
+    fix3['Room分组'] = _room_bucket(fix3)
+    order = ['上方开放','Room ≥8%','Room 5–8%','Room 2–5%','Room <2%','已进入/越过压力区','其他/不确定']
+    rows = []
+    for lab in order:
+        x = fix3[fix3['Room分组'].eq(lab)]
+        if len(x) or lab in ['上方开放','Room ≥8%','Room 5–8%','Room 2–5%','Room <2%']:
+            rows.append(_room_summary(x, lab))
+    t1 = pd.DataFrame(rows)
+    st.subheader('① FIX3实际入选样本：不同上方空间的1D / 3D / 5D表现')
+    st.dataframe(t1.style.format({
+        '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
+        '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
+        '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    # B. Threshold variants against unchanged FIX3 benchmark.
+    room = pd.to_numeric(fix3['上方空间'], errors='coerce')
+    open_mask = fix3['位置判断'].eq('上方开放') | room.isna()
+    variants = [
+        ('FIX3 原版 Benchmark', fix3),
+        ('FIX3 + 上方开放', fix3[open_mask]),
+        ('FIX3 + 开放或Room≥8%', fix3[open_mask | (room >= .08)]),
+        ('FIX3 + 开放或Room≥5%', fix3[open_mask | (room >= .05)]),
+        ('FIX3 + 开放或Room≥3%', fix3[open_mask | (room >= .03)]),
+    ]
+    t2 = pd.DataFrame([_room_summary(x, lab) for lab, x in variants])
+    st.subheader('② FIX3 Benchmark vs Room候选阈值（仅回测，不改正式逻辑）')
+    st.dataframe(t2.style.format({
+        '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
+        '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
+        '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    # C. Validate the existing pressure-too-close veto on pre-space core-buy candidates.
+    base = _base_buy_candidates_for_room(d)
+    if not base.empty:
+        room_b = pd.to_numeric(base['上方空间'], errors='coerce')
+        touches = pd.to_numeric(base['压力测试次数_A52R'], errors='coerce').fillna(0)
+        pos_b = base['位置判断'].astype(str)
+        close_pressure = pos_b.eq('压力过近') | ((touches >= 2) & (room_b >= 0) & (room_b < .02))
+        space_pass = ~close_pressure
+        t3 = pd.DataFrame([
+            _room_summary(base, 'Core Buy（空间过滤前）'),
+            _room_summary(base[space_pass], '当前FIX3：空间通过'),
+            _room_summary(base[close_pressure], '当前FIX3：压力过近被否决'),
+        ])
+        st.subheader('③ 当前“压力过近”否决是否有效')
+        st.dataframe(t3.style.format({
+            '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
+            '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
+            '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+        }, na_rep=''), hide_index=True, use_container_width=True)
+
+        # D. Pivot strength / repeated resistance structure.
+        open_b = pos_b.eq('上方开放') | room_b.isna()
+        one_touch = (~open_b) & (touches <= 1)
+        repeated_far = (~open_b) & (touches >= 2) & (room_b >= .02)
+        repeated_close = (~open_b) & (touches >= 2) & (room_b >= 0) & (room_b < .02)
+        t4 = pd.DataFrame([
+            _room_summary(base[open_b], '无明确上方压力'),
+            _room_summary(base[one_touch], '弱压力：≤1次测试'),
+            _room_summary(base[repeated_far], '重复压力≥2次，但Room≥2%'),
+            _room_summary(base[repeated_close], '重复压力≥2次，且Room<2%'),
+        ])
+        st.subheader('④ Pivot强度：压力测试次数 × 距离')
+        st.dataframe(t4.style.format({
+            '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
+            '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
+            '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+        }, na_rep=''), hide_index=True, use_container_width=True)
+
+    st.info(
+        '判断重点：只有当“开放或Room≥5%/8%”在 ≥5%、≥8%、5D平均涨幅和弱股率上形成清晰、稳定的改善，'
+        '同时样本量没有被过度砍掉，才考虑把更严格Room阈值并入A。否则继续保留FIX3当前只否决“重复压力且<2%”的规则。'
+    )
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -2818,6 +2989,8 @@ def render_historical_a_replay(bt):
     render_a4_a5_resonance_comparison(bt)
     st.divider()
     render_vp1_backtest(bt)
+    st.divider()
+    render_pivot_room_backtest(bt)
     st.divider()
 
     # Historical Hard Filter comparison remains available below for diagnostics.
@@ -3118,9 +3291,9 @@ r1, r2 = st.columns([1,2])
 with r1:
     replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("建议直接跑60日。结果顶部先显示 FIX3 Benchmark，随后显示 VP1 的 A/B/C/N、FIX3内部VP阶段，以及 FIX3 vs VP候选过滤方式；最后保留Hard Filter诊断。")
+    st.caption("建议直接跑60日。结果顶部先显示 FIX3 Benchmark，然后显示 VP1；接着显示 Pivot/Room 的空间分组、Room阈值、当前压力过近否决和Pivot强度；最后保留Hard Filter诊断。")
 
-if st.button("🧪 运行60日 A5.2R + VP1 回测", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A5.2R + VP1 + Pivot/Room 回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
