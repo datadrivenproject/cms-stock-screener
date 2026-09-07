@@ -17,11 +17,12 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.6 — Stop稳定性最终验证", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.6 — Stop稳定性最终验证")
+st.set_page_config(page_title="CMS B/C FINAL v1.7 — A历史股票池大样本验证", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.7 — A历史股票池大样本验证")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
+A_HISTORY_WORKSHEET = "A_AllScannedHistory"
 B_LOG_WORKSHEET = "B_Log"
 B_MASTER_WORKSHEET = "B_MasterList"
 
@@ -252,6 +253,86 @@ def get_a_sheet():
     client = gspread.authorize(creds)
     book = client.open(st.secrets["tracker"]["sheet_name"])
     return book.worksheet(A_WORKSHEET)
+
+
+
+def get_a_history_sheet():
+    """A完整历史扫描池；只读，不创建、不修改。"""
+    if gspread is None or Credentials is None:
+        raise RuntimeError("requirements.txt需要gspread和google-auth。")
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    book = client.open(st.secrets["tracker"]["sheet_name"])
+    return book.worksheet(A_HISTORY_WORKSHEET)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_a_history_pool_cached():
+    """
+    Read A_AllScannedHistory and return a normalized DataFrame.
+    Cache 15 minutes so repeated Streamlit reruns do not keep hitting Google Sheets.
+    """
+    ws = get_a_history_sheet()
+    rec = ws.get_all_records()
+    if not rec:
+        return pd.DataFrame()
+    df = normalize_sheet_columns(pd.DataFrame(rec))
+    if "Ticker" in df.columns:
+        df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
+    return df
+
+
+def build_a_history_ticker_pool(start_date=None, end_date=None):
+    """
+    Expand the research ticker pool from A_AllScannedHistory.
+    If a scan-date column exists, limit pool to tickers that appeared during
+    the requested historical window. This function only chooses which tickers
+    to test; LIVE B/C is untouched.
+    """
+    try:
+        hist = load_a_history_pool_cached().copy()
+    except Exception as e:
+        return pd.DataFrame(), f"读取 {A_HISTORY_WORKSHEET} 失败：{e}"
+
+    if hist.empty or "Ticker" not in hist.columns:
+        return pd.DataFrame(), f"{A_HISTORY_WORKSHEET} 为空或缺少股票代码列"
+
+    # Find scan date after normalization. Older history versions may use different names.
+    date_col = next(
+        (c for c in ["Scan Date","Date","扫描日期","日期"] if c in hist.columns),
+        None
+    )
+
+    if date_col is not None and start_date is not None and end_date is not None:
+        d = pd.to_datetime(hist[date_col], errors="coerce").dt.date
+        mask = d.notna() & (d >= start_date) & (d <= end_date)
+        scoped = hist[mask].copy()
+        # If the selected window predates the accumulated sheet, fall back to all
+        # available A-history tickers rather than returning zero names.
+        if not scoped.empty:
+            hist = scoped
+
+    tickers = (
+        hist["Ticker"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    tickers = tickers[
+        tickers.ne("") &
+        tickers.ne("NAN") &
+        tickers.ne("NONE")
+    ]
+
+    pool = pd.DataFrame({"Ticker": sorted(tickers.drop_duplicates().tolist())})
+    return pool, None
 
 
 def get_or_create_b_log_sheet():
@@ -1757,7 +1838,7 @@ def render_c_backtest(detail, summary):
 
 
 with st.sidebar:
-    st.header("B/C FINAL v1.6")
+    st.header("B/C FINAL v1.7")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -2220,68 +2301,84 @@ else:
 
 
 st.divider()
-st.header("🔬 Stop稳定性最终验证 — 最后一轮")
+st.header("🔬 A历史股票池 × Stop稳定性最终验证")
 st.caption(
-    "这一步不再调参数，只验证稳定性。固定比较：当前Stop、1.50×止损距离、ATR2.0，"
-    "同时保留其它Stop方案作为背景。结果自动拆成前半段 / 后半段，避免只看单一时间窗。"
+    "这一轮不再只用当前B_MasterList里的十几只股票。程序自动从Google Sheet的 "
+    "`A_AllScannedHistory` 读取历史扫描过的股票并去重，再用当前同一套B规则重建历史BUY。"
+    "LIVE B/C、Google Sheet持仓状态和1.50×参数都不会被这里修改。"
 )
 
-if master_df is not None and not master_df.empty:
-    stable_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
-    if not stable_pool.empty:
-        vc1, vc2, vc3 = st.columns(3)
-        with vc1:
-            stable_days = st.selectbox(
-                "稳定性验证观察期",
-                [3,5],
-                index=1,
-                key="stable_horizon"
-            )
-        with vc2:
-            stable_end = datetime.now(MARKET_TZ).date()
-            stable_start_default = stable_end - pd.Timedelta(days=60)
-            stable_start = st.date_input(
-                "稳定性验证开始日期",
-                value=stable_start_default,
-                key="stable_start"
-            )
-        with vc3:
-            stable_end_ui = st.date_input(
-                "稳定性验证结束日期",
-                value=stable_end,
-                key="stable_end"
-            )
+hc1, hc2, hc3 = st.columns(3)
+with hc1:
+    stable_days = st.selectbox(
+        "稳定性验证观察期",
+        [3,5],
+        index=1,
+        key="stable_horizon_v17"
+    )
+with hc2:
+    stable_end = datetime.now(MARKET_TZ).date()
+    stable_start_default = stable_end - pd.Timedelta(days=30)
+    stable_start = st.date_input(
+        "验证开始日期",
+        value=stable_start_default,
+        key="stable_start_v17"
+    )
+with hc3:
+    stable_end_ui = st.date_input(
+        "验证结束日期",
+        value=stable_end,
+        key="stable_end_v17"
+    )
 
-        stable_tickers_all = sorted(
-            stable_pool["Ticker"].astype(str).str.upper().unique().tolist()
-        )
-        stable_tickers = st.multiselect(
-            "选择稳定性验证股票",
-            stable_tickers_all,
-            default=stable_tickers_all,
-            key="stable_tickers"
-        )
+history_pool, history_pool_err = build_a_history_ticker_pool(
+    stable_start,
+    stable_end_ui
+)
+
+if history_pool_err:
+    st.warning(history_pool_err)
+    st.caption("如果A历史库暂时不可读，可以继续使用上面的B_MasterList回测，不影响LIVE。")
+else:
+    pool_n = len(history_pool)
+    pc1, pc2 = st.columns(2)
+    pc1.metric("A历史股票池去重后", pool_n)
+    pc2.metric("当前B Master股票数", len(master_df) if master_df is not None else 0)
+
+    if pool_n > 0:
+        ticker_list = history_pool["Ticker"].tolist()
+
+        max_default = min(len(ticker_list), 100)
+        max_test = st.slider(
+            "本轮最多测试多少只股票",
+            min_value=min(20, max(1, len(ticker_list))),
+            max_value=max(20, min(150, len(ticker_list))),
+            value=max_default,
+            step=10 if len(ticker_list) >= 20 else 1,
+            key="stable_pool_limit_v17"
+        ) if len(ticker_list) >= 20 else len(ticker_list)
+
+        selected_pool = history_pool.head(int(max_test)).copy()
+
+        with st.expander("查看本轮A历史股票池"):
+            st.write("、".join(selected_pool["Ticker"].astype(str).tolist()))
 
         st.info(
-            "建议先跑最近60天；如果历史BUY仍不足100，再把开始日期继续往前。"
-            "注意：Yahoo 15分钟历史数据有可用范围限制，能取到多少以实际返回为准。"
+            "固定比较：当前Stop / 1.50×止损距离 / ATR2.0；其它Stop方案仍作为背景。"
+            "结果继续自动拆成前半段 / 后半段。目标不是硬凑100，而是尽可能扩大有效历史BUY样本。"
         )
 
         if st.button(
-            "▶️ 运行 Stop 稳定性最终验证",
+            "▶️ 运行 A历史股票池 Stop稳定性验证",
             type="primary",
             use_container_width=True
         ):
             if stable_start > stable_end_ui:
                 st.error("开始日期不能晚于结束日期。")
-            elif not stable_tickers:
-                st.warning("至少选择一只股票。")
             else:
-                pool = stable_pool[
-                    stable_pool["Ticker"].astype(str).str.upper().isin(stable_tickers)
-                ].copy()
-
-                with st.spinner("正在扩大历史窗口、重建BUY并做前后半段稳定性验证..."):
+                with st.spinner(
+                    f"正在用A历史池 {len(selected_pool)} 只股票重建历史BUY并验证Stop稳定性..."
+                ):
                     (
                         v_detail,
                         v_summary,
@@ -2290,41 +2387,44 @@ if master_df is not None and not master_df.empty:
                         v_compare,
                         v_errors
                     ) = run_stop_stability_validation(
-                        pool,
+                        selected_pool,
                         stable_start,
                         stable_end_ui,
                         horizon_days=int(stable_days)
                     )
 
-                st.session_state["stable_detail"] = v_detail
-                st.session_state["stable_summary"] = v_summary
-                st.session_state["stable_early"] = v_early
-                st.session_state["stable_late"] = v_late
-                st.session_state["stable_compare"] = v_compare
-                st.session_state["stable_errors"] = v_errors
+                st.session_state["stable_detail_v17"] = v_detail
+                st.session_state["stable_summary_v17"] = v_summary
+                st.session_state["stable_early_v17"] = v_early
+                st.session_state["stable_late_v17"] = v_late
+                st.session_state["stable_compare_v17"] = v_compare
+                st.session_state["stable_errors_v17"] = v_errors
 
-        if "stable_summary" in st.session_state:
-            errs = st.session_state.get("stable_errors", [])
+        if "stable_summary_v17" in st.session_state:
+            errs = st.session_state.get("stable_errors_v17", [])
             if errs:
-                with st.expander("查看稳定性验证数据提示"):
-                    for e in errs:
+                with st.expander("查看历史分钟数据提示"):
+                    st.caption(
+                        f"共有 {len(errs)} 条提示。多数情况是Yahoo对应股票/日期没有完整15m或60m数据。"
+                    )
+                    for e in errs[:50]:
                         st.write("•", e)
+                    if len(errs) > 50:
+                        st.write(f"……另有 {len(errs)-50} 条未展开")
 
             render_stop_stability(
-                st.session_state.get("stable_detail", pd.DataFrame()),
-                st.session_state.get("stable_summary", pd.DataFrame()),
-                st.session_state.get("stable_early", pd.DataFrame()),
-                st.session_state.get("stable_late", pd.DataFrame()),
-                st.session_state.get("stable_compare", pd.DataFrame())
+                st.session_state.get("stable_detail_v17", pd.DataFrame()),
+                st.session_state.get("stable_summary_v17", pd.DataFrame()),
+                st.session_state.get("stable_early_v17", pd.DataFrame()),
+                st.session_state.get("stable_late_v17", pd.DataFrame()),
+                st.session_state.get("stable_compare_v17", pd.DataFrame())
             )
-else:
-    st.info("Master为空，暂时没有股票可用于稳定性验证。")
-
-
+    else:
+        st.info("A历史库当前没有可用于验证的股票。")
 
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.6 规则", expanded=False):
+with st.expander("📘 查看 B/C FINAL v1.7 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -2352,7 +2452,7 @@ with st.expander("📘 查看 B/C FINAL v1.6 规则", expanded=False):
 - 到 TP2 → `TAKE PROFIT TP2`。
 - 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
 - 当前版本只发决策/提醒，不会自动替你下单。
-- v1.6底部的C历史回测、Stop×C联合回测、Stop稳定性验证都只做研究，不会修改LIVE状态。
+- v1.7底部的C历史回测、Stop×C联合回测、A历史股票池稳定性验证都只做研究，不会修改LIVE状态。
 
 **Google Sheet**
 - A来源：`A_Candidates`
@@ -2361,3 +2461,4 @@ with st.expander("📘 查看 B/C FINAL v1.6 规则", expanded=False):
 """)
 
 st.caption("B/C FINAL v1.3：B买点逻辑保持不变；C升级为分阶段利润保护，避免1–2%小波动就过早退出。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
+
