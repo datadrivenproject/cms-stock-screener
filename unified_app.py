@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.3
+# CMS UNIFIED APP V1.4
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -64,6 +64,28 @@ st.markdown("""
 .cms-small {opacity: 0.75; font-size: 0.90rem;}
 .cms-title {font-weight: 800; font-size: 2.0rem; margin-bottom: -2px;}
 .cms-subtitle {opacity: .70; margin-bottom: 12px;}
+
+/* V1.4: clickable summary cards */
+div[class*="st-key-summary_card_"] button {
+    min-height: 106px !important;
+    width: 100% !important;
+    border-radius: 14px !important;
+    border: 1px solid rgba(130,130,130,0.20) !important;
+    background: rgba(120,120,120,0.06) !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    padding: 14px 18px !important;
+}
+div[class*="st-key-summary_card_"] button:hover {
+    border-color: var(--primary-color) !important;
+    background: rgba(120,120,120,0.10) !important;
+}
+div[class*="st-key-summary_card_"] button p {
+    white-space: pre-line !important;
+    line-height: 1.35 !important;
+    text-align: left !important;
+    width: 100% !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -602,7 +624,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.3 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.4 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -666,7 +688,7 @@ with hr:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
 st.caption(
-    "Unified App V1.3：一个网址统一查看 A、B、C。"
+    "Unified App V1.4：一个网址统一查看 A、B、C。"
     "当前版本是安全的只读整合层，不改变已经冻结的交易引擎。"
 )
 
@@ -680,29 +702,49 @@ if page == "🏠 首页":
     m1, m2, m3, m4, m5 = st.columns(5)
 
     with m1:
-        st.metric("今日 A 正式候选", len(a_buy))
-        if st.button("查看 A 候选", key="view_a_summary", use_container_width=True):
-            st.session_state["home_summary_view"] = "A"
+        with st.container(key="summary_card_a"):
+            if st.button(
+                f"今日 A 正式候选\n\n### {len(a_buy)}",
+                key="card_a_click",
+                use_container_width=True
+            ):
+                st.session_state["home_summary_view"] = "A"
 
     with m2:
-        st.metric("B BUY", counts.get("BUY", 0))
-        if st.button("查看 BUY", key="view_buy_summary", use_container_width=True):
-            st.session_state["home_summary_view"] = "BUY"
+        with st.container(key="summary_card_buy"):
+            if st.button(
+                f"B BUY\n\n### {counts.get('BUY', 0)}",
+                key="card_buy_click",
+                use_container_width=True
+            ):
+                st.session_state["home_summary_view"] = "BUY"
 
     with m3:
-        st.metric("B EARLY", counts.get("EARLY", 0))
-        if st.button("查看 EARLY", key="view_early_summary", use_container_width=True):
-            st.session_state["home_summary_view"] = "EARLY"
+        with st.container(key="summary_card_early"):
+            if st.button(
+                f"B EARLY\n\n### {counts.get('EARLY', 0)}",
+                key="card_early_click",
+                use_container_width=True
+            ):
+                st.session_state["home_summary_view"] = "EARLY"
 
     with m4:
-        st.metric("真实持仓", len(pos_df))
-        if st.button("查看持仓", key="view_hold_summary", use_container_width=True):
-            st.session_state["home_summary_view"] = "HOLD"
+        with st.container(key="summary_card_hold"):
+            if st.button(
+                f"真实持仓\n\n### {len(pos_df)}",
+                key="card_hold_click",
+                use_container_width=True
+            ):
+                st.session_state["home_summary_view"] = "HOLD"
 
     with m5:
-        st.metric("今日检查/提醒", alert_today_count(log_df))
-        if st.button("查看提醒", key="view_alert_summary", use_container_width=True):
-            st.session_state["home_summary_view"] = "ALERT"
+        with st.container(key="summary_card_alert"):
+            if st.button(
+                f"今日检查/提醒\n\n### {alert_today_count(log_df)}",
+                key="card_alert_click",
+                use_container_width=True
+            ):
+                st.session_state["home_summary_view"] = "ALERT"
 
     active_summary = st.session_state.get("home_summary_view")
 
@@ -1064,6 +1106,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.3 · 首页统计卡可展开查看明细，并保留日K蜡烛图、成交量、关键价位与 B 数据联动。"
+    "CMS Unified App V1.4 · 首页五个统计框本身即可点击展开明细，并保留日K蜡烛图、成交量、关键价位与 B 数据联动。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
