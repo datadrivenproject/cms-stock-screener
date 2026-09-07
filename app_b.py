@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1 — 盘中买入 + 持仓退出", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1 — 盘中买入 + 持仓退出")
+st.set_page_config(page_title="CMS B/C FINAL v1.1 — 盘中买入 + 持仓退出", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.1 — 盘中买入 + 持仓退出")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -74,6 +74,23 @@ def safe_float(x, default=np.nan):
         if x is None or pd.isna(x):
             return default
         return float(x)
+    except Exception:
+        return default
+
+def safe_percent_value(x, default=np.nan):
+    """Accept numeric fractions or sheet strings such as '+3.4%', 'None', ''."""
+    try:
+        if x is None or pd.isna(x):
+            return default
+    except Exception:
+        pass
+    s = str(x).strip()
+    if s == "" or s.lower() in {"none", "nan", "n/a", "na", "未识别"}:
+        return default
+    try:
+        if s.endswith("%"):
+            return float(s[:-1].replace(",", "").replace("+", "")) / 100.0
+        return float(s.replace(",", "").replace("+", ""))
     except Exception:
         return default
 
@@ -737,7 +754,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("B/C FINAL v1")
+    st.header("B/C FINAL v1.1")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -988,10 +1005,32 @@ if "v43b_result" in st.session_state:
             text += " ｜ 需处理：" + ", ".join(actions)
         text += f" ｜ WAIT {len(waits)} ｜ AVOID {len(avoids)}"
         st.info(text)
+    # Streamlit/Pandas Styler requires numeric values for numeric format strings.
+    # Google Sheet may return values as text (e.g. "+3.4%", "None"), so normalize first.
+    out_display = out.copy()
+    if "A上方空间" in out_display.columns:
+        out_display["A上方空间"] = out_display["A上方空间"].apply(safe_percent_value)
+
+    numeric_display_cols = [
+        "当前价格","持仓成本","持仓盈亏%","1H RSI",
+        "15m VWAP","15m EMA9","15m EMA20","15m RSI","15m量比",
+        "突破幅度%","参考入场","参考止损","TP1","TP2"
+    ]
+    for _c in numeric_display_cols:
+        if _c in out_display.columns:
+            out_display[_c] = pd.to_numeric(out_display[_c], errors="coerce")
+
     fmt={"A上方空间":"{:+.1%}","当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
-    display_out = chinese_sheet_columns(out)
+    display_out = chinese_sheet_columns(out_display)
     fmt_cn = {B_DISPLAY_CN_MAP.get(k,k):v for k,v in fmt.items()}
-    st.dataframe(display_out.style.format({k:v for k,v in fmt_cn.items() if k in display_out.columns},na_rep=""),hide_index=True,use_container_width=True)
+    st.dataframe(
+        display_out.style.format(
+            {k:v for k,v in fmt_cn.items() if k in display_out.columns},
+            na_rep=""
+        ),
+        hide_index=True,
+        use_container_width=True
+    )
 
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🟢 BUY",int((out["盘中决策"]=="🟢 BUY").sum()))
@@ -1010,7 +1049,7 @@ if "v43b_result" in st.session_state:
 
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1 规则", expanded=False):
+with st.expander("📘 查看 B/C FINAL v1.1 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1042,4 +1081,4 @@ with st.expander("📘 查看 B/C FINAL v1 规则", expanded=False):
 - 每轮检查日志：`B_Log`
 """)
 
-st.caption("B/C FINAL v1：正式LIVE版。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
+st.caption("B/C FINAL v1.1：正式LIVE版；修复Google Sheet文本百分比导致的结果表格式化报错。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
