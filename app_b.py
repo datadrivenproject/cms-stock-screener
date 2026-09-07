@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.2 — BUY条件诊断", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.2 — BUY条件诊断")
+st.set_page_config(page_title="CMS B/C FINAL v1.3 — B买点 + C分阶段退出", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.3 — B买点 + C分阶段退出")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -40,7 +40,7 @@ SHEET_CN_MAP.update({
 
 SHEET_INTERNAL_MAP = {v:k for k,v in SHEET_CN_MAP.items()}
 B_DISPLAY_CN_MAP = {**SHEET_CN_MAP, "Ticker":"股票代码", "Company":"公司", "Rank":"排名", "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Early V2 Score":"Early V2总分"}
-B_MASTER_PRIMARY = ["Ticker","Company","池状态","是否持仓","A5决策","空间等级","空间优先级","上方空间","最后决策","最后价格","实际买入价","持仓止损","TP1","TP2","最近入选日期","跟踪天数","观察剩余天数","最后检查时间","最后决策依据","Rank","共振数","Early V2 Score","Confidence","Fundamental Confirmation","首次进入B","最近同步A","实际买入日期","退出日期","退出价","退出原因"]
+B_MASTER_PRIMARY = ["Ticker","Company","池状态","是否持仓","A5决策","空间等级","空间优先级","上方空间","最后决策","最后价格","实际买入价","持仓止损","TP1","TP2","C阶段","持仓最高价","最高浮盈%","动态保护价","利润回吐%","最近入选日期","跟踪天数","观察剩余天数","最后检查时间","最后决策依据","Rank","共振数","Early V2 Score","Confidence","Fundamental Confirmation","首次进入B","最近同步A","实际买入日期","退出日期","退出价","退出原因"]
 
 def normalize_sheet_columns(df):
     if df is None or df.empty: return df
@@ -502,6 +502,11 @@ def mark_holding(master, ticker, entry, stop, tp1, tp2):
     x.loc[mask,"持仓止损"] = float(stop) if stop else ""
     x.loc[mask,"TP1"] = float(tp1) if tp1 else ""
     x.loc[mask,"TP2"] = float(tp2) if tp2 else ""
+    x.loc[mask,"C阶段"] = "C0 初始保护"
+    x.loc[mask,"持仓最高价"] = float(entry) if entry else ""
+    x.loc[mask,"最高浮盈%"] = 0.0
+    x.loc[mask,"动态保护价"] = float(stop) if stop else ""
+    x.loc[mask,"利润回吐%"] = 0.0
     return x
 
 def close_holding(master, ticker, exit_price=0.0, reason="手动SELL"):
@@ -654,42 +659,195 @@ def evaluate_15m(df):
         "overextended":overextended
     }
 
-def analyze_holding(row):
-    """真实持仓：不受5日候选池限制；检查止损/止盈/HOLD。"""
-    ticker=str(row["Ticker"]).strip().upper()
-    h1=evaluate_1h(get_intraday(ticker,"60m","3mo"))
-    m15=evaluate_15m(get_intraday(ticker,"15m","10d"))
-    price=safe_float(m15.get("price",np.nan))
-    entry=safe_float(row.get("实际买入价",np.nan))
-    stop=safe_float(row.get("持仓止损",np.nan))
-    tp1=safe_float(row.get("TP1",np.nan))
-    tp2=safe_float(row.get("TP2",np.nan))
 
-    if pd.isna(price):
-        d="⚪ DATA"; reason="持仓行情数据不足"
-    elif not pd.isna(stop) and stop>0 and price<=stop:
-        d="🛑 STOP LOSS"; reason=f"现价{price:.2f}已触及/跌破持仓止损{stop:.2f}"
-    elif not pd.isna(tp2) and tp2>0 and price>=tp2:
-        d="🟣 TAKE PROFIT TP2"; reason=f"现价{price:.2f}已达到TP2 {tp2:.2f}"
-    elif not pd.isna(tp1) and tp1>0 and price>=tp1:
-        d="🟠 TAKE PROFIT TP1"; reason=f"现价{price:.2f}已达到TP1 {tp1:.2f}"
+def _high_since_entry(df15, entry_dt, fallback_price=np.nan):
+    """Use observed 15m highs since the real buy timestamp; fallback to current price."""
+    if df15 is None or df15.empty:
+        return fallback_price
+    try:
+        x = df15.copy()
+        if "High" not in x.columns:
+            return fallback_price
+        hi = pd.to_numeric(x["High"], errors="coerce")
+        if entry_dt is not None and not pd.isna(entry_dt):
+            try:
+                if getattr(x.index, "tz", None) is not None and getattr(entry_dt, "tzinfo", None) is None:
+                    entry_dt = entry_dt.tz_localize(x.index.tz)
+                elif getattr(x.index, "tz", None) is None and getattr(entry_dt, "tzinfo", None) is not None:
+                    entry_dt = entry_dt.tz_localize(None)
+            except Exception:
+                pass
+            try:
+                mask = x.index >= entry_dt
+                hi = hi.loc[mask]
+            except Exception:
+                pass
+        v = safe_float(hi.max(), np.nan)
+        if pd.isna(v):
+            return fallback_price
+        return max(v, fallback_price) if not pd.isna(fallback_price) else v
+    except Exception:
+        return fallback_price
+
+
+def calc_c_stage(entry, original_stop, peak_price):
+    """
+    Conservative staged protection.
+    Important: C does NOT tighten at +1%/+2%. This avoids the old over-selling problem.
+
+    C0: peak < +4%      -> keep original stop.
+    C1: +4% to <+6%    -> protect around breakeven (-0.25% buffer).
+    C2: +6% to <+10%   -> keep at least +2% OR 40% of peak profit.
+    C3: peak >= +10%    -> keep at least +4% OR 60% of peak profit.
+    """
+    if pd.isna(entry) or entry <= 0 or pd.isna(peak_price):
+        return "C0 初始保护", original_stop, np.nan
+
+    peak_ret = (peak_price / entry - 1.0)
+    stop0 = original_stop if (not pd.isna(original_stop) and original_stop > 0) else np.nan
+
+    if peak_ret < 0.04:
+        stage = "C0 初始保护"
+        dyn = stop0
+    elif peak_ret < 0.06:
+        stage = "C1 保本区"
+        breakeven_buffer = entry * 0.9975
+        dyn = max([v for v in [stop0, breakeven_buffer] if not pd.isna(v)])
+    elif peak_ret < 0.10:
+        stage = "C2 利润保护"
+        protect_ret = max(0.02, peak_ret * 0.40)
+        profit_stop = entry * (1.0 + protect_ret)
+        dyn = max([v for v in [stop0, profit_stop] if not pd.isna(v)])
     else:
-        d="🟢 HOLD"; reason="持仓仍在止损与止盈区间内"
+        stage = "C3 强趋势保护"
+        protect_ret = max(0.04, peak_ret * 0.60)
+        profit_stop = entry * (1.0 + protect_ret)
+        dyn = max([v for v in [stop0, profit_stop] if not pd.isna(v)])
+
+    return stage, dyn, peak_ret * 100.0
+
+
+def c_trend_warning(h1, m15):
+    """Trend deterioration is a warning, not an automatic sell by itself."""
+    if not h1.get("valid") or not m15.get("valid"):
+        return False
+    price = safe_float(m15.get("price", np.nan))
+    vwap = safe_float(m15.get("vwap", np.nan))
+    e20 = safe_float(m15.get("ema20", np.nan))
+    below_intraday = (
+        not pd.isna(price) and
+        ((not pd.isna(vwap) and price < vwap) or (not pd.isna(e20) and price < e20))
+    )
+    return h1.get("status") == "弱" and below_intraday
+
+
+def analyze_holding(row):
+    """
+    C FINAL staged exit logic.
+    Real holdings are NOT subject to the 5-day candidate expiry.
+    Priority: hard/original stop -> dynamic profit protection -> TP2 -> TP1 -> trend warning -> HOLD.
+    """
+    ticker = str(row["Ticker"]).strip().upper()
+
+    h1_df = get_intraday(ticker, "60m", "3mo")
+    m15_df = get_intraday(ticker, "15m", "10d")
+    h1 = evaluate_1h(h1_df)
+    m15 = evaluate_15m(m15_df)
+
+    price = safe_float(m15.get("price", np.nan))
+    entry = safe_float(row.get("实际买入价", np.nan))
+    original_stop = safe_float(row.get("持仓止损", np.nan))
+    tp1 = safe_float(row.get("TP1", np.nan))
+    tp2 = safe_float(row.get("TP2", np.nan))
+
+    entry_dt = pd.to_datetime(row.get("实际买入日期", ""), errors="coerce")
+    peak_price = _high_since_entry(m15_df, entry_dt, fallback_price=price)
+    stage, dynamic_stop, peak_ret_pct = calc_c_stage(entry, original_stop, peak_price)
 
     pnl = ((price-entry)/entry*100) if (not pd.isna(price) and not pd.isna(entry) and entry>0) else np.nan
+    giveback = peak_ret_pct - pnl if (not pd.isna(peak_ret_pct) and not pd.isna(pnl)) else np.nan
+    trend_warn = c_trend_warning(h1, m15)
+
+    # C exit priority.
+    if pd.isna(price):
+        d = "⚪ DATA"
+        reason = "持仓行情数据不足"
+    elif not pd.isna(original_stop) and original_stop > 0 and price <= original_stop:
+        d = "🛑 STOP LOSS"
+        reason = f"现价{price:.2f}已触及原始止损{original_stop:.2f}"
+    elif (
+        stage in ["C1 保本区", "C2 利润保护", "C3 强趋势保护"]
+        and not pd.isna(dynamic_stop) and dynamic_stop > 0
+        and price <= dynamic_stop
+    ):
+        d = "🔻 PROFIT PROTECT"
+        reason = (
+            f"{stage}触发动态保护：现价{price:.2f} ≤ 保护价{dynamic_stop:.2f}；"
+            f"最高浮盈{peak_ret_pct:.1f}% / 当前{pnl:.1f}%"
+        )
+    elif not pd.isna(tp2) and tp2 > 0 and price >= tp2:
+        d = "🟣 TAKE PROFIT TP2"
+        reason = f"现价{price:.2f}已达到TP2 {tp2:.2f}"
+    elif not pd.isna(tp1) and tp1 > 0 and price >= tp1:
+        d = "🟠 TAKE PROFIT TP1"
+        reason = f"现价{price:.2f}已达到TP1 {tp1:.2f}；可考虑分批止盈，不强制全部退出"
+    elif trend_warn and not pd.isna(pnl) and pnl > 0:
+        d = "🟡 HOLD / 趋势转弱"
+        reason = "1H转弱且15m跌回VWAP/EMA20下方；先警戒，不因单次转弱自动卖出"
+    else:
+        d = "🟢 HOLD"
+        if stage == "C0 初始保护":
+            reason = "尚未达到+4%峰值，继续使用原始止损，避免1–2%小波动过早退出"
+        else:
+            reason = f"{stage}；动态保护价{dynamic_stop:.2f}" if not pd.isna(dynamic_stop) else stage
+
     return {
-        "Ticker":ticker,"最近入选日期":row.get("最近入选日期",""),"跟踪天数":row.get("跟踪天数",""),"观察剩余天数":"持仓不受限",
-        "池状态":"HOLDING","A结果":row.get("A5决策",""),"A空间等级":row.get("空间等级",""),"A空间优先级":row.get("空间优先级",""),"A上方空间":row.get("上方空间",np.nan),
-        "A排名":row.get("Rank",""),"A共振数":row.get("共振数",""),"A Early V2":row.get("Early V2 Score",""),
-        "A信心":row.get("Confidence",row.get("信心等级","")),"A基本面":row.get("Fundamental Confirmation",row.get("基本面确认","")),
-        "当前价格":price,"盘中决策":d,"决策依据":reason,"持仓成本":entry,"持仓盈亏%":pnl,
-        "1H状态":h1.get("status","DATA"),"1H RSI":h1.get("rsi",np.nan),
-        "15m VWAP":m15.get("vwap",np.nan),"15m EMA9":m15.get("ema9",np.nan),"15m EMA20":m15.get("ema20",np.nan),
-        "15m RSI":m15.get("rsi",np.nan),"15m量比":m15.get("volratio",np.nan),
-        "15m突破":"是" if m15.get("breakout") else "否","15m回踩":"是" if m15.get("pullback") else "否",
-        "VWAP上方":"是" if m15.get("above_vwap") else "否","避免追高":"是" if m15.get("overextended") else "否",
-        "参考入场":entry,"参考止损":stop,"TP1":tp1,"TP2":tp2
+        "Ticker":ticker,
+        "最近入选日期":row.get("最近入选日期",""),
+        "跟踪天数":row.get("跟踪天数",""),
+        "观察剩余天数":"持仓不受限",
+        "池状态":"HOLDING",
+        "A结果":row.get("A5决策",""),
+        "A空间等级":row.get("空间等级",""),
+        "A空间优先级":row.get("空间优先级",""),
+        "A上方空间":row.get("上方空间",np.nan),
+        "A排名":row.get("Rank",""),
+        "A共振数":row.get("共振数",""),
+        "A Early V2":row.get("Early V2 Score",""),
+        "A信心":row.get("Confidence",row.get("信心等级","")),
+        "A基本面":row.get("Fundamental Confirmation",row.get("基本面确认","")),
+
+        "当前价格":price,
+        "盘中决策":d,
+        "决策依据":reason,
+        "持仓成本":entry,
+        "持仓盈亏%":pnl,
+
+        "C阶段":stage,
+        "持仓最高价":peak_price,
+        "最高浮盈%":peak_ret_pct,
+        "动态保护价":dynamic_stop,
+        "利润回吐%":giveback,
+        "趋势转弱警报":"是" if trend_warn else "否",
+
+        "1H状态":h1.get("status","DATA"),
+        "1H RSI":h1.get("rsi",np.nan),
+        "15m VWAP":m15.get("vwap",np.nan),
+        "15m EMA9":m15.get("ema9",np.nan),
+        "15m EMA20":m15.get("ema20",np.nan),
+        "15m RSI":m15.get("rsi",np.nan),
+        "15m量比":m15.get("volratio",np.nan),
+        "15m突破":"是" if m15.get("breakout") else "否",
+        "15m回踩":"是" if m15.get("pullback") else "否",
+        "VWAP上方":"是" if m15.get("above_vwap") else "否",
+        "避免追高":"是" if m15.get("overextended") else "否",
+
+        "参考入场":entry,
+        "参考止损":original_stop,
+        "TP1":tp1,
+        "TP2":tp2
     }
+
 
 def weak_fundamental(row):
     f=str(row.get("Fundamental Confirmation",row.get("基本面确认",""))).lower()
@@ -806,7 +964,7 @@ def analyze_one(row):
     }
 
 with st.sidebar:
-    st.header("B/C FINAL v1.2")
+    st.header("B/C FINAL v1.3")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -937,7 +1095,7 @@ def run_b_monitor(a_df, trigger="手动检查"):
         axis=1
     )
 
-    order={"🛑 STOP LOSS":0,"🟣 TAKE PROFIT TP2":1,"🟠 TAKE PROFIT TP1":2,"🟢 BUY":3,"🟠 EARLY BUY":4,"🟢 HOLD":5,"🟡 WAIT":6,"🔴 AVOID":7,"⚪ DATA":8}
+    order={"🛑 STOP LOSS":0,"🔻 PROFIT PROTECT":1,"🟣 TAKE PROFIT TP2":2,"🟠 TAKE PROFIT TP1":3,"🟢 BUY":4,"🟠 EARLY BUY":5,"🟡 HOLD / 趋势转弱":6,"🟢 HOLD":7,"🟡 WAIT":8,"🔴 AVOID":9,"⚪ DATA":10}
     out["_o"]=out["盘中决策"].map(order).fillna(9)
 
     sort_cols=["_o"]
@@ -961,8 +1119,12 @@ def run_b_monitor(a_df, trigger="手动检查"):
             mm.loc[mask,"最后价格"] = rr.get("当前价格","")
             mm.loc[mask,"最后决策"] = rr.get("盘中决策","")
             mm.loc[mask,"最后决策依据"] = rr.get("决策依据","")
-            # 对未持仓候选，只保存B给出的参考入场/止损。真实持仓字段不自动覆盖。
+            # C状态持续写回Master，方便下一轮和人工复核。
             is_hold = mm.loc[mask,"是否持仓"].astype(str).isin(["是","Y","YES","TRUE","1"]).any() if "是否持仓" in mm.columns else False
+            if is_hold:
+                for _c in ["C阶段","持仓最高价","最高浮盈%","动态保护价","利润回吐%"]:
+                    if _c in rr.index:
+                        mm.loc[mask,_c] = rr.get(_c,"")
             if not is_hold:
                 if not pd.isna(safe_float(rr.get("参考入场",np.nan))):
                     mm.loc[mask,"参考入场"] = rr.get("参考入场","")
@@ -1023,7 +1185,7 @@ if "v43b_result" in st.session_state:
                 "、".join(new_buy["Ticker"].astype(str).tolist())
             )
 
-    c_actions = out[out["盘中决策"].isin(["🛑 STOP LOSS","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"])]
+    c_actions = out[out["盘中决策"].isin(["🛑 STOP LOSS","🔻 PROFIT PROTECT","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"])]
     if not c_actions.empty:
         st.error(
             "🚨 C持仓处理提醒：" +
@@ -1047,7 +1209,7 @@ if "v43b_result" in st.session_state:
         buys = out.loc[out["盘中决策"]=="🟢 BUY","Ticker"].astype(str).tolist()
         early = out.loc[out["盘中决策"]=="🟠 EARLY BUY","Ticker"].astype(str).tolist()
         holds = out.loc[out["盘中决策"]=="🟢 HOLD","Ticker"].astype(str).tolist()
-        actions = out.loc[out["盘中决策"].isin(["🛑 STOP LOSS","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"]),"Ticker"].astype(str).tolist()
+        actions = out.loc[out["盘中决策"].isin(["🛑 STOP LOSS","🔻 PROFIT PROTECT","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"]),"Ticker"].astype(str).tolist()
         waits = out.loc[out["盘中决策"]=="🟡 WAIT","Ticker"].astype(str).tolist()
         avoids = out.loc[out["盘中决策"]=="🔴 AVOID","Ticker"].astype(str).tolist()
         text = f"🔔 两小时状态提醒｜BUY {len(buys)} ｜ EARLY {len(early)} ｜ HOLD {len(holds)} ｜ TP/STOP {len(actions)}"
@@ -1066,13 +1228,14 @@ if "v43b_result" in st.session_state:
     numeric_display_cols = [
         "当前价格","持仓成本","持仓盈亏%","1H RSI",
         "15m VWAP","15m EMA9","15m EMA20","15m RSI","15m量比",
-        "突破幅度%","参考入场","参考止损","TP1","TP2"
+        "突破幅度%","参考入场","参考止损","TP1","TP2",
+        "持仓最高价","最高浮盈%","动态保护价","利润回吐%"
     ]
     for _c in numeric_display_cols:
         if _c in out_display.columns:
             out_display[_c] = pd.to_numeric(out_display[_c], errors="coerce")
 
-    fmt={"A上方空间":"{:+.1%}","当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
+    fmt={"A上方空间":"{:+.1%}","当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","持仓最高价":"{:.2f}","最高浮盈%":"{:.2f}","动态保护价":"{:.2f}","利润回吐%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
     display_out = chinese_sheet_columns(out_display)
     fmt_cn = {B_DISPLAY_CN_MAP.get(k,k):v for k,v in fmt.items()}
     st.dataframe(
@@ -1084,6 +1247,28 @@ if "v43b_result" in st.session_state:
         use_container_width=True
     )
 
+
+    holdings_view = out[out["池状态"].astype(str).eq("HOLDING")].copy() if "池状态" in out.columns else pd.DataFrame()
+    if not holdings_view.empty:
+        st.subheader("🛡️ C 持仓退出管理")
+        c_cols = [
+            "Ticker","盘中决策","C阶段","持仓成本","当前价格","持仓盈亏%",
+            "持仓最高价","最高浮盈%","利润回吐%","动态保护价",
+            "参考止损","TP1","TP2","趋势转弱警报","决策依据"
+        ]
+        c_cols = [c for c in c_cols if c in holdings_view.columns]
+        c_show = holdings_view[c_cols].copy()
+        st.dataframe(
+            c_show.style.format({
+                "持仓成本":"{:.2f}","当前价格":"{:.2f}","持仓盈亏%":"{:.2f}",
+                "持仓最高价":"{:.2f}","最高浮盈%":"{:.2f}",
+                "利润回吐%":"{:.2f}","动态保护价":"{:.2f}",
+                "参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"
+            }, na_rep=""),
+            hide_index=True,
+            use_container_width=True
+        )
+        st.caption("C分阶段保护不会在+1%/+2%就抬止损。峰值未到+4%仍使用原始止损；之后才逐级保护利润。")
 
     st.subheader("🧪 BUY条件诊断")
     diag_cols = [
@@ -1111,7 +1296,7 @@ if "v43b_result" in st.session_state:
     c2.metric("🟠 EARLY",int((out["盘中决策"]=="🟠 EARLY BUY").sum()))
     c3.metric("🟢 HOLD",int((out["盘中决策"]=="🟢 HOLD").sum()))
     c4.metric("🟡 WAIT",int((out["盘中决策"]=="🟡 WAIT").sum()))
-    c5.metric("🛑 TP/STOP",int(out["盘中决策"].isin(["🛑 STOP LOSS","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"]).sum()))
+    c5.metric("🛑 TP/STOP",int(out["盘中决策"].isin(["🛑 STOP LOSS","🔻 PROFIT PROTECT","🟣 TAKE PROFIT TP2","🟠 TAKE PROFIT TP1"]).sum()))
 
     csv=chinese_sheet_columns(out).to_csv(index=False).encode("utf-8-sig")
     st.download_button("💾 下载盘中结果",csv,
@@ -1123,7 +1308,7 @@ if "v43b_result" in st.session_state:
 
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.2 规则", expanded=False):
+with st.expander("📘 查看 B/C FINAL v1.3 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1141,12 +1326,15 @@ with st.expander("📘 查看 B/C FINAL v1.2 规则", expanded=False):
 - B 不重新做基本面筛选，也不重新做第二套选股分数。
 
 **C — 买后怎么管**
-- 只有你真实成交后，才在“持仓管理”里标记为已买入。
-- 标记持仓后，程序每15分钟继续检查。
-- 跌到持仓止损 → `STOP LOSS`。
-- 到 TP1 → `TAKE PROFIT TP1` 提醒。
-- 到 TP2 → `TAKE PROFIT TP2` 提醒。
-- 其余情况 → `HOLD`。
+- 只有你真实成交后，才在“持仓管理”里标记为已买入；之后每15分钟继续检查。
+- **C0 初始保护：最高浮盈 <4%** → 仍使用原始止损，不因为+1%/+2%的正常波动过早退出。
+- **C1 保本区：最高浮盈 4–6%** → 动态保护提高到约买入价 -0.25%。
+- **C2 利润保护：最高浮盈 6–10%** → 至少保护 +2%，或锁定约40%的峰值利润，取更高者。
+- **C3 强趋势保护：最高浮盈 ≥10%** → 至少保护 +4%，或锁定约60%的峰值利润，取更高者。
+- 跌破动态保护价 → `PROFIT PROTECT`；跌破原始硬止损 → `STOP LOSS`。
+- 到 TP1 → `TAKE PROFIT TP1`（提示可分批，不强制全部卖出）。
+- 到 TP2 → `TAKE PROFIT TP2`。
+- 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
 - 当前版本只发决策/提醒，不会自动替你下单。
 
 **Google Sheet**
@@ -1155,4 +1343,4 @@ with st.expander("📘 查看 B/C FINAL v1.2 规则", expanded=False):
 - 每轮检查日志：`B_Log`
 """)
 
-st.caption("B/C FINAL v1.2：在正式LIVE逻辑不变的前提下，新增BUY门槛诊断列，方便判断EARLY/WAIT到底差哪一项。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
+st.caption("B/C FINAL v1.3：B买点逻辑保持不变；C升级为分阶段利润保护，避免1–2%小波动就过早退出。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
