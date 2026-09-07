@@ -20,7 +20,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1
+# CMS UNIFIED APP V1.1
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -223,9 +223,14 @@ def decision_counts(master):
     if not c:
         return {}
     vals = master[c].astype(str)
+
+    buy_mask = (
+        vals.str.contains("BUY", case=False, na=False)
+        & ~vals.str.contains("EARLY", case=False, na=False)
+    )
+
     return {
-        "BUY": int(vals.str.contains("BUY", case=False, na=False) &
-                   ~vals.str.contains("EARLY", case=False, na=False)).sum(),
+        "BUY": int(buy_mask.sum()),
         "EARLY": int(vals.str.contains("EARLY", case=False, na=False).sum()),
         "WAIT": int(vals.str.contains("WAIT", case=False, na=False).sum()),
         "AVOID": int(vals.str.contains("AVOID", case=False, na=False).sum()),
@@ -341,7 +346,7 @@ def status_badge(dec):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.1 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -405,7 +410,7 @@ with hr:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
 st.caption(
-    "Unified App V1：一个网址统一查看 A、B、C。"
+    "Unified App V1.1：一个网址统一查看 A、B、C。"
     "当前版本是安全的只读整合层，不改变已经冻结的交易引擎。"
 )
 
@@ -704,6 +709,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1 · 这是第一步：把 A / B / C 做成一个软件入口。"
+    "CMS Unified App V1.1 · 这是第一步：把 A / B / C 做成一个软件入口。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
