@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.3 — B买点 + C分阶段退出", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.3 — B买点 + C分阶段退出")
+st.set_page_config(page_title="CMS B/C FINAL v1.4 — B买点 + C历史回测", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.4 — B买点 + C历史回测")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -963,8 +963,296 @@ def analyze_one(row):
         "参考入场":entry,"参考止损":stop
     }
 
+
+# =========================================================
+# C HISTORICAL BACKTEST — RESEARCH ONLY
+# =========================================================
+def _trading_day_horizon_bars(m15_all, entry_ts, trading_days=3):
+    if m15_all is None or m15_all.empty:
+        return pd.DataFrame()
+    x = m15_all[m15_all.index > entry_ts].copy()
+    if x.empty:
+        return x
+    try:
+        mins = x.index.hour * 60 + x.index.minute
+        x = x[(mins >= 9*60+30) & (mins <= 16*60)]
+    except Exception:
+        pass
+    if x.empty:
+        return x
+    dates = pd.Series(x.index.date).drop_duplicates().tolist()
+    allowed = set(dates[:max(1, int(trading_days))])
+    return x[[d in allowed for d in x.index.date]].copy()
+
+
+def _future_max_return_after_exit(path, exit_ts, entry_px):
+    if path is None or path.empty or pd.isna(exit_ts) or pd.isna(entry_px) or entry_px <= 0:
+        return np.nan
+    future = path[path.index > exit_ts]
+    if future.empty:
+        return np.nan
+    h = pd.to_numeric(future["High"], errors="coerce").max()
+    return ((h / entry_px) - 1.0) * 100.0 if not pd.isna(h) else np.nan
+
+
+def _path_peak_return(path, entry_px):
+    if path is None or path.empty or pd.isna(entry_px) or entry_px <= 0:
+        return np.nan
+    h = pd.to_numeric(path["High"], errors="coerce").max()
+    return ((h / entry_px) - 1.0) * 100.0 if not pd.isna(h) else np.nan
+
+
+def _exit_at_horizon(path, entry_px, label):
+    if path is None or path.empty:
+        return None
+    px = safe_float(path["Close"].iloc[-1])
+    ts = path.index[-1]
+    ret = ((px / entry_px) - 1.0) * 100.0 if entry_px > 0 else np.nan
+    peak = _path_peak_return(path, entry_px)
+    giveback = peak - ret if not pd.isna(peak) and not pd.isna(ret) else np.nan
+    capture = (ret / peak * 100.0) if (not pd.isna(peak) and peak > 0 and not pd.isna(ret)) else np.nan
+    return {
+        "策略": label, "退出时间": ts, "退出价": px, "退出原因": f"{label}到期",
+        "最终收益%": ret, "路径最高浮盈%": peak, "利润回吐%": giveback,
+        "峰值保留率%": capture, "过早退出机会成本%": 0.0
+    }
+
+
+def _simulate_hard_stop(path, entry_px, initial_stop):
+    if path is None or path.empty:
+        return None
+    stop = safe_float(initial_stop, np.nan)
+    for ts, bar in path.iterrows():
+        low = safe_float(bar.get("Low", np.nan))
+        if not pd.isna(stop) and stop > 0 and not pd.isna(low) and low <= stop:
+            px = stop
+            ret = (px / entry_px - 1.0) * 100.0
+            used = path[path.index <= ts]
+            peak = _path_peak_return(used, entry_px)
+            giveback = peak - ret if not pd.isna(peak) else np.nan
+            capture = (ret / peak * 100.0) if (not pd.isna(peak) and peak > 0) else np.nan
+            opp = _future_max_return_after_exit(path, ts, entry_px)
+            return {
+                "策略":"原始Stop only","退出时间":ts,"退出价":px,"退出原因":"原始STOP",
+                "最终收益%":ret,"路径最高浮盈%":peak,"利润回吐%":giveback,
+                "峰值保留率%":capture,
+                "过早退出机会成本%":max(0.0, opp-ret) if not pd.isna(opp) else np.nan
+            }
+    return _exit_at_horizon(path, entry_px, "原始Stop only")
+
+
+def _simulate_fixed_tp5(path, entry_px, initial_stop):
+    if path is None or path.empty:
+        return None
+    stop = safe_float(initial_stop, np.nan)
+    tp = entry_px * 1.05
+    for ts, bar in path.iterrows():
+        low = safe_float(bar.get("Low", np.nan))
+        high = safe_float(bar.get("High", np.nan))
+        if not pd.isna(stop) and stop > 0 and not pd.isna(low) and low <= stop:
+            px, reason = stop, "原始STOP"
+        elif not pd.isna(high) and high >= tp:
+            px, reason = tp, "固定TP +5%"
+        else:
+            continue
+        ret = (px / entry_px - 1.0) * 100.0
+        used = path[path.index <= ts]
+        peak = _path_peak_return(used, entry_px)
+        giveback = peak - ret if not pd.isna(peak) else np.nan
+        capture = (ret / peak * 100.0) if (not pd.isna(peak) and peak > 0) else np.nan
+        opp = _future_max_return_after_exit(path, ts, entry_px)
+        return {
+            "策略":"固定TP5% + Stop","退出时间":ts,"退出价":px,"退出原因":reason,
+            "最终收益%":ret,"路径最高浮盈%":peak,"利润回吐%":giveback,
+            "峰值保留率%":capture,
+            "过早退出机会成本%":max(0.0, opp-ret) if not pd.isna(opp) else np.nan
+        }
+    return _exit_at_horizon(path, entry_px, "固定TP5% + Stop")
+
+
+def _simulate_c_v13(path, entry_px, initial_stop):
+    if path is None or path.empty:
+        return None
+    peak_price = entry_px
+    current_stage, current_dyn, _ = calc_c_stage(entry_px, initial_stop, peak_price)
+
+    for ts, bar in path.iterrows():
+        low = safe_float(bar.get("Low", np.nan))
+        high = safe_float(bar.get("High", np.nan))
+
+        if not pd.isna(initial_stop) and initial_stop > 0 and not pd.isna(low) and low <= initial_stop:
+            px, reason, exit_stage = initial_stop, "原始STOP", current_stage
+        elif (current_stage in ["C1 保本区","C2 利润保护","C3 强趋势保护"]
+              and not pd.isna(current_dyn) and current_dyn > 0
+              and not pd.isna(low) and low <= current_dyn):
+            px, reason, exit_stage = current_dyn, "C分阶段PROFIT PROTECT", current_stage
+        else:
+            if not pd.isna(high):
+                peak_price = max(peak_price, high)
+            current_stage, current_dyn, _ = calc_c_stage(entry_px, initial_stop, peak_price)
+            continue
+
+        ret = (px / entry_px - 1.0) * 100.0
+        used = path[path.index <= ts]
+        peak = _path_peak_return(used, entry_px)
+        giveback = peak - ret if not pd.isna(peak) else np.nan
+        capture = (ret / peak * 100.0) if (not pd.isna(peak) and peak > 0) else np.nan
+        opp = _future_max_return_after_exit(path, ts, entry_px)
+        return {
+            "策略":"C v1.3分阶段","退出时间":ts,"退出价":px,"退出原因":reason,
+            "C退出阶段":exit_stage,"最终收益%":ret,"路径最高浮盈%":peak,
+            "利润回吐%":giveback,"峰值保留率%":capture,
+            "过早退出机会成本%":max(0.0, opp-ret) if not pd.isna(opp) else np.nan
+        }
+
+    out = _exit_at_horizon(path, entry_px, "C v1.3分阶段")
+    if out is not None:
+        out["C退出阶段"] = current_stage
+    return out
+
+
+def historical_buy_entries(row, start_date, end_date):
+    ticker = str(row["Ticker"]).strip().upper()
+    m15_all = get_replay_intraday(ticker, "15m", start_date, end_date)
+    h1_all = get_replay_intraday(ticker, "60m", start_date, end_date)
+    if m15_all is None or m15_all.empty or h1_all is None or h1_all.empty:
+        return [], m15_all, f"{ticker}: 15m/60m历史数据不足"
+
+    start_ts = pd.Timestamp(start_date).tz_localize(MARKET_TZ)
+    end_ts = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).tz_localize(MARKET_TZ)
+    bars = m15_all[(m15_all.index >= start_ts) & (m15_all.index < end_ts)].copy()
+    if bars.empty:
+        return [], m15_all, f"{ticker}: 所选日期无15m数据"
+
+    entries, prev_status, lock_until_date = [], None, None
+
+    for ts in bars.index:
+        if lock_until_date is not None and ts.date() <= lock_until_date:
+            continue
+        m15_slice = m15_all[m15_all.index <= ts]
+        h1_slice = h1_all[h1_all.index <= ts]
+        h1 = evaluate_1h(h1_slice)
+        m15 = evaluate_15m(m15_slice)
+        d, reason, entry_px, stop = decision(row, h1, m15)
+
+        if d == "🟢 BUY" and prev_status != "🟢 BUY" and not pd.isna(entry_px):
+            future = _trading_day_horizon_bars(m15_all, ts, 3)
+            if not future.empty:
+                entries.append({
+                    "Ticker":ticker,"BUY时间":ts,"BUY价格":entry_px,"初始止损":stop,
+                    "BUY类型":"回踩BUY" if "回踩" in reason else "突破BUY","BUY依据":reason
+                })
+                future_dates = pd.Series(future.index.date).drop_duplicates().tolist()
+                if future_dates:
+                    lock_until_date = future_dates[-1]
+        prev_status = d
+
+    return entries, m15_all, None
+
+
+def run_c_historical_backtest(master_rows, start_date, end_date, horizon_days=3):
+    all_cases, errors = [], []
+    if master_rows is None or master_rows.empty:
+        return pd.DataFrame(), pd.DataFrame(), ["没有可回测股票"]
+
+    for _, row in master_rows.iterrows():
+        entries, m15_all, err = historical_buy_entries(row, start_date, end_date)
+        if err:
+            errors.append(err)
+            continue
+        for e in entries:
+            path = _trading_day_horizon_bars(m15_all, e["BUY时间"], horizon_days)
+            if path is None or path.empty:
+                continue
+            strategies = [
+                _exit_at_horizon(path, e["BUY价格"], f"Hold {horizon_days}D"),
+                _simulate_hard_stop(path, e["BUY价格"], e["初始止损"]),
+                _simulate_fixed_tp5(path, e["BUY价格"], e["初始止损"]),
+                _simulate_c_v13(path, e["BUY价格"], e["初始止损"]),
+            ]
+            for s in strategies:
+                if s is not None:
+                    rec = dict(e); rec.update(s); rec["持有交易日"] = horizon_days
+                    all_cases.append(rec)
+
+    detail = pd.DataFrame(all_cases)
+    if detail.empty:
+        return detail, pd.DataFrame(), errors
+
+    rows = []
+    for strategy, g in detail.groupby("策略", sort=False):
+        r = pd.to_numeric(g["最终收益%"], errors="coerce")
+        peak = pd.to_numeric(g["路径最高浮盈%"], errors="coerce")
+        gb = pd.to_numeric(g["利润回吐%"], errors="coerce")
+        cap = pd.to_numeric(g["峰值保留率%"], errors="coerce")
+        opp = pd.to_numeric(g["过早退出机会成本%"], errors="coerce")
+        rows.append({
+            "策略":strategy,"样本":len(g),"平均最终收益%":r.mean(),"中位最终收益%":r.median(),
+            "胜率>0":(r>0).mean(),"≥3%":(r>=3).mean(),"≥5%":(r>=5).mean(),
+            "平均路径最高浮盈%":peak.mean(),"平均利润回吐%":gb.mean(),
+            "平均峰值保留率%":cap[cap.notna()].mean(),
+            "平均过早退出机会成本%":opp.mean(),
+            "STOP/保护退出率":g["退出原因"].astype(str).str.contains("STOP|PROFIT", regex=True).mean(),
+            "TP退出率":g["退出原因"].astype(str).str.contains("TP", regex=True).mean(),
+        })
+    return detail, pd.DataFrame(rows), errors
+
+
+def render_c_backtest(detail, summary):
+    st.subheader("📊 C历史回测结果：卖太早 vs 利润回吐")
+    if summary is None or summary.empty:
+        st.info("当前日期范围没有产生可比较的历史BUY样本。")
+        return
+
+    st.dataframe(
+        summary.style.format({
+            "平均最终收益%":"{:+.2f}","中位最终收益%":"{:+.2f}",
+            "胜率>0":"{:.1%}","≥3%":"{:.1%}","≥5%":"{:.1%}",
+            "平均路径最高浮盈%":"{:+.2f}","平均利润回吐%":"{:.2f}",
+            "平均峰值保留率%":"{:.1f}","平均过早退出机会成本%":"{:.2f}",
+            "STOP/保护退出率":"{:.1%}","TP退出率":"{:.1%}",
+        }, na_rep=""),
+        hide_index=True,use_container_width=True
+    )
+
+    cv = summary[summary["策略"].eq("C v1.3分阶段")]
+    if not cv.empty:
+        rr = cv.iloc[0]
+        c1,c2,c3 = st.columns(3)
+        c1.metric("C平均最终收益", f"{safe_float(rr.get('平均最终收益%', np.nan)):+.2f}%")
+        c2.metric("C平均过早退出机会成本", f"{safe_float(rr.get('平均过早退出机会成本%', np.nan)):.2f}%")
+        c3.metric("C平均利润回吐", f"{safe_float(rr.get('平均利润回吐%', np.nan)):.2f}%")
+
+    st.caption(
+        "过早退出机会成本：退出后直到观察窗结束，股票还能达到的最高收益减去实际退出收益；越低越好。"
+        "利润回吐：路径最高浮盈减去最终退出收益；越低越好，但不能靠过早卖出把它机械压低。"
+    )
+
+    st.markdown("#### 🔎 C v1.3逐笔明细")
+    cdetail = detail[detail["策略"].eq("C v1.3分阶段")].copy()
+    if not cdetail.empty:
+        cols = ["Ticker","BUY时间","BUY类型","BUY价格","初始止损","退出时间","退出价",
+                "退出原因","C退出阶段","最终收益%","路径最高浮盈%","利润回吐%",
+                "峰值保留率%","过早退出机会成本%"]
+        cols = [c for c in cols if c in cdetail.columns]
+        st.dataframe(
+            cdetail[cols].style.format({
+                "BUY价格":"{:.2f}","初始止损":"{:.2f}","退出价":"{:.2f}",
+                "最终收益%":"{:+.2f}","路径最高浮盈%":"{:+.2f}",
+                "利润回吐%":"{:.2f}","峰值保留率%":"{:.1f}",
+                "过早退出机会成本%":"{:.2f}",
+            }, na_rep=""),
+            hide_index=True,use_container_width=True
+        )
+
+    csv = detail.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("💾 下载C历史回测明细", csv,
+                       file_name=f"C_Backtest_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                       mime="text/csv", use_container_width=True)
+
+
 with st.sidebar:
-    st.header("B/C FINAL v1.3")
+    st.header("B/C FINAL v1.4")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1307,8 +1595,60 @@ if "v43b_result" in st.session_state:
 
 
 
+
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.3 规则", expanded=False):
+st.header("🧪 C历史回测 — 临时研究区")
+st.caption("不改LIVE、不写B_Log/B_MasterList。先用当前B规则重建历史BUY，再逐根15分钟K测试不同C退出。")
+
+if master_df is not None and not master_df.empty:
+    research_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
+    if not research_pool.empty:
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            c_bt_days = st.selectbox("C观察期", [3,5], index=0, key="c_bt_horizon")
+        with rc2:
+            default_end = datetime.now(MARKET_TZ).date()
+            default_start = default_end - pd.Timedelta(days=14)
+            c_bt_start = st.date_input("历史开始日期", value=default_start, key="c_bt_start")
+        with rc3:
+            c_bt_end = st.date_input("历史结束日期", value=default_end, key="c_bt_end")
+
+        ticker_list = sorted(research_pool["Ticker"].astype(str).str.upper().unique().tolist())
+        c_bt_tickers = st.multiselect("选择回测股票", ticker_list, default=ticker_list, key="c_bt_tickers")
+
+        st.info("比较：Hold到期 / 原始Stop / 固定TP5%+Stop / 当前C v1.3分阶段。核心看两件事：是否少卖早、是否少回吐。")
+
+        if st.button("▶️ 运行 C 历史回测", type="primary", use_container_width=True):
+            if c_bt_start > c_bt_end:
+                st.error("开始日期不能晚于结束日期。")
+            elif not c_bt_tickers:
+                st.warning("至少选择一只股票。")
+            else:
+                pool = research_pool[research_pool["Ticker"].astype(str).str.upper().isin(c_bt_tickers)].copy()
+                with st.spinner("正在重建历史BUY并回测C..."):
+                    c_detail, c_summary, c_errors = run_c_historical_backtest(
+                        pool, c_bt_start, c_bt_end, horizon_days=int(c_bt_days)
+                    )
+                st.session_state["c_bt_detail"] = c_detail
+                st.session_state["c_bt_summary"] = c_summary
+                st.session_state["c_bt_errors"] = c_errors
+
+        if "c_bt_summary" in st.session_state:
+            errs = st.session_state.get("c_bt_errors", [])
+            if errs:
+                with st.expander("查看数据不足提示"):
+                    for e in errs:
+                        st.write("•", e)
+            render_c_backtest(
+                st.session_state.get("c_bt_detail", pd.DataFrame()),
+                st.session_state.get("c_bt_summary", pd.DataFrame())
+            )
+else:
+    st.info("Master为空，暂时没有股票可用于C历史回测。")
+
+
+st.divider()
+with st.expander("📘 查看 B/C FINAL v1.4 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1336,6 +1676,7 @@ with st.expander("📘 查看 B/C FINAL v1.3 规则", expanded=False):
 - 到 TP2 → `TAKE PROFIT TP2`。
 - 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
 - 当前版本只发决策/提醒，不会自动替你下单。
+- v1.4底部C历史回测仅研究使用，不会修改LIVE状态。
 
 **Google Sheet**
 - A来源：`A_Candidates`
