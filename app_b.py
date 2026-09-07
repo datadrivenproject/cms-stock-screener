@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.1 — 盘中买入 + 持仓退出", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.1 — 盘中买入 + 持仓退出")
+st.set_page_config(page_title="CMS B/C FINAL v1.2 — BUY条件诊断", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.2 — BUY条件诊断")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -731,6 +731,46 @@ def decision(row,h1,m15):
         return "🟠 EARLY BUY","接近15min突破位，动量改善且位于VWAP上方；等待正式突破/回踩确认",np.nan,np.nan
     return "🟡 WAIT","结构尚可，但15min触发条件未齐",np.nan,np.nan
 
+
+def buy_gate_diagnosis(h1, m15):
+    """Explain which BUY gates pass/fail without changing live decision logic."""
+    if not h1.get("valid"):
+        return "1H数据不足"
+    if not m15.get("valid"):
+        return "15m数据不足"
+
+    br = {
+        "1H强": h1.get("status") == "强",
+        "突破": bool(m15.get("breakout")),
+        "EMA结构": bool(m15.get("ema_structure")),
+        "MACD正": bool(m15.get("macd_positive")),
+        "RSI50-70": (not pd.isna(safe_float(m15.get("rsi", np.nan))) and 50 <= safe_float(m15.get("rsi", np.nan)) <= 70),
+        "量比≥1.50": (not pd.isna(safe_float(m15.get("volratio", np.nan))) and safe_float(m15.get("volratio", np.nan)) >= 1.50),
+        "不追高": (pd.isna(safe_float(m15.get("breakout_extension", np.nan))) or safe_float(m15.get("breakout_extension", np.nan)) <= 0.008),
+        "VWAP上方": bool(m15.get("above_vwap")),
+        "不过热": not bool(m15.get("overextended")),
+    }
+    pb = {
+        "1H≥中等": h1.get("status") in ["强","中等"],
+        "回踩": bool(m15.get("pullback")),
+        "MACD改善": bool(m15.get("macd_improving")),
+        "量比≥0.80": (pd.isna(safe_float(m15.get("volratio", np.nan))) or safe_float(m15.get("volratio", np.nan)) >= 0.80),
+        "VWAP上方": bool(m15.get("above_vwap")),
+        "不过热": not bool(m15.get("overextended")),
+    }
+
+    br_fail = [k for k,v in br.items() if not v]
+    pb_fail = [k for k,v in pb.items() if not v]
+
+    if not br_fail:
+        return "突破BUY全部通过"
+    if not pb_fail:
+        return "回踩BUY全部通过"
+
+    br_txt = "、".join(br_fail[:4]) if br_fail else "无"
+    pb_txt = "、".join(pb_fail[:4]) if pb_fail else "无"
+    return f"突破缺：{br_txt}；回踩缺：{pb_txt}"
+
 def analyze_one(row):
     if str(row.get("池状态","")).upper() == "HOLDING" or str(row.get("是否持仓","否")).upper() in ["是","Y","YES","TRUE","1"]:
         return analyze_holding(row)
@@ -738,23 +778,35 @@ def analyze_one(row):
     h1=evaluate_1h(get_intraday(ticker,"60m","3mo"))
     m15=evaluate_15m(get_intraday(ticker,"15m","10d"))
     d,reason,entry,stop=decision(row,h1,m15)
+    gate_diag = buy_gate_diagnosis(h1,m15)
     return {
         "Ticker":ticker,"最近入选日期":row.get("最近入选日期",""),"跟踪天数":row.get("跟踪天数",""),"观察剩余天数":row.get("观察剩余天数",""),"池状态":row.get("池状态","TRACKING"),
         "A结果":row.get("A5决策",""),"A空间等级":row.get("空间等级",""),"A空间优先级":row.get("空间优先级",""),"A上方空间":row.get("上方空间",np.nan),
         "A排名":row.get("Rank",""),"A共振数":row.get("共振数",""),"A Early V2":row.get("Early V2 Score",""),
         "A信心":row.get("Confidence",row.get("信心等级","")),
         "A基本面":row.get("Fundamental Confirmation",row.get("基本面确认","")),
-        "当前价格":m15.get("price",np.nan),"盘中决策":d,"决策依据":reason,
+        "当前价格":m15.get("price",np.nan),"盘中决策":d,"决策依据":reason,"BUY门槛诊断":gate_diag,
         "1H状态":h1.get("status","DATA"),"1H RSI":h1.get("rsi",np.nan),
         "15m VWAP":m15.get("vwap",np.nan),"15m EMA9":m15.get("ema9",np.nan),
         "15m EMA20":m15.get("ema20",np.nan),"15m RSI":m15.get("rsi",np.nan),
         "15m量比":m15.get("volratio",np.nan),"15m突破":"是" if m15.get("breakout") else "否",
         "15m回踩":"是" if m15.get("pullback") else "否","VWAP上方":"是" if m15.get("above_vwap") else "否",
-        "避免追高":"是" if m15.get("overextended") else "否","参考入场":entry,"参考止损":stop
+        "避免追高":"是" if m15.get("overextended") else "否",
+        "1H强":"是" if h1.get("status")=="强" else "否",
+        "1H至少中等":"是" if h1.get("status") in ["强","中等"] else "否",
+        "15m EMA结构":"是" if m15.get("ema_structure") else "否",
+        "15m MACD正":"是" if m15.get("macd_positive") else "否",
+        "15m MACD改善":"是" if m15.get("macd_improving") else "否",
+        "突破RSI合格":"是" if (not pd.isna(safe_float(m15.get("rsi",np.nan))) and 50 <= safe_float(m15.get("rsi",np.nan)) <= 70) else "否",
+        "突破量比≥1.50":"是" if (not pd.isna(safe_float(m15.get("volratio",np.nan))) and safe_float(m15.get("volratio",np.nan)) >= 1.50) else "否",
+        "回踩量比≥0.80":"是" if (pd.isna(safe_float(m15.get("volratio",np.nan))) or safe_float(m15.get("volratio",np.nan)) >= 0.80) else "否",
+        "突破不追高":"是" if (pd.isna(safe_float(m15.get("breakout_extension",np.nan))) or safe_float(m15.get("breakout_extension",np.nan)) <= 0.008) else "否",
+        "接近突破位":"是" if m15.get("near") else "否",
+        "参考入场":entry,"参考止损":stop
     }
 
 with st.sidebar:
-    st.header("B/C FINAL v1.1")
+    st.header("B/C FINAL v1.2")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1032,6 +1084,28 @@ if "v43b_result" in st.session_state:
         use_container_width=True
     )
 
+
+    st.subheader("🧪 BUY条件诊断")
+    diag_cols = [
+        "Ticker","盘中决策","BUY门槛诊断","1H状态","1H强","1H至少中等",
+        "VWAP上方","15m突破","接近突破位","15m回踩",
+        "15m EMA结构","15m MACD正","15m MACD改善",
+        "突破RSI合格","突破量比≥1.50","回踩量比≥0.80","突破不追高",
+        "15m RSI","15m量比"
+    ]
+    diag_cols = [c for c in diag_cols if c in out.columns]
+    diag_show = out[diag_cols].copy()
+    if not diag_show.empty:
+        st.dataframe(
+            diag_show.style.format({
+                "15m RSI":"{:.1f}",
+                "15m量比":"{:.2f}",
+            }, na_rep=""),
+            hide_index=True,
+            use_container_width=True
+        )
+        st.caption("这张表只做诊断，不改变当前BUY/WAIT/EARLY逻辑。重点看EARLY/WAIT到底缺的是突破、量比、1H、VWAP、MACD还是RSI。")
+
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🟢 BUY",int((out["盘中决策"]=="🟢 BUY").sum()))
     c2.metric("🟠 EARLY",int((out["盘中决策"]=="🟠 EARLY BUY").sum()))
@@ -1049,7 +1123,7 @@ if "v43b_result" in st.session_state:
 
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.1 规则", expanded=False):
+with st.expander("📘 查看 B/C FINAL v1.2 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1081,4 +1155,4 @@ with st.expander("📘 查看 B/C FINAL v1.1 规则", expanded=False):
 - 每轮检查日志：`B_Log`
 """)
 
-st.caption("B/C FINAL v1.1：正式LIVE版；修复Google Sheet文本百分比导致的结果表格式化报错。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
+st.caption("B/C FINAL v1.2：在正式LIVE逻辑不变的前提下，新增BUY门槛诊断列，方便判断EARLY/WAIT到底差哪一项。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
