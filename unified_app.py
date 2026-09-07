@@ -2,7 +2,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 
@@ -20,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.1
+# CMS UNIFIED APP V1.2
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -173,6 +176,13 @@ def load_price_history(ticker, period="3mo", interval="1d"):
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
+        need = ["Open", "High", "Low", "Close", "Volume"]
+        if not all(c in df.columns for c in need):
+            return pd.DataFrame()
+
+        df = df[need].copy()
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
         return df
     except Exception:
         return pd.DataFrame()
@@ -343,10 +353,200 @@ def status_badge(dec):
 
 
 
+
+def level_value(row, names):
+    for name in names:
+        if name in row.index:
+            v = sfloat(row.get(name, np.nan), np.nan)
+            if not pd.isna(v):
+                return v
+    return np.nan
+
+def range_bounds(value):
+    if value is None:
+        return (np.nan, np.nan)
+    s = str(value).strip().replace("$", "").replace(",", "")
+    nums = re.findall(r"-?\d+(?:\.\d+)?", s)
+    if not nums:
+        return (np.nan, np.nan)
+    vals = [float(x) for x in nums[:2]]
+    if len(vals) == 1:
+        return (vals[0], vals[0])
+    return (min(vals), max(vals))
+
+def latest_row_for_ticker(ticker, master, a):
+    """
+    优先读取该股票最新 B_MasterList 记录；没有时才回退到 A。
+    这样右侧价格、B决策、1H、15m、Stop、TP1/TP2来自同一只股票。
+    """
+    if master is not None and not master.empty and "Ticker" in master.columns:
+        hit = master[master["Ticker"].astype(str).str.upper() == ticker.upper()].copy()
+        if not hit.empty:
+            tcol = first_existing(hit, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "时间"])
+            if tcol:
+                hit["_ts"] = pd.to_datetime(hit[tcol], errors="coerce")
+                if hit["_ts"].notna().any():
+                    hit = hit.sort_values("_ts")
+            return hit.iloc[-1]
+
+    if a is not None and not a.empty and "Ticker" in a.columns:
+        hit = a[a["Ticker"].astype(str).str.upper() == ticker.upper()].copy()
+        if not hit.empty:
+            dcol = first_existing(hit, ["Scan Date", "Date", "日期"])
+            if dcol:
+                hit["_d"] = pd.to_datetime(hit[dcol], errors="coerce")
+                if hit["_d"].notna().any():
+                    hit = hit.sort_values("_d")
+            return hit.iloc[-1]
+
+    return pd.Series(dtype=object)
+
+def make_candlestick_chart(ticker, hist, row):
+    if hist is None or hist.empty:
+        return None
+
+    x = hist.copy()
+    x["MA20"] = x["Close"].rolling(20).mean()
+    x["MA50"] = x["Close"].rolling(50).mean()
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.76, 0.24]
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=x.index,
+            open=x["Open"],
+            high=x["High"],
+            low=x["Low"],
+            close=x["Close"],
+            name="日K",
+            increasing_line_color="#0f9d76",
+            decreasing_line_color="#e54b4b",
+            increasing_fillcolor="#0f9d76",
+            decreasing_fillcolor="#e54b4b",
+        ),
+        row=1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=x.index, y=x["MA20"],
+            mode="lines", name="MA20",
+            line=dict(width=1.6, color="#2d7ff9")
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x.index, y=x["MA50"],
+            mode="lines", name="MA50",
+            line=dict(width=1.6, color="#f28e2b")
+        ),
+        row=1, col=1
+    )
+
+    vol_colors = np.where(x["Close"] >= x["Open"], "#0f9d76", "#e54b4b")
+    fig.add_trace(
+        go.Bar(
+            x=x.index, y=x["Volume"],
+            name="成交量",
+            marker_color=vol_colors,
+            opacity=0.75
+        ),
+        row=2, col=1
+    )
+
+    last_px = level_value(row, ["最后价格", "价格", "当前价"])
+    entry = level_value(row, ["参考入场", "实际买入价"])
+    stop = level_value(row, ["参考止损", "持仓止损", "动态保护价"])
+    tp1 = level_value(row, ["TP1"])
+    tp2 = level_value(row, ["TP2"])
+
+    support_low, support_high = range_bounds(row.get("支撑区", ""))
+    resist_low, resist_high = range_bounds(row.get("压力区", ""))
+    buy_low, buy_high = range_bounds(row.get("建议买入区", row.get("买入区", "")))
+
+    shapes = []
+    annotations = []
+
+    def add_hline(y, color, label, dash="dot"):
+        if pd.isna(y):
+            return
+        shapes.append(dict(
+            type="line", xref="paper", x0=0, x1=1,
+            yref="y", y0=y, y1=y,
+            line=dict(color=color, width=1.3, dash=dash)
+        ))
+        annotations.append(dict(
+            x=1.0, xref="paper", y=y, yref="y",
+            text=label, showarrow=False, xanchor="left",
+            font=dict(size=11, color=color)
+        ))
+
+    def add_zone(y0, y1, color, label):
+        if pd.isna(y0) or pd.isna(y1):
+            return
+        shapes.append(dict(
+            type="rect", xref="paper", x0=0, x1=1,
+            yref="y", y0=y0, y1=y1,
+            fillcolor=color, opacity=0.10,
+            line=dict(width=0)
+        ))
+        annotations.append(dict(
+            x=0.01, xref="paper", y=(y0 + y1) / 2, yref="y",
+            text=label, showarrow=False, xanchor="left",
+            font=dict(size=10)
+        ))
+
+    add_hline(last_px, "#18a36b", f"现价 {last_px:.2f}" if not pd.isna(last_px) else "")
+    add_hline(entry, "#6f42c1", f"入场 {entry:.2f}" if not pd.isna(entry) else "")
+    add_hline(stop, "#d62728", f"Stop {stop:.2f}" if not pd.isna(stop) else "")
+    add_hline(tp1, "#2ca02c", f"TP1 {tp1:.2f}" if not pd.isna(tp1) else "")
+    add_hline(tp2, "#0b7d4f", f"TP2 {tp2:.2f}" if not pd.isna(tp2) else "")
+
+    add_zone(support_low, support_high, "#2ca02c", "支撑区")
+    add_zone(resist_low, resist_high, "#d62728", "压力区")
+    add_zone(buy_low, buy_high, "#6f42c1", "BUY区")
+
+    fig.update_layout(
+        height=610,
+        margin=dict(l=10, r=85, t=25, b=10),
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="left", x=0
+        ),
+        shapes=shapes,
+        annotations=annotations,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+
+    for r in [1, 2]:
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor="rgba(128,128,128,0.12)",
+            row=r, col=1
+        )
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor="rgba(128,128,128,0.12)",
+            row=r, col=1
+        )
+
+    return fig
+
+
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.1 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.2 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -410,7 +610,7 @@ with hr:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
 st.caption(
-    "Unified App V1.1：一个网址统一查看 A、B、C。"
+    "Unified App V1.2：一个网址统一查看 A、B、C。"
     "当前版本是安全的只读整合层，不改变已经冻结的交易引擎。"
 )
 
@@ -462,6 +662,7 @@ if page == "🏠 首页":
 
     with rcol:
         tickers = union_tickers(master_active, a_buy)
+        st.caption("选择哪只股票，右侧日K、B决策、1H/15m、Stop、TP1/TP2就读取该股票最新 B_MasterList 记录。")
         selected_home = st.selectbox(
             "快速查看股票",
             tickers if tickers else [""],
@@ -469,14 +670,19 @@ if page == "🏠 首页":
             key="home_ticker"
         )
         if selected_home:
+            row = latest_row_for_ticker(selected_home, master_df, a_df)
             h = load_price_history(selected_home, "3mo", "1d")
-            if not h.empty and "Close" in h.columns:
-                st.subheader(f"{selected_home} · 3个月日线")
-                st.line_chart(h[["Close"]], height=350)
+            if not h.empty:
+                st.subheader(f"{selected_home} · 3个月日K")
+                fig = make_candlestick_chart(selected_home, h, row)
+                if fig is not None:
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        config={"displaylogo": False}
+                    )
             else:
-                st.warning("暂时无法取得价格图。")
-
-            row = ticker_row(selected_home, master_df, a_df)
+                st.warning("暂时无法取得日K数据。")
             x1, x2, x3, x4 = st.columns(4)
             x1.metric("当前/最后价", money_text(row.get("最后价格", row.get("价格", np.nan))))
             x2.metric("参考止损", money_text(row.get("参考止损", row.get("持仓止损", np.nan))))
@@ -634,17 +840,23 @@ elif page == "📊 股票详情":
         d1, d2 = st.columns([1, 3])
         with d1:
             tk = st.selectbox("股票", tickers, key="detail_ticker")
-            period = st.selectbox("图表区间", ["1mo","3mo","6mo","1y"], index=1)
+            period = st.selectbox("图表区间", ["1mo","3mo","6mo","1y"], index=1, format_func=lambda x: {"1mo":"1个月","3mo":"3个月","6mo":"6个月","1y":"1年"}[x])
         with d2:
-            row = ticker_row(tk, master_df, a_df)
+            row = latest_row_for_ticker(tk, master_df, a_df)
             title_company = str(row.get("Company", ""))
             st.markdown(f"### {tk} {title_company}")
 
         hist = load_price_history(tk, period, "1d")
-        if not hist.empty and "Close" in hist.columns:
-            st.line_chart(hist[["Close"]], height=430)
+        if not hist.empty:
+            fig = make_candlestick_chart(tk, hist, row)
+            if fig is not None:
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displaylogo": False}
+                )
         else:
-            st.warning("价格数据暂时不可用。")
+            st.warning("日K数据暂时不可用。")
 
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("最后价格", money_text(row.get("最后价格", row.get("价格", np.nan))))
@@ -709,6 +921,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.1 · 这是第一步：把 A / B / C 做成一个软件入口。"
+    "CMS Unified App V1.2 · 已加入日K蜡烛图、成交量、MA20/MA50、关键价位与 B 数据联动。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
