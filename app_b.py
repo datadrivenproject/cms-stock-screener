@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.4 — B买点 + C历史回测", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.4 — B买点 + C历史回测")
+st.set_page_config(page_title="CMS B/C FINAL v1.5 — 初始Stop敏感性 × C联合回测", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.5 — 初始Stop敏感性 × C联合回测")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -1198,6 +1198,256 @@ def run_c_historical_backtest(master_rows, start_date, end_date, horizon_days=3)
     return detail, pd.DataFrame(rows), errors
 
 
+
+def _entry_atr15(m15_all, entry_ts):
+    """ATR14 from 15m data known at entry time only."""
+    if m15_all is None or m15_all.empty:
+        return np.nan
+    x = m15_all[m15_all.index <= entry_ts].copy()
+    if x.empty or len(x) < 20:
+        return np.nan
+    try:
+        a = add_indicators(x)
+        return safe_float(a["ATR14"].iloc[-1], np.nan)
+    except Exception:
+        return np.nan
+
+
+def _adjust_stop(entry_px, original_stop, mode, atr15=np.nan):
+    """
+    Widen only. Never tighten the original stop.
+    mode:
+      当前Stop
+      1.25x止损距离
+      1.50x止损距离
+      2.00x止损距离
+      ATR1.5
+      ATR2.0
+    """
+    entry_px = safe_float(entry_px, np.nan)
+    original_stop = safe_float(original_stop, np.nan)
+    atr15 = safe_float(atr15, np.nan)
+
+    if pd.isna(entry_px) or entry_px <= 0:
+        return np.nan
+
+    # fallback distance if original stop is missing/bad
+    if pd.isna(original_stop) or original_stop <= 0 or original_stop >= entry_px:
+        base_dist = entry_px * 0.02
+        original_stop = entry_px - base_dist
+    else:
+        base_dist = entry_px - original_stop
+
+    if mode == "当前Stop":
+        return original_stop
+    if mode == "1.25x止损距离":
+        return max(0.01, entry_px - 1.25 * base_dist)
+    if mode == "1.50x止损距离":
+        return max(0.01, entry_px - 1.50 * base_dist)
+    if mode == "2.00x止损距离":
+        return max(0.01, entry_px - 2.00 * base_dist)
+
+    if mode == "ATR1.5":
+        if pd.isna(atr15) or atr15 <= 0:
+            return max(0.01, entry_px - 1.50 * base_dist)
+        atr_stop = entry_px - 1.50 * atr15
+        return min(original_stop, atr_stop)
+
+    if mode == "ATR2.0":
+        if pd.isna(atr15) or atr15 <= 0:
+            return max(0.01, entry_px - 2.00 * base_dist)
+        atr_stop = entry_px - 2.00 * atr15
+        return min(original_stop, atr_stop)
+
+    return original_stop
+
+
+def _max_adverse_excursion(path, entry_px):
+    if path is None or path.empty or pd.isna(entry_px) or entry_px <= 0:
+        return np.nan
+    lo = pd.to_numeric(path["Low"], errors="coerce").min()
+    return ((lo / entry_px) - 1.0) * 100.0 if not pd.isna(lo) else np.nan
+
+
+def run_stop_sensitivity_backtest(master_rows, start_date, end_date, horizon_days=5):
+    """
+    Same historical B BUY entries; only change initial stop.
+    Every stop variant is then fed into the exact same staged C v1.3 logic.
+    """
+    modes = [
+        "当前Stop",
+        "1.25x止损距离",
+        "1.50x止损距离",
+        "2.00x止损距离",
+        "ATR1.5",
+        "ATR2.0",
+    ]
+
+    all_cases = []
+    errors = []
+
+    if master_rows is None or master_rows.empty:
+        return pd.DataFrame(), pd.DataFrame(), ["没有可回测股票"]
+
+    for _, row in master_rows.iterrows():
+        entries, m15_all, err = historical_buy_entries(row, start_date, end_date)
+        if err:
+            errors.append(err)
+            continue
+
+        for e in entries:
+            path = _trading_day_horizon_bars(m15_all, e["BUY时间"], horizon_days)
+            if path is None or path.empty:
+                continue
+
+            atr15 = _entry_atr15(m15_all, e["BUY时间"])
+            mae = _max_adverse_excursion(path, e["BUY价格"])
+
+            for mode in modes:
+                test_stop = _adjust_stop(
+                    e["BUY价格"],
+                    e["初始止损"],
+                    mode,
+                    atr15=atr15
+                )
+                s = _simulate_c_v13(path, e["BUY价格"], test_stop)
+                if s is None:
+                    continue
+
+                rec = dict(e)
+                rec.update(s)
+                rec["Stop方案"] = mode
+                rec["测试止损"] = test_stop
+                rec["止损距离%"] = ((e["BUY价格"] - test_stop) / e["BUY价格"] * 100.0) if e["BUY价格"] > 0 else np.nan
+                rec["入场15m ATR"] = atr15
+                rec["路径MAE%"] = mae
+                rec["持有交易日"] = horizon_days
+                all_cases.append(rec)
+
+    detail = pd.DataFrame(all_cases)
+    if detail.empty:
+        return detail, pd.DataFrame(), errors
+
+    rows = []
+    for mode, g in detail.groupby("Stop方案", sort=False):
+        r = pd.to_numeric(g["最终收益%"], errors="coerce")
+        peak = pd.to_numeric(g["路径最高浮盈%"], errors="coerce")
+        gb = pd.to_numeric(g["利润回吐%"], errors="coerce")
+        cap = pd.to_numeric(g["峰值保留率%"], errors="coerce")
+        opp = pd.to_numeric(g["过早退出机会成本%"], errors="coerce")
+        mae = pd.to_numeric(g["路径MAE%"], errors="coerce")
+        stopdist = pd.to_numeric(g["止损距离%"], errors="coerce")
+
+        rows.append({
+            "Stop方案": mode,
+            "样本": len(g),
+            "平均止损距离%": stopdist.mean(),
+            "平均最终收益%": r.mean(),
+            "中位最终收益%": r.median(),
+            "胜率>0": (r > 0).mean(),
+            "≥3%": (r >= 3).mean(),
+            "≥5%": (r >= 5).mean(),
+            "平均路径最高浮盈%": peak.mean(),
+            "平均路径MAE%": mae.mean(),
+            "平均利润回吐%": gb.mean(),
+            "平均峰值保留率%": cap[cap.notna()].mean(),
+            "平均过早退出机会成本%": opp.mean(),
+            "原始STOP退出率": g["退出原因"].astype(str).eq("原始STOP").mean(),
+            "C保护退出率": g["退出原因"].astype(str).str.contains("C分阶段PROFIT PROTECT", regex=False).mean(),
+        })
+
+    summary = pd.DataFrame(rows)
+    return detail, summary, errors
+
+
+def render_stop_sensitivity(detail, summary):
+    st.subheader("🧭 初始Stop敏感性 × C联合回测")
+
+    if summary is None or summary.empty:
+        st.info("当前范围没有可比较的历史BUY样本。")
+        return
+
+    st.dataframe(
+        summary.style.format({
+            "平均止损距离%":"{:.2f}",
+            "平均最终收益%":"{:+.2f}",
+            "中位最终收益%":"{:+.2f}",
+            "胜率>0":"{:.1%}",
+            "≥3%":"{:.1%}",
+            "≥5%":"{:.1%}",
+            "平均路径最高浮盈%":"{:+.2f}",
+            "平均路径MAE%":"{:+.2f}",
+            "平均利润回吐%":"{:.2f}",
+            "平均峰值保留率%":"{:.1f}",
+            "平均过早退出机会成本%":"{:.2f}",
+            "原始STOP退出率":"{:.1%}",
+            "C保护退出率":"{:.1%}",
+        }, na_rep=""),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    st.caption(
+        "判断重点：不是止损越宽越好。理想方案应同时做到："
+        "平均最终收益/胜率提高、过早退出机会成本下降、STOP退出率下降，"
+        "但平均MAE不能明显恶化。"
+    )
+
+    # Simple ranked view: emphasize balance, not one metric.
+    score = summary.copy()
+    for c in ["平均最终收益%","胜率>0","≥5%","平均过早退出机会成本%","平均路径MAE%","原始STOP退出率"]:
+        score[c] = pd.to_numeric(score[c], errors="coerce")
+
+    if len(score) >= 2:
+        score["综合观察"] = (
+            score["平均最终收益%"].rank(pct=True) +
+            score["胜率>0"].rank(pct=True) +
+            score["≥5%"].rank(pct=True) +
+            (-score["平均过早退出机会成本%"]).rank(pct=True) +
+            (-score["原始STOP退出率"]).rank(pct=True) +
+            score["平均路径MAE%"].rank(pct=True)  # less negative MAE is better
+        )
+        best = score.sort_values("综合观察", ascending=False).iloc[0]
+        st.success(
+            f"当前综合表现最值得继续验证：{best['Stop方案']}。"
+            f"平均收益 {best['平均最终收益%']:+.2f}%｜"
+            f"胜率 {best['胜率>0']:.1%}｜"
+            f"≥5% {best['≥5%']:.1%}｜"
+            f"过早退出机会成本 {best['平均过早退出机会成本%']:.2f}%｜"
+            f"平均MAE {best['平均路径MAE%']:+.2f}%"
+        )
+
+    st.markdown("#### 🔎 逐笔明细")
+    cols = [
+        "Ticker","BUY时间","BUY类型","BUY价格","初始止损","Stop方案","测试止损","止损距离%",
+        "入场15m ATR","退出时间","退出价","退出原因","C退出阶段",
+        "最终收益%","路径最高浮盈%","路径MAE%","利润回吐%",
+        "峰值保留率%","过早退出机会成本%"
+    ]
+    cols = [c for c in cols if c in detail.columns]
+    st.dataframe(
+        detail[cols].style.format({
+            "BUY价格":"{:.2f}","初始止损":"{:.2f}","测试止损":"{:.2f}",
+            "止损距离%":"{:.2f}","入场15m ATR":"{:.2f}",
+            "退出价":"{:.2f}","最终收益%":"{:+.2f}",
+            "路径最高浮盈%":"{:+.2f}","路径MAE%":"{:+.2f}",
+            "利润回吐%":"{:.2f}","峰值保留率%":"{:.1f}",
+            "过早退出机会成本%":"{:.2f}",
+        }, na_rep=""),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    csv = detail.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "💾 下载Stop敏感性回测明细",
+        csv,
+        file_name=f"C_Stop_Sensitivity_{datetime.now().strftime('%Y-%m-%d')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+
 def render_c_backtest(detail, summary):
     st.subheader("📊 C历史回测结果：卖太早 vs 利润回吐")
     if summary is None or summary.empty:
@@ -1252,7 +1502,7 @@ def render_c_backtest(detail, summary):
 
 
 with st.sidebar:
-    st.header("B/C FINAL v1.4")
+    st.header("B/C FINAL v1.5")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1648,7 +1898,75 @@ else:
 
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.4 规则", expanded=False):
+st.header("🧪 初始Stop敏感性 × C联合回测")
+st.caption(
+    "同一批历史B BUY、同一入场价格、同一未来观察窗；只改变初始Stop宽度，"
+    "然后全部接入同一个C v1.3分阶段保护。LIVE逻辑不会被这里修改。"
+)
+
+if master_df is not None and not master_df.empty:
+    stop_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
+    if not stop_pool.empty:
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            stop_bt_days = st.selectbox("联合回测观察期", [3,5], index=1, key="stop_bt_horizon")
+        with sc2:
+            stop_default_end = datetime.now(MARKET_TZ).date()
+            stop_default_start = stop_default_end - pd.Timedelta(days=21)
+            stop_bt_start = st.date_input("Stop回测开始日期", value=stop_default_start, key="stop_bt_start")
+        with sc3:
+            stop_bt_end = st.date_input("Stop回测结束日期", value=stop_default_end, key="stop_bt_end")
+
+        stop_tickers_all = sorted(stop_pool["Ticker"].astype(str).str.upper().unique().tolist())
+        stop_bt_tickers = st.multiselect(
+            "选择Stop联合回测股票",
+            stop_tickers_all,
+            default=stop_tickers_all,
+            key="stop_bt_tickers"
+        )
+
+        st.info(
+            "测试：当前Stop / 1.25× / 1.50× / 2.00×止损距离 / ATR1.5 / ATR2.0。"
+            "每一种都接同一个C分阶段保护。重点看：收益、胜率、≥5%、STOP率、过早退出机会成本、MAE。"
+        )
+
+        if st.button("▶️ 运行 Stop × C 联合回测", type="primary", use_container_width=True):
+            if stop_bt_start > stop_bt_end:
+                st.error("开始日期不能晚于结束日期。")
+            elif not stop_bt_tickers:
+                st.warning("至少选择一只股票。")
+            else:
+                pool = stop_pool[
+                    stop_pool["Ticker"].astype(str).str.upper().isin(stop_bt_tickers)
+                ].copy()
+                with st.spinner("正在重建历史BUY，并测试不同初始Stop × 同一C退出..."):
+                    s_detail, s_summary, s_errors = run_stop_sensitivity_backtest(
+                        pool,
+                        stop_bt_start,
+                        stop_bt_end,
+                        horizon_days=int(stop_bt_days)
+                    )
+                st.session_state["stop_bt_detail"] = s_detail
+                st.session_state["stop_bt_summary"] = s_summary
+                st.session_state["stop_bt_errors"] = s_errors
+
+        if "stop_bt_summary" in st.session_state:
+            errs = st.session_state.get("stop_bt_errors", [])
+            if errs:
+                with st.expander("查看Stop回测数据不足提示"):
+                    for e in errs:
+                        st.write("•", e)
+            render_stop_sensitivity(
+                st.session_state.get("stop_bt_detail", pd.DataFrame()),
+                st.session_state.get("stop_bt_summary", pd.DataFrame())
+            )
+else:
+    st.info("Master为空，暂时没有股票可用于Stop × C联合回测。")
+
+
+
+st.divider()
+with st.expander("📘 查看 B/C FINAL v1.5 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1676,7 +1994,7 @@ with st.expander("📘 查看 B/C FINAL v1.4 规则", expanded=False):
 - 到 TP2 → `TAKE PROFIT TP2`。
 - 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
 - 当前版本只发决策/提醒，不会自动替你下单。
-- v1.4底部C历史回测仅研究使用，不会修改LIVE状态。
+- v1.5底部的C历史回测与Stop×C联合回测都只做研究，不会修改LIVE状态。
 
 **Google Sheet**
 - A来源：`A_Candidates`
