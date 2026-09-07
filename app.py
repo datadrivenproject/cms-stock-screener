@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FIX3 — 共振 + 支撑/压力",
+    page_title="CMS Stock Screener A5.2R FIX3 + VP1 — 共振 + 量价阶段 + 支撑/压力",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FIX3 — 共振 + 支撑/压力")
+st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 — 共振 + 量价阶段 + 支撑/压力")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -251,6 +251,97 @@ def calc_atr(high, low, close, period=14):
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.rolling(period).mean()
+
+# =========================================================
+# VOLUME-PRICE PHASE V1 — TEST LAYER, DOES NOT CHANGE FIX3 BUY/NO-BUY
+# A = 缩量蓄势 | B = 放量启动 | C = 派发/衰竭风险 | N = 普通
+# =========================================================
+def calc_volume_price_phase(df):
+    """Classify the latest daily bar into a transparent volume-price lifecycle.
+
+    IMPORTANT: VP1 is diagnostic/test-only in this version. It is stored, displayed
+    and replayed, but it does NOT alter A5.2R FIX3 score, hard filter, ranking or
+    final 买/不买 decision.
+    """
+    empty = {
+        "VP阶段": "N", "VP分": 0, "VP说明": "数据不足",
+        "VP量比20": np.nan, "VP前期缩量": "否",
+        "VP放量启动": "否", "VP派发风险": "否",
+    }
+    try:
+        if df is None or len(df) < 30:
+            return empty
+        d = df.copy()
+        for c in ["Open", "High", "Low", "Close", "Volume"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+        if len(d) < 30:
+            return empty
+
+        o, h, l, c, v = (d[x] for x in ["Open", "High", "Low", "Close", "Volume"])
+        px = float(c.iloc[-1])
+        vol20_prev = float(v.iloc[-21:-1].mean())
+        vol5_prev = float(v.iloc[-6:-1].mean())
+        vol5_earlier = float(v.iloc[-11:-6].mean())
+        if vol20_prev <= 0 or px <= 0:
+            return empty
+
+        rvol20 = float(v.iloc[-1] / vol20_prev)
+        dry5 = float(vol5_prev / vol20_prev)
+        earlier_dry = float(vol5_earlier / vol20_prev)
+        high10_prev = float(h.iloc[-11:-1].max())
+        high20_prev = float(h.iloc[-21:-1].max())
+        low5 = float(l.iloc[-6:-1].min())
+        high5 = float(h.iloc[-6:-1].max())
+        compression5 = (high5 - low5) / px
+        ret1 = float(c.iloc[-1] / c.iloc[-2] - 1)
+        rng = float(h.iloc[-1] - l.iloc[-1])
+        if rng > 0:
+            close_loc = float((c.iloc[-1] - l.iloc[-1]) / rng)
+            upper_wick = float((h.iloc[-1] - max(o.iloc[-1], c.iloc[-1])) / rng)
+        else:
+            close_loc, upper_wick = 0.5, 0.0
+
+        # A: healthy contraction near the recent high, without requiring a breakout.
+        phase_a = bool(dry5 < 0.80 and compression5 < 0.08 and px >= high20_prev * 0.88)
+
+        # B: renewed expansion through a local pivot, preferably after contraction.
+        breakout = bool(px > high10_prev or px > high20_prev)
+        phase_b = bool(rvol20 >= 1.30 and breakout and close_loc >= 0.65 and ret1 > 0)
+        prior_dryup = bool(dry5 < 0.85 or earlier_dry < 0.85)
+
+        # C: abnormal volume that fails to produce healthy price progress.
+        stall = bool(rvol20 >= 1.80 and ret1 < 0.01)
+        upper_wick_risk = bool(rvol20 >= 1.50 and upper_wick >= 0.35)
+        heavy_down = bool(rvol20 >= 1.50 and ret1 <= -0.025)
+        phase_c = bool(stall or upper_wick_risk or heavy_down)
+
+        if phase_c:
+            reasons = []
+            if stall: reasons.append("巨量但价格滞涨")
+            if upper_wick_risk: reasons.append("放量长上影")
+            if heavy_down: reasons.append("放量下跌")
+            phase, score, reason = "C", -3, "；".join(reasons)
+        elif phase_b:
+            if prior_dryup:
+                phase, score, reason = "B", 3, "缩量整理后放量突破"
+            else:
+                phase, score, reason = "B", 2, "放量突破"
+        elif phase_a:
+            phase, score, reason = "A", 1, "缩量蓄势，等待重新放量"
+        else:
+            phase, score, reason = "N", 0, "暂无明显量价阶段"
+
+        return {
+            "VP阶段": phase, "VP分": score, "VP说明": reason,
+            "VP量比20": round(rvol20, 2),
+            "VP前期缩量": "是" if prior_dryup else "否",
+            "VP放量启动": "是" if phase_b else "否",
+            "VP派发风险": "是" if phase_c else "否",
+        }
+    except Exception:
+        return empty
+
 
 # =========================================================
 # TRUE SUPPORT / RESISTANCE ZONES
@@ -1470,6 +1561,9 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Headlines": " | ".join(headlines[:3]),
         }
 
+        # VP1 test layer: record only; FIX3 decision/ranking remains untouched.
+        row.update(calc_volume_price_phase(df))
+
         stage, structure_quality, structure_basis = classify_structure_stage(row, structure_raw, atr14)
         row["结构阶段"] = stage
         row["结构质量"] = structure_quality
@@ -1494,7 +1588,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 # =========================================================
 DAILY_WORKSHEET = "A_Candidates"
 
-A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考'}
+A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段': '量价阶段', 'VP分': '量价分', 'VP说明': '量价说明', 'VP量比20': '量比20', 'VP前期缩量': '前期缩量', 'VP放量启动': '放量启动', 'VP派发风险': '派发风险'}
 
 def _cell(v):
     if v is None:
@@ -1535,6 +1629,7 @@ def get_daily_worksheet():
 A_PRIMARY_COLS = [
     "Ticker", "Company", "Rank", "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
+    "VP阶段", "VP分", "VP量比20", "VP说明",
     "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
     "Structure Score", "Trend & Momentum Score", "Accumulation Score",
     "Leadership Score", "Catalyst Score", "Catalyst Label",
@@ -1649,7 +1744,7 @@ def save_all_scanned_history(all_df):
 
     keep = ["Scan Date","Scan Time","Ticker","Company","Sector","Universe Rank","Hard Filter","Hard Filter Reason",
             "质量检查","结构阶段","Early V2 Score","Structure Score","Trend & Momentum Score","Accumulation Score",
-            "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","Dollar Volume",
+            "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","VP阶段","VP分","VP量比20","VP说明","VP前期缩量","VP放量启动","VP派发风险","Dollar Volume",
             "MA20 Slope 5D","MACD Phase","RSI14","Volume Build Ratio","Up/Down Volume Ratio",
             "Stock vs SPY 20D","Sector vs SPY 20D","Stock vs Sector 20D","RS Acceleration","Confidence",
             "Fundamental Confirmation"]
@@ -1895,6 +1990,7 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
             'RS Acceleration': m4['RS Acceleration'],
         }
 
+        row.update(calc_volume_price_phase(df))
         row.update(calc_a5_resonance(df, row))
 
         hard_ok, hard_reason = passes_v43a_hard_filter(row)
@@ -2705,7 +2801,7 @@ with st.sidebar:
     st.success("V4.3A.4 正式规则：仅放宽 MA200；MA20、MA50、MA20斜率≥0.2%、Structure 均保留。")
 
 st.info(
-    "A5.2R：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力空间 → 买/不买。"
+    "A5.2R FIX3 + VP1：FIX3正式决策保持不变；VP1独立记录 A缩量蓄势 / B放量启动 / C派发风险 / N普通。"
     "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
@@ -2769,6 +2865,7 @@ def render_results(top_df, all_df):
     display_cols = [
         # 结果放最前；最终只给“买 / 不买”
         "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
+        "VP阶段", "VP分", "VP量比20", "VP说明",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
         "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
@@ -2805,7 +2902,7 @@ def render_results(top_df, all_df):
 
     st.subheader("🎯 A5.2R — 次日重点候选（不强制凑10只）")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果", "共振数":"共振数", "VP阶段":"量价阶段", "VP分":"量价分", "VP量比20":"量比20", "VP说明":"量价说明", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -2863,7 +2960,8 @@ def render_results(top_df, all_df):
 **③ 资金积累（20）**：Volume Build + Up/Down Volume + OBV。日K只能判断‘资金积累证据’，不能宣称真实主动买盘。  
 **④ 领导力（20）**：Stock vs SPY、Sector vs SPY、Stock vs Sector；5D只判断近期是否加速，不继续增加更多基准。  
 **⑤ Catalyst（15）**：扩大正面/负面关键词并按事件类别识别；没有Catalyst不会直接淘汰，但明显负面Catalyst会压低候选级别。  
-**⑥ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
+**⑥ VP1量价阶段（测试层，不计入FIX3决策）**：A=缩量蓄势；B=放量启动；C=派发/衰竭风险；N=普通。先通过历史Replay验证，不改变当前买/不买。  
+**⑦ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
 """
         )
 
@@ -2930,4 +3028,3 @@ with st.expander("查看 Forward Validation 历史库（从现在开始每天自
             st.error(f"Forward Validation失败：{e}")
     if "a_strong_bt" in st.session_state:
         render_strong_stock_backtest(st.session_state["a_strong_bt"])
-
