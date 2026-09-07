@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.7 — A历史股票池大样本验证", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.7 — A历史股票池大样本验证")
+st.set_page_config(page_title="CMS B/C FINAL v1.8 LIVE — 最终实盘版", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.8 LIVE — 最终实盘版")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -935,6 +935,33 @@ def weak_fundamental(row):
     c=str(row.get("Confidence",row.get("信心等级",""))).lower()
     return ("weak" in f) or ("弱" in f) or c in ["low","低"]
 
+
+LIVE_INITIAL_STOP_MULTIPLIER = 1.50
+
+def apply_live_initial_stop(entry_px, base_stop):
+    """
+    V1.8 LIVE final rule:
+    keep the original B stop *structure*, but widen the distance from entry by 1.50x.
+
+    Example:
+      entry=100, old/base stop=99  -> base distance=1
+      V1.8 LIVE stop = 100 - 1.50*1 = 98.50
+
+    This does not change BUY timing. It only changes the initial protective stop
+    that is handed from B to C after a real purchase.
+    """
+    entry_px = safe_float(entry_px, np.nan)
+    base_stop = safe_float(base_stop, np.nan)
+
+    if pd.isna(entry_px) or entry_px <= 0:
+        return np.nan
+    if pd.isna(base_stop) or base_stop <= 0 or base_stop >= entry_px:
+        return base_stop
+
+    base_dist = entry_px - base_stop
+    return max(0.01, entry_px - LIVE_INITIAL_STOP_MULTIPLIER * base_dist)
+
+
 def decision(row,h1,m15):
     if not h1.get("valid"): return "⚪ DATA",h1.get("reason","1H数据不足"),np.nan,np.nan
     if not m15.get("valid"): return "⚪ DATA",m15.get("reason","15min数据不足"),np.nan,np.nan
@@ -1016,7 +1043,10 @@ def analyze_one(row):
     ticker=str(row["Ticker"]).strip().upper()
     h1=evaluate_1h(get_intraday(ticker,"60m","3mo"))
     m15=evaluate_15m(get_intraday(ticker,"15m","10d"))
-    d,reason,entry,stop=decision(row,h1,m15)
+    d,reason,entry,base_stop=decision(row,h1,m15)
+    stop = apply_live_initial_stop(entry, base_stop)
+    if d == "🟢 BUY" and not pd.isna(safe_float(stop, np.nan)):
+        reason = reason + f"；V1.8初始Stop采用原止损距离×{LIVE_INITIAL_STOP_MULTIPLIER:.2f}"
     gate_diag = buy_gate_diagnosis(h1,m15)
     return {
         "Ticker":ticker,"最近入选日期":row.get("最近入选日期",""),"跟踪天数":row.get("跟踪天数",""),"观察剩余天数":row.get("观察剩余天数",""),"池状态":row.get("池状态","TRACKING"),
@@ -1041,7 +1071,7 @@ def analyze_one(row):
         "回踩量比≥0.80":"是" if (pd.isna(safe_float(m15.get("volratio",np.nan))) or safe_float(m15.get("volratio",np.nan)) >= 0.80) else "否",
         "突破不追高":"是" if (pd.isna(safe_float(m15.get("breakout_extension",np.nan))) or safe_float(m15.get("breakout_extension",np.nan)) <= 0.008) else "否",
         "接近突破位":"是" if m15.get("near") else "否",
-        "参考入场":entry,"参考止损":stop
+        "参考入场":entry,"基础止损":base_stop,"参考止损":stop
     }
 
 
@@ -1180,13 +1210,13 @@ def _simulate_c_v13(path, entry_px, initial_stop):
         capture = (ret / peak * 100.0) if (not pd.isna(peak) and peak > 0) else np.nan
         opp = _future_max_return_after_exit(path, ts, entry_px)
         return {
-            "策略":"C v1.3分阶段","退出时间":ts,"退出价":px,"退出原因":reason,
+            "策略":"C 分阶段","退出时间":ts,"退出价":px,"退出原因":reason,
             "C退出阶段":exit_stage,"最终收益%":ret,"路径最高浮盈%":peak,
             "利润回吐%":giveback,"峰值保留率%":capture,
             "过早退出机会成本%":max(0.0, opp-ret) if not pd.isna(opp) else np.nan
         }
 
-    out = _exit_at_horizon(path, entry_px, "C v1.3分阶段")
+    out = _exit_at_horizon(path, entry_px, "C 分阶段")
     if out is not None:
         out["C退出阶段"] = current_stage
     return out
@@ -1801,7 +1831,7 @@ def render_c_backtest(detail, summary):
         hide_index=True,use_container_width=True
     )
 
-    cv = summary[summary["策略"].eq("C v1.3分阶段")]
+    cv = summary[summary["策略"].eq("C 分阶段")]
     if not cv.empty:
         rr = cv.iloc[0]
         c1,c2,c3 = st.columns(3)
@@ -1815,7 +1845,7 @@ def render_c_backtest(detail, summary):
     )
 
     st.markdown("#### 🔎 C v1.3逐笔明细")
-    cdetail = detail[detail["策略"].eq("C v1.3分阶段")].copy()
+    cdetail = detail[detail["策略"].eq("C 分阶段")].copy()
     if not cdetail.empty:
         cols = ["Ticker","BUY时间","BUY类型","BUY价格","初始止损","退出时间","退出价",
                 "退出原因","C退出阶段","最终收益%","路径最高浮盈%","利润回吐%",
@@ -1838,7 +1868,7 @@ def render_c_backtest(detail, summary):
 
 
 with st.sidebar:
-    st.header("B/C FINAL v1.7")
+    st.header("B/C FINAL v1.8 LIVE")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1868,7 +1898,7 @@ if auto_monitor and st_autorefresh is not None:
 elif auto_monitor and st_autorefresh is None:
     st.warning("请在 requirements.txt 增加：streamlit-autorefresh")
 
-st.info("流程：A FINAL“买”候选 → B用1H确认方向 + 15min找突破/回踩 → BUY / WAIT / AVOID；实际成交后转入C持仓管理 → HOLD / TP / STOP。")
+st.info("流程：A FINAL“买”候选 → B用1H确认方向 + 15min找突破/回踩 → BUY / WAIT / AVOID；BUY后的初始Stop使用原止损距离×1.50；实际成交后转入C持仓管理 → HOLD / TP / STOP。")
 
 try:
     a_df,scan_date=load_latest_a_candidates()
@@ -1880,7 +1910,7 @@ if a_df.empty:
     st.warning("A最新扫描日没有正式“买”候选，或尚未保存A5.2R FINAL结果。")
     st.stop()
 
-# V1.6关键变化：A只提供当天候选；B Master负责累计历史候选并独立计算5交易日有效期。
+# V1.8 LIVE：A只提供当天候选；B Master累计历史候选并独立计算5交易日有效期。
 master_df = load_b_master()
 master_df = sync_master_with_a(master_df, a_df, scan_date)
 save_b_master(master_df)
@@ -1897,7 +1927,7 @@ if preview and not monitor_df.empty:
     st.dataframe(monitor_df[preview],hide_index=True,use_container_width=True)
 
 with st.expander("💼 持仓管理（只有实际买入后才标记）", expanded=False):
-    st.caption("B出现BUY只是程序买点信号，不代表你已经买入。只有你实际成交后，才在这里标记为持仓；标记后不受5日候选期限限制。")
+    st.caption("B出现BUY只是程序买点信号，不代表你已经买入。V1.8的“参考止损”已按原止损距离×1.50放宽；只有你实际成交后，才在这里标记为持仓。你仍可按真实成交情况手动调整持仓止损。")
     choices = master_df.loc[master_df["池状态"].isin(["TRACKING","HOLDING"]),"Ticker"].astype(str).tolist() if not master_df.empty else []
     if choices:
         pos_ticker = st.selectbox("股票", choices, key="pos_ticker")
@@ -2102,14 +2132,14 @@ if "v43b_result" in st.session_state:
     numeric_display_cols = [
         "当前价格","持仓成本","持仓盈亏%","1H RSI",
         "15m VWAP","15m EMA9","15m EMA20","15m RSI","15m量比",
-        "突破幅度%","参考入场","参考止损","TP1","TP2",
+        "突破幅度%","参考入场","基础止损","参考止损","TP1","TP2",
         "持仓最高价","最高浮盈%","动态保护价","利润回吐%"
     ]
     for _c in numeric_display_cols:
         if _c in out_display.columns:
             out_display[_c] = pd.to_numeric(out_display[_c], errors="coerce")
 
-    fmt={"A上方空间":"{:+.1%}","当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","持仓最高价":"{:.2f}","最高浮盈%":"{:.2f}","动态保护价":"{:.2f}","利润回吐%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
+    fmt={"A上方空间":"{:+.1%}","当前价格":"{:.2f}","持仓成本":"{:.2f}","持仓盈亏%":"{:.2f}","持仓最高价":"{:.2f}","最高浮盈%":"{:.2f}","动态保护价":"{:.2f}","利润回吐%":"{:.2f}","1H RSI":"{:.1f}","15m VWAP":"{:.2f}","15m EMA9":"{:.2f}","15m EMA20":"{:.2f}","15m RSI":"{:.1f}","15m量比":"{:.2f}","突破幅度%":"{:.2f}","参考入场":"{:.2f}","基础止损":"{:.2f}","参考止损":"{:.2f}","TP1":"{:.2f}","TP2":"{:.2f}"}
     display_out = chinese_sheet_columns(out_display)
     fmt_cn = {B_DISPLAY_CN_MAP.get(k,k):v for k,v in fmt.items()}
     st.dataframe(
@@ -2177,288 +2207,39 @@ if "v43b_result" in st.session_state:
         file_name=f"B_Intraday_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",use_container_width=True)
 
-
-
-
-
-
 st.divider()
-st.header("🧪 C历史回测 — 临时研究区")
-st.caption("不改LIVE、不写B_Log/B_MasterList。先用当前B规则重建历史BUY，再逐根15分钟K测试不同C退出。")
+with st.expander("📘 查看 B/C FINAL v1.8 LIVE 最终规则", expanded=False):
+    st.markdown(
+        """
+### B：盘中买点
+- 只跟踪 A FINAL 最新正式判定为“买”的候选，以及已经标记为真实持仓的股票。
+- 候选进入 `B_MasterList` 后最多跟踪约 5 个交易日；真实持仓不受这个期限限制。
+- 1H 确认方向与动量；15min 判断突破 / 回踩 / VWAP / EMA / MACD / RSI / 量比。
+- 正式 BUY 仍使用已经验证过的原有 B 条件；本版**不改变 BUY 门槛**。
+- `EARLY BUY` 只是临近买点，不等于正式 BUY。
 
-if master_df is not None and not master_df.empty:
-    research_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
-    if not research_pool.empty:
-        rc1, rc2, rc3 = st.columns(3)
-        with rc1:
-            c_bt_days = st.selectbox("C观察期", [3,5], index=0, key="c_bt_horizon")
-        with rc2:
-            default_end = datetime.now(MARKET_TZ).date()
-            default_start = default_end - pd.Timedelta(days=14)
-            c_bt_start = st.date_input("历史开始日期", value=default_start, key="c_bt_start")
-        with rc3:
-            c_bt_end = st.date_input("历史结束日期", value=default_end, key="c_bt_end")
+### V1.8 最终初始 Stop
+- B 原来的基础 Stop 结构保持不变。
+- 正式交给持仓管理的 `参考止损` = **原止损距离 × 1.50**。
+- 例如：参考入场 100，旧基础 Stop 99，则 V1.8 参考止损为 98.50。
+- 这是历史稳定性测试后唯一正式写入 LIVE 的 Stop 改动。
+- `基础止损` 仅保留作诊断；实盘默认看 `参考止损`。
 
-        ticker_list = sorted(research_pool["Ticker"].astype(str).str.upper().unique().tolist())
-        c_bt_tickers = st.multiselect("选择回测股票", ticker_list, default=ticker_list, key="c_bt_tickers")
+### C：真实持仓退出
+- 只有你实际买入并在“持仓管理”里标记后，C 才接管。
+- C0：最高浮盈 <4%，保持初始 Stop，不因普通 +1%/+2% 波动抬止损。
+- C1：最高浮盈 4%–6%，保护到接近保本（约买入价 -0.25%）。
+- C2：最高浮盈 6%–10%，至少保护 +2%，或保留最高浮盈的 40%，取更高者。
+- C3：最高浮盈 ≥10%，至少保护 +4%，或保留最高浮盈的 60%，取更高者。
+- TP1 为分批止盈提醒；TP2 为更强止盈提醒。
+- 趋势转弱首先作为警报，不因普通回撤自动清仓。
 
-        st.info("比较：Hold到期 / 原始Stop / 固定TP5%+Stop / 当前C v1.3分阶段。核心看两件事：是否少卖早、是否少回吐。")
-
-        if st.button("▶️ 运行 C 历史回测", type="primary", use_container_width=True):
-            if c_bt_start > c_bt_end:
-                st.error("开始日期不能晚于结束日期。")
-            elif not c_bt_tickers:
-                st.warning("至少选择一只股票。")
-            else:
-                pool = research_pool[research_pool["Ticker"].astype(str).str.upper().isin(c_bt_tickers)].copy()
-                with st.spinner("正在重建历史BUY并回测C..."):
-                    c_detail, c_summary, c_errors = run_c_historical_backtest(
-                        pool, c_bt_start, c_bt_end, horizon_days=int(c_bt_days)
-                    )
-                st.session_state["c_bt_detail"] = c_detail
-                st.session_state["c_bt_summary"] = c_summary
-                st.session_state["c_bt_errors"] = c_errors
-
-        if "c_bt_summary" in st.session_state:
-            errs = st.session_state.get("c_bt_errors", [])
-            if errs:
-                with st.expander("查看数据不足提示"):
-                    for e in errs:
-                        st.write("•", e)
-            render_c_backtest(
-                st.session_state.get("c_bt_detail", pd.DataFrame()),
-                st.session_state.get("c_bt_summary", pd.DataFrame())
-            )
-else:
-    st.info("Master为空，暂时没有股票可用于C历史回测。")
-
-
-st.divider()
-st.header("🧪 初始Stop敏感性 × C联合回测")
-st.caption(
-    "同一批历史B BUY、同一入场价格、同一未来观察窗；只改变初始Stop宽度，"
-    "然后全部接入同一个C v1.3分阶段保护。LIVE逻辑不会被这里修改。"
-)
-
-if master_df is not None and not master_df.empty:
-    stop_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
-    if not stop_pool.empty:
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            stop_bt_days = st.selectbox("联合回测观察期", [3,5], index=1, key="stop_bt_horizon")
-        with sc2:
-            stop_default_end = datetime.now(MARKET_TZ).date()
-            stop_default_start = stop_default_end - pd.Timedelta(days=21)
-            stop_bt_start = st.date_input("Stop回测开始日期", value=stop_default_start, key="stop_bt_start")
-        with sc3:
-            stop_bt_end = st.date_input("Stop回测结束日期", value=stop_default_end, key="stop_bt_end")
-
-        stop_tickers_all = sorted(stop_pool["Ticker"].astype(str).str.upper().unique().tolist())
-        stop_bt_tickers = st.multiselect(
-            "选择Stop联合回测股票",
-            stop_tickers_all,
-            default=stop_tickers_all,
-            key="stop_bt_tickers"
-        )
-
-        st.info(
-            "测试：当前Stop / 1.25× / 1.50× / 2.00×止损距离 / ATR1.5 / ATR2.0。"
-            "每一种都接同一个C分阶段保护。重点看：收益、胜率、≥5%、STOP率、过早退出机会成本、MAE。"
-        )
-
-        if st.button("▶️ 运行 Stop × C 联合回测", type="primary", use_container_width=True):
-            if stop_bt_start > stop_bt_end:
-                st.error("开始日期不能晚于结束日期。")
-            elif not stop_bt_tickers:
-                st.warning("至少选择一只股票。")
-            else:
-                pool = stop_pool[
-                    stop_pool["Ticker"].astype(str).str.upper().isin(stop_bt_tickers)
-                ].copy()
-                with st.spinner("正在重建历史BUY，并测试不同初始Stop × 同一C退出..."):
-                    s_detail, s_summary, s_errors = run_stop_sensitivity_backtest(
-                        pool,
-                        stop_bt_start,
-                        stop_bt_end,
-                        horizon_days=int(stop_bt_days)
-                    )
-                st.session_state["stop_bt_detail"] = s_detail
-                st.session_state["stop_bt_summary"] = s_summary
-                st.session_state["stop_bt_errors"] = s_errors
-
-        if "stop_bt_summary" in st.session_state:
-            errs = st.session_state.get("stop_bt_errors", [])
-            if errs:
-                with st.expander("查看Stop回测数据不足提示"):
-                    for e in errs:
-                        st.write("•", e)
-            render_stop_sensitivity(
-                st.session_state.get("stop_bt_detail", pd.DataFrame()),
-                st.session_state.get("stop_bt_summary", pd.DataFrame())
-            )
-else:
-    st.info("Master为空，暂时没有股票可用于Stop × C联合回测。")
-
-
-st.divider()
-st.header("🔬 A历史股票池 × Stop稳定性最终验证")
-st.caption(
-    "这一轮不再只用当前B_MasterList里的十几只股票。程序自动从Google Sheet的 "
-    "`A_AllScannedHistory` 读取历史扫描过的股票并去重，再用当前同一套B规则重建历史BUY。"
-    "LIVE B/C、Google Sheet持仓状态和1.50×参数都不会被这里修改。"
-)
-
-hc1, hc2, hc3 = st.columns(3)
-with hc1:
-    stable_days = st.selectbox(
-        "稳定性验证观察期",
-        [3,5],
-        index=1,
-        key="stable_horizon_v17"
-    )
-with hc2:
-    stable_end = datetime.now(MARKET_TZ).date()
-    stable_start_default = stable_end - pd.Timedelta(days=30)
-    stable_start = st.date_input(
-        "验证开始日期",
-        value=stable_start_default,
-        key="stable_start_v17"
-    )
-with hc3:
-    stable_end_ui = st.date_input(
-        "验证结束日期",
-        value=stable_end,
-        key="stable_end_v17"
+### 运行
+- App 打开且处于正常交易时段时，每 15 分钟检查一次。
+- Streamlit Cloud 在无人访问时不保证持续后台运行。
+- `B_Log` 记录每轮检查；`B_MasterList` 保存候选、持仓和 C 状态。
+        """
     )
 
-history_pool, history_pool_err = build_a_history_ticker_pool(
-    stable_start,
-    stable_end_ui
-)
-
-if history_pool_err:
-    st.warning(history_pool_err)
-    st.caption("如果A历史库暂时不可读，可以继续使用上面的B_MasterList回测，不影响LIVE。")
-else:
-    pool_n = len(history_pool)
-    pc1, pc2 = st.columns(2)
-    pc1.metric("A历史股票池去重后", pool_n)
-    pc2.metric("当前B Master股票数", len(master_df) if master_df is not None else 0)
-
-    if pool_n > 0:
-        ticker_list = history_pool["Ticker"].tolist()
-
-        max_default = min(len(ticker_list), 100)
-        max_test = st.slider(
-            "本轮最多测试多少只股票",
-            min_value=min(20, max(1, len(ticker_list))),
-            max_value=max(20, min(150, len(ticker_list))),
-            value=max_default,
-            step=10 if len(ticker_list) >= 20 else 1,
-            key="stable_pool_limit_v17"
-        ) if len(ticker_list) >= 20 else len(ticker_list)
-
-        selected_pool = history_pool.head(int(max_test)).copy()
-
-        with st.expander("查看本轮A历史股票池"):
-            st.write("、".join(selected_pool["Ticker"].astype(str).tolist()))
-
-        st.info(
-            "固定比较：当前Stop / 1.50×止损距离 / ATR2.0；其它Stop方案仍作为背景。"
-            "结果继续自动拆成前半段 / 后半段。目标不是硬凑100，而是尽可能扩大有效历史BUY样本。"
-        )
-
-        if st.button(
-            "▶️ 运行 A历史股票池 Stop稳定性验证",
-            type="primary",
-            use_container_width=True
-        ):
-            if stable_start > stable_end_ui:
-                st.error("开始日期不能晚于结束日期。")
-            else:
-                with st.spinner(
-                    f"正在用A历史池 {len(selected_pool)} 只股票重建历史BUY并验证Stop稳定性..."
-                ):
-                    (
-                        v_detail,
-                        v_summary,
-                        v_early,
-                        v_late,
-                        v_compare,
-                        v_errors
-                    ) = run_stop_stability_validation(
-                        selected_pool,
-                        stable_start,
-                        stable_end_ui,
-                        horizon_days=int(stable_days)
-                    )
-
-                st.session_state["stable_detail_v17"] = v_detail
-                st.session_state["stable_summary_v17"] = v_summary
-                st.session_state["stable_early_v17"] = v_early
-                st.session_state["stable_late_v17"] = v_late
-                st.session_state["stable_compare_v17"] = v_compare
-                st.session_state["stable_errors_v17"] = v_errors
-
-        if "stable_summary_v17" in st.session_state:
-            errs = st.session_state.get("stable_errors_v17", [])
-            if errs:
-                with st.expander("查看历史分钟数据提示"):
-                    st.caption(
-                        f"共有 {len(errs)} 条提示。多数情况是Yahoo对应股票/日期没有完整15m或60m数据。"
-                    )
-                    for e in errs[:50]:
-                        st.write("•", e)
-                    if len(errs) > 50:
-                        st.write(f"……另有 {len(errs)-50} 条未展开")
-
-            render_stop_stability(
-                st.session_state.get("stable_detail_v17", pd.DataFrame()),
-                st.session_state.get("stable_summary_v17", pd.DataFrame()),
-                st.session_state.get("stable_early_v17", pd.DataFrame()),
-                st.session_state.get("stable_late_v17", pd.DataFrame()),
-                st.session_state.get("stable_compare_v17", pd.DataFrame())
-            )
-    else:
-        st.info("A历史库当前没有可用于验证的股票。")
-
-
-st.divider()
-with st.expander("📘 查看 B/C FINAL v1.7 规则", expanded=False):
-    st.markdown("""
-**A → B/C**
-- B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
-- A 的 `空间等级 / 空间优先级` 只决定监控顺序，不直接改变 B 的 BUY 条件。
-- `B_MasterList` 继续累计候选；未成交候选最多跟踪 5 个工作日，再次被 A 选中会重新计时。
-- 真实持仓不受 5 日限制。
-
-**B — 什么时候买**
-- 页面打开期间，美股正常交易时段约每 **15分钟** 自动检查一次。
-- 1H：EMA20/EMA50 + MACD + RSI 判断大方向。
-- 15min：VWAP、EMA9/EMA20、MACD、RSI、成交量、突破/回踩判断买点。
-- 突破 BUY：1H强 + 15min真实突破 + MACD为正 + RSI 50–70 + 量比≥1.50 + 不追高。
-- 回踩 BUY：1H强/中等 + 15min健康回踩 + 动量改善。
-- 到 BUY 条件时立即在页面顶部提醒；不等待两小时汇总。
-- B 不重新做基本面筛选，也不重新做第二套选股分数。
-
-**C — 买后怎么管**
-- 只有你真实成交后，才在“持仓管理”里标记为已买入；之后每15分钟继续检查。
-- **C0 初始保护：最高浮盈 <4%** → 仍使用原始止损，不因为+1%/+2%的正常波动过早退出。
-- **C1 保本区：最高浮盈 4–6%** → 动态保护提高到约买入价 -0.25%。
-- **C2 利润保护：最高浮盈 6–10%** → 至少保护 +2%，或锁定约40%的峰值利润，取更高者。
-- **C3 强趋势保护：最高浮盈 ≥10%** → 至少保护 +4%，或锁定约60%的峰值利润，取更高者。
-- 跌破动态保护价 → `PROFIT PROTECT`；跌破原始硬止损 → `STOP LOSS`。
-- 到 TP1 → `TAKE PROFIT TP1`（提示可分批，不强制全部卖出）。
-- 到 TP2 → `TAKE PROFIT TP2`。
-- 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
-- 当前版本只发决策/提醒，不会自动替你下单。
-- v1.7底部的C历史回测、Stop×C联合回测、A历史股票池稳定性验证都只做研究，不会修改LIVE状态。
-
-**Google Sheet**
-- A来源：`A_Candidates`
-- B/C累计池：`B_MasterList`
-- 每轮检查日志：`B_Log`
-""")
-
-st.caption("B/C FINAL v1.3：B买点逻辑保持不变；C升级为分阶段利润保护，避免1–2%小波动就过早退出。研究阶段的REPLAY、BUY Quality、Profit Giveback实验页面已从日常界面移除。")
+st.success("✅ B/C FINAL v1.8 LIVE 已定型：B买点逻辑不变，初始Stop正式采用1.50×距离，C分阶段保护保持不变。")
 
