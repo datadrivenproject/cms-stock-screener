@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FIX3 + VP1 + Pivot/Room — Research Backtest",
+    page_title="CMS Stock Screener A5.2R FINAL v1 — 盘后选股",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 + Pivot/Room — Research Backtest")
+st.title("📈 CMS Stock Screener A5.2R FINAL v1 — 盘后选股")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -1481,6 +1481,30 @@ def quality_gate(row):
     return "✅ 通过", row.get("结构依据", "结构位置适合Early候选")
 
 # =========================================================
+# FINAL ROOM QUALITY — PRIORITY LABEL ONLY
+# Does NOT change FIX3 买/不买 decision.
+# =========================================================
+def calc_room_quality(row):
+    """Classify upside room for B/C monitoring priority without changing A5 decision."""
+    decision = str(row.get("A5决策", ""))
+    position = str(row.get("位置判断", ""))
+    room = safe_num(row.get("上方空间", np.nan))
+
+    if position == "压力过近":
+        return "⛔ 压力过近", 0
+    if position == "上方开放" or pd.isna(room):
+        return "🌤 上方开放", 2
+    if room >= 0.08:
+        return "🔥 强空间 ≥8%", 4
+    if room >= 0.05:
+        return "✅ 良好空间 5–8%", 3
+    if room >= 0.02:
+        return "🟡 一般空间 2–5%", 2
+    if room >= 0:
+        return "⚠️ 空间偏小 <2%", 1
+    return "⚪ 已越过参考压力", 1
+
+# =========================================================
 # PER-STOCK ANALYSIS
 # =========================================================
 def analyze_daily_candidate(ticker, df, benchmarks):
@@ -1592,8 +1616,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
         row.update(calc_a5_resonance(df, row))
-        # VP1 is diagnostic only; FIX3 decision remains untouched.
-        row.update(calc_volume_price_phase(df))
+        row["空间等级"], row["空间优先级"] = calc_room_quality(row)
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         row["Confidence"] = final_confidence(row)
         return row
@@ -1606,6 +1629,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 DAILY_WORKSHEET = "A_Candidates"
 
 A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段':'量价阶段', 'VP分':'量价分', 'VP说明':'量价说明', 'VP量比20':'量比20', 'VP缩量比':'缩量比', 'VP前期缩量':'前期缩量', 'VP放量启动':'放量启动', 'VP派发风险':'派发风险'}
+A_SHEET_CN_MAP.update({'空间等级':'空间等级', '空间优先级':'空间优先级'})
 
 def _cell(v):
     if v is None:
@@ -1644,9 +1668,11 @@ def get_daily_worksheet():
 
 
 A_PRIMARY_COLS = [
-    "Ticker", "Company", "Rank", "次日决策", "Early V2 Score", "Confidence",
+    "Ticker", "Company", "Rank", "A5决策", "空间等级", "空间优先级",
+    "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
-    "VP阶段", "VP分", "VP量比20", "VP说明",
+    "共振数", "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
+    "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
     "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
     "Structure Score", "Trend & Momentum Score", "Accumulation Score",
     "Leadership Score", "Catalyst Score", "Catalyst Label",
@@ -2008,8 +2034,7 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
         }
 
         row.update(calc_a5_resonance(df, row))
-        # Historical VP1 uses the same as-of-date OHLCV only; no future leakage.
-        row.update(calc_volume_price_phase(df))
+        row["空间等级"], row["空间优先级"] = calc_room_quality(row)
 
         hard_ok, hard_reason = passes_v43a_hard_filter(row)
         row['Hard Filter'] = '通过' if hard_ok else '未通过'
@@ -2983,103 +3008,38 @@ def render_historical_a_replay(bt):
         st.warning('历史回放没有得到有效样本。')
         return
 
-    # FIX3: put the most important A4 vs A5.2R benchmark at the very top.
-    st.header('🎯 A5.2R FIX3 — 核心回测结果')
-    st.caption('先看 A4 vs A5.2R 的同窗口结果；下面再看 Hard Filter 和排名诊断。选股逻辑未改变，只调整显示顺序。')
+    st.header('🎯 A5.2R FINAL v1 — 精简历史验证')
+    st.caption('FINAL 页面只保留核心 Benchmark，不再显示 VP1、Pivot/Room 实验表、旧 Hard Filter A/B 测试和参数研究结果。')
     render_a4_a5_resonance_comparison(bt)
-    st.divider()
-    render_vp1_backtest(bt)
-    st.divider()
-    render_pivot_room_backtest(bt)
-    st.divider()
-
-    # Historical Hard Filter comparison remains available below for diagnostics.
-    render_3way_hardfilter_comparison(bt)
-    st.divider()
-    render_ranking_diagnostics(bt)
-    st.divider()
 
     d = bt.copy()
-    for c in ['Replay Universe Rank','Replay Eligible Rank','5D Max Gain','5D Close Return','5D Max Drawdown']:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors='coerce')
-    g = d['5D Max Gain']
+    if '5D Max Gain' in d.columns:
+        d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
+    if 'Replay Date' in d.columns:
+        dates_n = d['Replay Date'].nunique()
+    else:
+        dates_n = 0
 
-    dates_n = d['Replay Date'].nunique()
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric('回放交易日', int(dates_n))
-    c2.metric('股票-日期样本', len(d))
-    c3.metric('全池 5日≥3%', f'{(g>=.03).mean():.1%}')
-    c4.metric('全池 5日≥5%', f'{(g>=.05).mean():.1%}')
-    c5.metric('全池 5日≥8%', f'{(g>=.08).mean():.1%}')
-
-    st.subheader('📊 全扫描池 vs Top30 / Top20 / Top10')
-    rows = []
-    scopes = [
-        ('全部扫描池', d),
-        ('Hard Filter通过', d[d['Hard Filter']=='通过']),
-        ('A Top30', d[d['Replay Eligible Rank']<=30]),
-        ('A Top20', d[d['Replay Eligible Rank']<=20]),
-        ('A Top10', d[d['Replay Eligible Rank']<=10]),
-    ]
-    for label, x in scopes:
-        gg = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
-        rows.append({
-            '范围': label, '样本': len(gg),
-            '≥3%命中率': (gg>=.03).mean() if len(gg) else np.nan,
-            '≥5%命中率': (gg>=.05).mean() if len(gg) else np.nan,
-            '≥8%命中率': (gg>=.08).mean() if len(gg) else np.nan,
-            '平均5日最大涨幅': gg.mean() if len(gg) else np.nan,
-            '中位数5日最大涨幅': gg.median() if len(gg) else np.nan,
-        })
-    summary = pd.DataFrame(rows)
-    st.dataframe(summary.style.format({
-        '≥3%命中率':'{:.1%}','≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}',
-        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    strong = d[d['5D Max Gain'] >= .05].copy()
-    if not strong.empty:
-        top10_capture = (strong['Replay Eligible Rank'] <= 10).fillna(False).mean()
-        top20_capture = (strong['Replay Eligible Rank'] <= 20).fillna(False).mean()
-        hf_capture = strong['Replay Eligible Rank'].notna().mean()
-        a,b,c,dcol = st.columns(4)
-        a.metric('≥5%强股总数', len(strong))
-        b.metric('通过Hard Filter', f'{hf_capture:.1%}')
-        c.metric('进入Top20', f'{top20_capture:.1%}')
-        dcol.metric('进入Top10', f'{top10_capture:.1%}')
-
-    render_hard_filter_diagnostics(d)
-
-    st.subheader('🚀 漏掉的强股：后来5日≥5%，但没进A Top10')
-    missed = d[(d['5D Max Gain']>=.05) & (~d['Replay Top10'])].copy()
-    missed = missed.sort_values(['5D Max Gain','Replay Universe Rank'], ascending=[False,True])
-    cols = ['Replay Date','Ticker','Sector','Replay Universe Rank','Replay Eligible Rank','Hard Filter','Hard Filter Reason',
-            'Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
-            'MA20 Slope 5D','RS Acceleration','5D Max Gain','5D Close Return','5D Max Drawdown']
-    show = missed[[c for c in cols if c in missed.columns]].head(100)
-    fmt = {'MA20 Slope 5D':'{:.2%}','5D Max Gain':'{:+.2%}','5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'}
-    st.dataframe(show.style.format({k:v for k,v in fmt.items() if k in show.columns}, na_rep=''), hide_index=True, use_container_width=True)
-
-    st.subheader('🔎 强股 vs 弱股：A当天特征')
-    tmp = d.copy()
-    tmp['组别'] = np.where(tmp['5D Max Gain']>=.05, '强股 ≥5%', np.where(tmp['5D Max Gain']<.02, '弱股 <2%', '普通 2–5%'))
-    features = ['Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
-                'MA20 Slope 5D','Volume Build Ratio','Up/Down Volume Ratio','Stock vs SPY 20D','Stock vs Sector 20D']
-    available = [c for c in features if c in tmp.columns]
-    grp = tmp.groupby('组别')[available].mean(numeric_only=True).reset_index()
-    st.dataframe(grp.style.format({c:'{:.3f}' for c in available}, na_rep=''), hide_index=True, use_container_width=True)
+    fix3 = d[d.get('A5决策', pd.Series(index=d.index, dtype=object)).eq('买')].copy() if 'A5决策' in d.columns else pd.DataFrame()
+    if not fix3.empty:
+        g = pd.to_numeric(fix3['5D Max Gain'], errors='coerce').dropna()
+        c1,c2,c3,c4,c5 = st.columns(5)
+        c1.metric('回放交易日', int(dates_n))
+        c2.metric('FIX3样本', int(len(g)))
+        c3.metric('5D ≥5%', f'{(g>=.05).mean():.1%}' if len(g) else '—')
+        c4.metric('5D ≥8%', f'{(g>=.08).mean():.1%}' if len(g) else '—')
+        c5.metric('弱股 <2%', f'{(g<.02).mean():.1%}' if len(g) else '—')
 
     csv = d.to_csv(index=False).encode('utf-8-sig')
-    st.download_button('💾 下载历史A回放明细', csv,
-                       file_name=f"V43A_Historical_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
+    st.download_button('💾 下载 FINAL 历史回放明细', csv,
+                       file_name=f"A52R_FINAL_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
                        mime='text/csv', use_container_width=True)
 
 # =========================================================
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A5.2R FIX3 + VP1")
+    st.header("A5.2R FINAL v1")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -3090,11 +3050,11 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("V4.3A.4 正式规则：仅放宽 MA200；MA20、MA50、MA20斜率≥0.2%、Structure 均保留。")
+    st.success("FINAL v1：FIX3 核心规则冻结；Room 仅做空间质量标签，不改变买/不买。")
 
 st.info(
-    "A5.2R FIX3：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力空间 → 买/不买。VP1仅做量价阶段诊断，不改变FIX3决定。"
-    "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
+    "A5.2R FINAL v1：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力 → 买/不买。"
+    "空间等级只用于给 B/C 提供监控优先级参考，不新增硬过滤；盘中真正买卖由 B/C 负责。"
 )
 
 scan_clicked = st.button("🚀 运行 V4.3A 盘后扫描", type="primary", use_container_width=True)
@@ -3159,8 +3119,7 @@ def render_results(top_df, all_df):
         "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
-        # VP1 测试层：只显示，不改变 FIX3 决策
-        "VP阶段", "VP分", "VP量比20", "VP缩量比", "VP说明",
+        "空间等级", "空间优先级",
         "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
         # 关键数值，便于复核
         "Early V2 Score", "Structure Score", "Trend & Momentum Score",
@@ -3179,8 +3138,6 @@ def render_results(top_df, all_df):
         "RSI14": "{:.1f}",
         "Volume Build Ratio": "{:.2f}",
         "Up/Down Volume Ratio": "{:.2f}",
-        "VP量比20": "{:.2f}",
-        "VP缩量比": "{:.2f}",
         "上方空间": "{:+.1%}",
         "距支撑区": "{:.1%}",
         "Stock vs SPY 20D": "{:+.1%}",
@@ -3195,9 +3152,9 @@ def render_results(top_df, all_df):
         "Earnings Growth": "{:.1%}",
     }
 
-    st.subheader("🎯 A5.2R — 次日重点候选（不强制凑10只）")
+    st.subheader("🎯 A5.2R FINAL v1 — 次日重点候选（不强制凑10只）")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "VP阶段":"量价阶段", "VP分":"量价分", "VP量比20":"量比20", "VP缩量比":"缩量比", "VP说明":"量价说明", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "空间等级":"空间等级", "空间优先级":"空间优先级", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -3226,7 +3183,7 @@ def render_results(top_df, all_df):
 
     st.caption(
         "注意：这里的‘一级/二级重点候选’表示第二天重点监控，不代表开盘立即买入。"
-        "真正买点将在 V4.3B 用1H和15min确认；买入后也由B继续管理。"
+        "真正买点由 B/C 用1H和15min确认；买入后继续由同一个 B/C App 管理退出。"
     )
 
     c1, c2 = st.columns(2)
@@ -3235,7 +3192,7 @@ def render_results(top_df, all_df):
         st.download_button(
             "💾 下载 V4.3A Top 候选",
             csv,
-            file_name=f"V43A_Daily_Top_{len(top_df)}_{datetime.now().strftime('%Y-%m-%d')}.csv",
+            file_name=f"A52R_FINAL_Top_{len(top_df)}_{datetime.now().strftime('%Y-%m-%d')}.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -3278,9 +3235,9 @@ else:
     st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
 
 st.divider()
-st.header("🔥 A历史强股回测 — 过去行情直接Replay")
+st.header("🧪 FINAL 核心历史验证")
 st.caption(
-    "不用等未来5天。程序会回到过去每个交易日，用当时已有的日K重新扫描整个股票池，再查看随后1/3/5个交易日的真实表现。"
+    "用于定期复核 FINAL 是否继续有效。研究阶段的 VP1、Pivot/Room 和旧参数对照表已从正式页面移除。"
 )
 st.info(
     "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
@@ -3291,9 +3248,9 @@ r1, r2 = st.columns([1,2])
 with r1:
     replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("建议直接跑60日。结果顶部先显示 FIX3 Benchmark，然后显示 VP1；接着显示 Pivot/Room 的空间分组、Room阈值、当前压力过近否决和Pivot强度；最后保留Hard Filter诊断。")
+    st.caption("建议跑60日。FINAL 只显示核心 A4 vs A5.2R Benchmark 和精简指标。")
 
-if st.button("🧪 运行60日 A5.2R + VP1 + Pivot/Room 回测", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A5.2R FINAL 核心验证", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
