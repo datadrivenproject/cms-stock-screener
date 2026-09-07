@@ -17,8 +17,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
-st.set_page_config(page_title="CMS B/C FINAL v1.5 — 初始Stop敏感性 × C联合回测", page_icon="🎯", layout="wide")
-st.title("🎯 CMS Stock Screener B/C FINAL v1.5 — 初始Stop敏感性 × C联合回测")
+st.set_page_config(page_title="CMS B/C FINAL v1.6 — Stop稳定性最终验证", page_icon="🎯", layout="wide")
+st.title("🎯 CMS Stock Screener B/C FINAL v1.6 — Stop稳定性最终验证")
 st.caption("B只负责A正式“买”候选的盘中择时；C负责真实持仓后的止损/止盈/HOLD。A负责选什么，B/C负责什么时候买、买后什么时候处理。")
 
 A_WORKSHEET = "A_Candidates"
@@ -1360,6 +1360,261 @@ def run_stop_sensitivity_backtest(master_rows, start_date, end_date, horizon_day
     return detail, summary, errors
 
 
+
+def _summarize_stop_slice(detail_slice):
+    """Same metrics as the main Stop sensitivity table, for one time slice."""
+    if detail_slice is None or detail_slice.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for mode, g in detail_slice.groupby("Stop方案", sort=False):
+        r = pd.to_numeric(g["最终收益%"], errors="coerce")
+        peak = pd.to_numeric(g["路径最高浮盈%"], errors="coerce")
+        gb = pd.to_numeric(g["利润回吐%"], errors="coerce")
+        cap = pd.to_numeric(g["峰值保留率%"], errors="coerce")
+        opp = pd.to_numeric(g["过早退出机会成本%"], errors="coerce")
+        mae = pd.to_numeric(g["路径MAE%"], errors="coerce")
+        stopdist = pd.to_numeric(g["止损距离%"], errors="coerce")
+
+        rows.append({
+            "Stop方案":mode,
+            "样本":len(g),
+            "平均止损距离%":stopdist.mean(),
+            "平均最终收益%":r.mean(),
+            "中位最终收益%":r.median(),
+            "胜率>0":(r>0).mean(),
+            "≥3%":(r>=3).mean(),
+            "≥5%":(r>=5).mean(),
+            "平均路径最高浮盈%":peak.mean(),
+            "平均路径MAE%":mae.mean(),
+            "平均利润回吐%":gb.mean(),
+            "平均峰值保留率%":cap[cap.notna()].mean(),
+            "平均过早退出机会成本%":opp.mean(),
+            "原始STOP退出率":g["退出原因"].astype(str).eq("原始STOP").mean(),
+            "C保护退出率":g["退出原因"].astype(str).str.contains("C分阶段PROFIT PROTECT", regex=False).mean(),
+        })
+    return pd.DataFrame(rows)
+
+
+def run_stop_stability_validation(master_rows, start_date, end_date, horizon_days=5):
+    """
+    Final stability validation:
+    1) run the same stop sensitivity test on the full window;
+    2) split BUY entries chronologically into earlier/later halves;
+    3) summarize each half separately;
+    4) compare 1.50x vs current Stop and ATR2.0 without changing LIVE.
+    """
+    detail, summary, errors = run_stop_sensitivity_backtest(
+        master_rows, start_date, end_date, horizon_days=horizon_days
+    )
+    if detail is None or detail.empty:
+        return detail, summary, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), errors
+
+    # Unique BUY events, chronologically split by BUY timestamp.
+    events = (
+        detail[["Ticker","BUY时间"]]
+        .drop_duplicates()
+        .sort_values("BUY时间")
+        .reset_index(drop=True)
+    )
+
+    if len(events) < 2:
+        return detail, summary, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), errors
+
+    mid = len(events) // 2
+    early_events = set(zip(events.iloc[:mid]["Ticker"], events.iloc[:mid]["BUY时间"]))
+    late_events = set(zip(events.iloc[mid:]["Ticker"], events.iloc[mid:]["BUY时间"]))
+
+    early_mask = detail.apply(lambda r: (r["Ticker"], r["BUY时间"]) in early_events, axis=1)
+    late_mask = detail.apply(lambda r: (r["Ticker"], r["BUY时间"]) in late_events, axis=1)
+
+    early_summary = _summarize_stop_slice(detail[early_mask].copy())
+    late_summary = _summarize_stop_slice(detail[late_mask].copy())
+
+    # Direct decision table for the three most relevant contenders.
+    contenders = ["当前Stop", "1.50x止损距离", "ATR2.0"]
+    checks = []
+
+    def _row(df, mode):
+        if df is None or df.empty:
+            return None
+        x = df[df["Stop方案"].eq(mode)]
+        return None if x.empty else x.iloc[0]
+
+    for mode in contenders:
+        full = _row(summary, mode)
+        early = _row(early_summary, mode)
+        late = _row(late_summary, mode)
+        if full is None:
+            continue
+        checks.append({
+            "Stop方案":mode,
+            "全样本数":int(full["样本"]),
+            "全窗平均收益%":full["平均最终收益%"],
+            "前半平均收益%":early["平均最终收益%"] if early is not None else np.nan,
+            "后半平均收益%":late["平均最终收益%"] if late is not None else np.nan,
+            "全窗胜率":full["胜率>0"],
+            "前半胜率":early["胜率>0"] if early is not None else np.nan,
+            "后半胜率":late["胜率>0"] if late is not None else np.nan,
+            "全窗≥5%":full["≥5%"],
+            "前半≥5%":early["≥5%"] if early is not None else np.nan,
+            "后半≥5%":late["≥5%"] if late is not None else np.nan,
+            "全窗过早退出成本%":full["平均过早退出机会成本%"],
+            "前半过早退出成本%":early["平均过早退出机会成本%"] if early is not None else np.nan,
+            "后半过早退出成本%":late["平均过早退出机会成本%"] if late is not None else np.nan,
+            "全窗MAE%":full["平均路径MAE%"],
+            "前半MAE%":early["平均路径MAE%"] if early is not None else np.nan,
+            "后半MAE%":late["平均路径MAE%"] if late is not None else np.nan,
+        })
+
+    compare = pd.DataFrame(checks)
+    return detail, summary, early_summary, late_summary, compare, errors
+
+
+def render_stop_stability(detail, summary, early_summary, late_summary, compare):
+    st.subheader("🧪 Stop稳定性最终验证")
+
+    if summary is None or summary.empty:
+        st.info("没有足够样本生成稳定性验证。")
+        return
+
+    total_buy_events = 0
+    if detail is not None and not detail.empty:
+        total_buy_events = len(detail[["Ticker","BUY时间"]].drop_duplicates())
+
+    c1,c2,c3 = st.columns(3)
+    c1.metric("历史BUY事件", total_buy_events)
+    c2.metric("目标样本", "≥100")
+    c3.metric("当前状态", "可判断" if total_buy_events >= 100 else "样本仍偏少")
+
+    st.markdown("#### ① 全窗口 Stop 对比")
+    st.dataframe(
+        summary.style.format({
+            "平均止损距离%":"{:.2f}",
+            "平均最终收益%":"{:+.2f}",
+            "中位最终收益%":"{:+.2f}",
+            "胜率>0":"{:.1%}",
+            "≥3%":"{:.1%}",
+            "≥5%":"{:.1%}",
+            "平均路径最高浮盈%":"{:+.2f}",
+            "平均路径MAE%":"{:+.2f}",
+            "平均利润回吐%":"{:.2f}",
+            "平均峰值保留率%":"{:.1f}",
+            "平均过早退出机会成本%":"{:.2f}",
+            "原始STOP退出率":"{:.1%}",
+            "C保护退出率":"{:.1%}",
+        }, na_rep=""),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    st.markdown("#### ② 前半段 vs 后半段")
+    left, right = st.columns(2)
+    with left:
+        st.caption("前半段 BUY")
+        if early_summary is not None and not early_summary.empty:
+            st.dataframe(
+                early_summary.style.format({
+                    "平均最终收益%":"{:+.2f}",
+                    "胜率>0":"{:.1%}",
+                    "≥5%":"{:.1%}",
+                    "平均过早退出机会成本%":"{:.2f}",
+                    "平均路径MAE%":"{:+.2f}",
+                    "原始STOP退出率":"{:.1%}",
+                }, na_rep=""),
+                hide_index=True,
+                use_container_width=True
+            )
+    with right:
+        st.caption("后半段 BUY")
+        if late_summary is not None and not late_summary.empty:
+            st.dataframe(
+                late_summary.style.format({
+                    "平均最终收益%":"{:+.2f}",
+                    "胜率>0":"{:.1%}",
+                    "≥5%":"{:.1%}",
+                    "平均过早退出机会成本%":"{:.2f}",
+                    "平均路径MAE%":"{:+.2f}",
+                    "原始STOP退出率":"{:.1%}",
+                }, na_rep=""),
+                hide_index=True,
+                use_container_width=True
+            )
+
+    st.markdown("#### ③ 三个最终候选：当前Stop vs 1.50× vs ATR2.0")
+    if compare is not None and not compare.empty:
+        st.dataframe(
+            compare.style.format({
+                "全窗平均收益%":"{:+.2f}",
+                "前半平均收益%":"{:+.2f}",
+                "后半平均收益%":"{:+.2f}",
+                "全窗胜率":"{:.1%}",
+                "前半胜率":"{:.1%}",
+                "后半胜率":"{:.1%}",
+                "全窗≥5%":"{:.1%}",
+                "前半≥5%":"{:.1%}",
+                "后半≥5%":"{:.1%}",
+                "全窗过早退出成本%":"{:.2f}",
+                "前半过早退出成本%":"{:.2f}",
+                "后半过早退出成本%":"{:.2f}",
+                "全窗MAE%":"{:+.2f}",
+                "前半MAE%":"{:+.2f}",
+                "后半MAE%":"{:+.2f}",
+            }, na_rep=""),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        current = compare[compare["Stop方案"].eq("当前Stop")]
+        x15 = compare[compare["Stop方案"].eq("1.50x止损距离")]
+        atr2 = compare[compare["Stop方案"].eq("ATR2.0")]
+
+        if not current.empty and not x15.empty:
+            a = current.iloc[0]
+            b = x15.iloc[0]
+
+            conds = {
+                "全窗收益更高": b["全窗平均收益%"] > a["全窗平均收益%"],
+                "前半收益不差": b["前半平均收益%"] >= a["前半平均收益%"],
+                "后半收益不差": b["后半平均收益%"] >= a["后半平均收益%"],
+                "全窗胜率更高": b["全窗胜率"] > a["全窗胜率"],
+                "全窗≥5%更高": b["全窗≥5%"] > a["全窗≥5%"],
+                "过早退出成本更低": b["全窗过早退出成本%"] < a["全窗过早退出成本%"],
+                "MAE未恶化": b["全窗MAE%"] >= a["全窗MAE%"] - 0.25,
+            }
+            passed = sum(bool(v) for v in conds.values())
+            st.markdown("#### ④ 预先固定的 GO / NO-GO")
+            check_df = pd.DataFrame({
+                "判定条件": list(conds.keys()),
+                "是否通过": ["✅" if v else "❌" for v in conds.values()]
+            })
+            st.dataframe(check_df, hide_index=True, use_container_width=True)
+
+            if total_buy_events >= 100 and passed >= 6:
+                st.success(
+                    f"GO：1.50×通过 {passed}/7 项，而且样本≥100。"
+                    "可以进入正式LIVE候选。"
+                )
+            elif total_buy_events >= 100:
+                st.warning(
+                    f"NO-GO：样本够，但1.50×只通过 {passed}/7 项。"
+                    "不建议正式替换当前Stop。"
+                )
+            else:
+                st.info(
+                    f"当前1.50×通过 {passed}/7 项，但历史BUY只有 {total_buy_events} 个，"
+                    "先把时间窗扩大，尽量做到≥100个BUY事件再定版。"
+                )
+
+    csv = detail.to_csv(index=False).encode("utf-8-sig") if detail is not None else b""
+    st.download_button(
+        "💾 下载稳定性验证逐笔明细",
+        csv,
+        file_name=f"Stop_Stability_{datetime.now().strftime('%Y-%m-%d')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
 def render_stop_sensitivity(detail, summary):
     st.subheader("🧭 初始Stop敏感性 × C联合回测")
 
@@ -1502,7 +1757,7 @@ def render_c_backtest(detail, summary):
 
 
 with st.sidebar:
-    st.header("B/C FINAL v1.5")
+    st.header("B/C FINAL v1.6")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
 
     auto_monitor = st.toggle(
@@ -1964,9 +2219,112 @@ else:
     st.info("Master为空，暂时没有股票可用于Stop × C联合回测。")
 
 
+st.divider()
+st.header("🔬 Stop稳定性最终验证 — 最后一轮")
+st.caption(
+    "这一步不再调参数，只验证稳定性。固定比较：当前Stop、1.50×止损距离、ATR2.0，"
+    "同时保留其它Stop方案作为背景。结果自动拆成前半段 / 后半段，避免只看单一时间窗。"
+)
+
+if master_df is not None and not master_df.empty:
+    stable_pool = master_df[master_df["Ticker"].astype(str).str.strip().ne("")].copy()
+    if not stable_pool.empty:
+        vc1, vc2, vc3 = st.columns(3)
+        with vc1:
+            stable_days = st.selectbox(
+                "稳定性验证观察期",
+                [3,5],
+                index=1,
+                key="stable_horizon"
+            )
+        with vc2:
+            stable_end = datetime.now(MARKET_TZ).date()
+            stable_start_default = stable_end - pd.Timedelta(days=60)
+            stable_start = st.date_input(
+                "稳定性验证开始日期",
+                value=stable_start_default,
+                key="stable_start"
+            )
+        with vc3:
+            stable_end_ui = st.date_input(
+                "稳定性验证结束日期",
+                value=stable_end,
+                key="stable_end"
+            )
+
+        stable_tickers_all = sorted(
+            stable_pool["Ticker"].astype(str).str.upper().unique().tolist()
+        )
+        stable_tickers = st.multiselect(
+            "选择稳定性验证股票",
+            stable_tickers_all,
+            default=stable_tickers_all,
+            key="stable_tickers"
+        )
+
+        st.info(
+            "建议先跑最近60天；如果历史BUY仍不足100，再把开始日期继续往前。"
+            "注意：Yahoo 15分钟历史数据有可用范围限制，能取到多少以实际返回为准。"
+        )
+
+        if st.button(
+            "▶️ 运行 Stop 稳定性最终验证",
+            type="primary",
+            use_container_width=True
+        ):
+            if stable_start > stable_end_ui:
+                st.error("开始日期不能晚于结束日期。")
+            elif not stable_tickers:
+                st.warning("至少选择一只股票。")
+            else:
+                pool = stable_pool[
+                    stable_pool["Ticker"].astype(str).str.upper().isin(stable_tickers)
+                ].copy()
+
+                with st.spinner("正在扩大历史窗口、重建BUY并做前后半段稳定性验证..."):
+                    (
+                        v_detail,
+                        v_summary,
+                        v_early,
+                        v_late,
+                        v_compare,
+                        v_errors
+                    ) = run_stop_stability_validation(
+                        pool,
+                        stable_start,
+                        stable_end_ui,
+                        horizon_days=int(stable_days)
+                    )
+
+                st.session_state["stable_detail"] = v_detail
+                st.session_state["stable_summary"] = v_summary
+                st.session_state["stable_early"] = v_early
+                st.session_state["stable_late"] = v_late
+                st.session_state["stable_compare"] = v_compare
+                st.session_state["stable_errors"] = v_errors
+
+        if "stable_summary" in st.session_state:
+            errs = st.session_state.get("stable_errors", [])
+            if errs:
+                with st.expander("查看稳定性验证数据提示"):
+                    for e in errs:
+                        st.write("•", e)
+
+            render_stop_stability(
+                st.session_state.get("stable_detail", pd.DataFrame()),
+                st.session_state.get("stable_summary", pd.DataFrame()),
+                st.session_state.get("stable_early", pd.DataFrame()),
+                st.session_state.get("stable_late", pd.DataFrame()),
+                st.session_state.get("stable_compare", pd.DataFrame())
+            )
+else:
+    st.info("Master为空，暂时没有股票可用于稳定性验证。")
+
+
+
 
 st.divider()
-with st.expander("📘 查看 B/C FINAL v1.5 规则", expanded=False):
+with st.expander("📘 查看 B/C FINAL v1.6 规则", expanded=False):
     st.markdown("""
 **A → B/C**
 - B/C 只读取 `A_Candidates` 最新扫描日中 **结果=买** 的股票。
@@ -1994,7 +2352,7 @@ with st.expander("📘 查看 B/C FINAL v1.5 规则", expanded=False):
 - 到 TP2 → `TAKE PROFIT TP2`。
 - 1H转弱 + 15m跌回VWAP/EMA20只给“趋势转弱警报”，**不会单独触发卖出**。
 - 当前版本只发决策/提醒，不会自动替你下单。
-- v1.5底部的C历史回测与Stop×C联合回测都只做研究，不会修改LIVE状态。
+- v1.6底部的C历史回测、Stop×C联合回测、Stop稳定性验证都只做研究，不会修改LIVE状态。
 
 **Google Sheet**
 - A来源：`A_Candidates`
