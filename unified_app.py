@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.2
+# CMS UNIFIED APP V1.3
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -543,10 +543,66 @@ def make_candlestick_chart(ticker, hist, row):
     return fig
 
 
+
+def filter_decision_rows(master, kind):
+    if master is None or master.empty:
+        return pd.DataFrame()
+    c = first_existing(master, ["最后决策", "B决策", "决策"])
+    if not c:
+        return pd.DataFrame()
+
+    vals = master[c].astype(str)
+    k = kind.upper()
+
+    if k == "BUY":
+        mask = vals.str.contains("BUY", case=False, na=False) & ~vals.str.contains("EARLY", case=False, na=False)
+    elif k == "EARLY":
+        mask = vals.str.contains("EARLY", case=False, na=False)
+    elif k == "WAIT":
+        mask = vals.str.contains("WAIT", case=False, na=False)
+    elif k == "AVOID":
+        mask = vals.str.contains("AVOID", case=False, na=False)
+    else:
+        return pd.DataFrame()
+
+    x = master[mask].copy()
+    if "Ticker" in x.columns:
+        x = x.drop_duplicates(subset=["Ticker"], keep="last")
+    return x
+
+def summary_detail_table(df, mode):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if mode == "A":
+        wanted = [
+            "Ticker","Company","A5决策","Rank","共振数","空间等级",
+            "上方空间","支撑区","压力区","Confidence"
+        ]
+    elif mode in {"BUY","EARLY","WAIT","AVOID"}:
+        wanted = [
+            "Ticker","Company","最后决策","最后价格","1H状态",
+            "15m RSI","15m量比","参考入场","参考止损","TP1","TP2",
+            "空间等级","最后决策依据"
+        ]
+    elif mode == "HOLD":
+        wanted = [
+            "Ticker","Company","C阶段","最后价格","实际买入价","最高浮盈%",
+            "动态保护价","持仓止损","TP1","TP2","最后决策","最后决策依据"
+        ]
+    elif mode == "ALERT":
+        return latest_alerts(df, 30)
+    else:
+        wanted = list(df.columns)
+
+    cols = [c for c in wanted if c in df.columns]
+    return df[cols].copy()
+
+
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.2 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.3 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -610,7 +666,7 @@ with hr:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
 st.caption(
-    "Unified App V1.2：一个网址统一查看 A、B、C。"
+    "Unified App V1.3：一个网址统一查看 A、B、C。"
     "当前版本是安全的只读整合层，不改变已经冻结的交易引擎。"
 )
 
@@ -618,12 +674,99 @@ st.caption(
 # HOME
 # ============================================================
 if page == "🏠 首页":
+    if "home_summary_view" not in st.session_state:
+        st.session_state["home_summary_view"] = None
+
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("今日 A 正式候选", len(a_buy))
-    m2.metric("B BUY", counts.get("BUY", 0))
-    m3.metric("B EARLY", counts.get("EARLY", 0))
-    m4.metric("真实持仓", len(pos_df))
-    m5.metric("今日检查/提醒", alert_today_count(log_df))
+
+    with m1:
+        st.metric("今日 A 正式候选", len(a_buy))
+        if st.button("查看 A 候选", key="view_a_summary", use_container_width=True):
+            st.session_state["home_summary_view"] = "A"
+
+    with m2:
+        st.metric("B BUY", counts.get("BUY", 0))
+        if st.button("查看 BUY", key="view_buy_summary", use_container_width=True):
+            st.session_state["home_summary_view"] = "BUY"
+
+    with m3:
+        st.metric("B EARLY", counts.get("EARLY", 0))
+        if st.button("查看 EARLY", key="view_early_summary", use_container_width=True):
+            st.session_state["home_summary_view"] = "EARLY"
+
+    with m4:
+        st.metric("真实持仓", len(pos_df))
+        if st.button("查看持仓", key="view_hold_summary", use_container_width=True):
+            st.session_state["home_summary_view"] = "HOLD"
+
+    with m5:
+        st.metric("今日检查/提醒", alert_today_count(log_df))
+        if st.button("查看提醒", key="view_alert_summary", use_container_width=True):
+            st.session_state["home_summary_view"] = "ALERT"
+
+    active_summary = st.session_state.get("home_summary_view")
+
+    if active_summary:
+        st.markdown("#### 📌 首页统计明细")
+
+        if active_summary == "A":
+            detail_df = summary_detail_table(a_buy, "A")
+            title = f"今日 A 正式候选 · {len(a_buy)} 只"
+        elif active_summary == "BUY":
+            buy_df = filter_decision_rows(master_active, "BUY")
+            detail_df = summary_detail_table(buy_df, "BUY")
+            title = f"B BUY · {len(buy_df)} 只"
+        elif active_summary == "EARLY":
+            early_df = filter_decision_rows(master_active, "EARLY")
+            detail_df = summary_detail_table(early_df, "EARLY")
+            title = f"B EARLY · {len(early_df)} 只"
+        elif active_summary == "HOLD":
+            detail_df = summary_detail_table(pos_df, "HOLD")
+            title = f"真实持仓 · {len(pos_df)} 只"
+        else:
+            detail_df = summary_detail_table(log_df, "ALERT")
+            title = f"最近检查 / 提醒"
+
+        hc1, hc2 = st.columns([6, 1])
+        with hc1:
+            st.markdown(f"**{title}**")
+        with hc2:
+            if st.button("关闭明细", key="close_home_summary", use_container_width=True):
+                st.session_state["home_summary_view"] = None
+                st.rerun()
+
+        if detail_df is None or detail_df.empty:
+            st.info("当前没有可显示的记录。")
+        else:
+            st.dataframe(
+                detail_df,
+                hide_index=True,
+                use_container_width=True,
+                height=min(360, 75 + 38 * len(detail_df))
+            )
+
+        # Quick drill-down into a selected stock when applicable
+        if active_summary in {"A", "BUY", "EARLY", "HOLD"} and detail_df is not None and not detail_df.empty and "Ticker" in detail_df.columns:
+            tickers_detail = detail_df["Ticker"].dropna().astype(str).str.upper().drop_duplicates().tolist()
+            if tickers_detail:
+                selected_from_summary = st.selectbox(
+                    "快速查看该组中的股票",
+                    tickers_detail,
+                    key=f"summary_ticker_{active_summary}"
+                )
+                if selected_from_summary:
+                    row_s = latest_row_for_ticker(selected_from_summary, master_df, a_df)
+                    hs = load_price_history(selected_from_summary, "3mo", "1d")
+                    if not hs.empty:
+                        fig_s = make_candlestick_chart(selected_from_summary, hs, row_s)
+                        if fig_s is not None:
+                            st.plotly_chart(
+                                fig_s,
+                                use_container_width=True,
+                                config={"displaylogo": False}
+                            )
+
+        st.divider()
 
     st.divider()
     lcol, rcol = st.columns([1.05, 1.55], gap="large")
@@ -921,6 +1064,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.2 · 已加入日K蜡烛图、成交量、MA20/MA50、关键价位与 B 数据联动。"
+    "CMS Unified App V1.3 · 首页统计卡可展开查看明细，并保留日K蜡烛图、成交量、关键价位与 B 数据联动。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
