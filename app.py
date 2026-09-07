@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FIX2 — 共振 + 支撑/压力",
+    page_title="CMS Stock Screener A5.2R FIX3 — 共振 + 支撑/压力",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FIX2 — 共振 + 支撑/压力")
+st.title("📈 CMS Stock Screener A5.2R FIX3 — 共振 + 支撑/压力")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -652,10 +652,23 @@ def calc_a5_resonance(df, row=None):
     )
 
     # ---------- 势：Relative Strength ----------
-    rs_acc = safe_num((row or {}).get("RS Acceleration", np.nan))
+    # FIX3: RS Acceleration is stored by score_leadership() as Chinese text
+    # ("是"/"否"), not as a numeric 1/0.  FIX2 passed that text through
+    # safe_num(), which converted it to NaN and therefore made RS共振 always false.
+    # Accept the intended text/boolean representation while remaining backward
+    # compatible with numeric cached values.
+    rs_acc_raw = (row or {}).get("RS Acceleration", np.nan)
+    if isinstance(rs_acc_raw, str):
+        rs_acc_ok = rs_acc_raw.strip().lower() in {"是", "yes", "true", "1", "y"}
+    elif isinstance(rs_acc_raw, (bool, np.bool_)):
+        rs_acc_ok = bool(rs_acc_raw)
+    else:
+        rs_acc_num = safe_num(rs_acc_raw)
+        rs_acc_ok = bool((not pd.isna(rs_acc_num)) and (rs_acc_num > 0))
+
     rs20 = safe_num((row or {}).get("Stock vs SPY 20D", np.nan))
     rs_ok = bool(
-        (not pd.isna(rs_acc)) and (rs_acc > 0)
+        rs_acc_ok
         and (not pd.isna(rs20)) and (rs20 > 0)
     )
 
@@ -1592,7 +1605,7 @@ def save_daily_candidates(df):
 
 
 # =========================================================
-# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX2
+# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX3
 # Keeps LIVE A ranking unchanged. Stores the whole scanned universe so we can
 # measure whether A ranks future 3–5 day big movers near the top.
 # =========================================================
@@ -2586,8 +2599,8 @@ def render_historical_a_replay(bt):
         st.warning('历史回放没有得到有效样本。')
         return
 
-    # FIX2: put the most important A4 vs A5.2R benchmark at the very top.
-    st.header('🎯 A5.2R FIX2 — 核心回测结果')
+    # FIX3: put the most important A4 vs A5.2R benchmark at the very top.
+    st.header('🎯 A5.2R FIX3 — 核心回测结果')
     st.caption('先看 A4 vs A5.2R 的同窗口结果；下面再看 Hard Filter 和排名诊断。选股逻辑未改变，只调整显示顺序。')
     render_a4_a5_resonance_comparison(bt)
     st.divider()
