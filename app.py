@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest",
+    page_title="CMS Stock Screener A5.2R FIX2 — 共振 + 支撑/压力",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener V4.3A.3B-FIX2 — Strong Stock Backtest")
+st.title("📈 CMS Stock Screener A5.2R FIX2 — 共振 + 支撑/压力")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -2585,10 +2585,15 @@ def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
         return
-    # First show the same-window A/B/C decision table.
-    render_3way_hardfilter_comparison(bt)
-    st.divider()
+
+    # FIX2: put the most important A4 vs A5.2R benchmark at the very top.
+    st.header('🎯 A5.2R FIX2 — 核心回测结果')
+    st.caption('先看 A4 vs A5.2R 的同窗口结果；下面再看 Hard Filter 和排名诊断。选股逻辑未改变，只调整显示顺序。')
     render_a4_a5_resonance_comparison(bt)
+    st.divider()
+
+    # Historical Hard Filter comparison remains available below for diagnostics.
+    render_3way_hardfilter_comparison(bt)
     st.divider()
     render_ranking_diagnostics(bt)
     st.divider()
@@ -2881,9 +2886,9 @@ r1, r2 = st.columns([1,2])
 with r1:
     replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("现在建议直接跑60日：同一窗口一次比较 A3 Control、MA200-only、MA20+MA200。最近5个交易日只作为未来结果窗口。")
+    st.caption("建议直接跑60日。结果顶部会先显示 A4 vs A5.2R：样本数、≥3%、≥5%、≥8%、平均/中位数5日最大涨幅和弱股<2%；下面再显示Hard Filter诊断。")
 
-if st.button("🧪 运行 60日三版本同屏回测", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A5.2R 核心回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
