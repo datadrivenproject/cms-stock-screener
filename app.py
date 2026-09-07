@@ -16,12 +16,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FIX3 + VP1 — 共振 + 量价阶段 + 支撑/压力",
+    page_title="CMS Stock Screener A5.2R FIX3 + VP1 — Volume-Price Phase",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 — 共振 + 量价阶段 + 支撑/压力")
+st.title("📈 CMS Stock Screener A5.2R FIX3 + VP1 — Volume-Price Phase")
 st.caption(
     "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -251,97 +251,6 @@ def calc_atr(high, low, close, period=14):
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.rolling(period).mean()
-
-# =========================================================
-# VOLUME-PRICE PHASE V1 — TEST LAYER, DOES NOT CHANGE FIX3 BUY/NO-BUY
-# A = 缩量蓄势 | B = 放量启动 | C = 派发/衰竭风险 | N = 普通
-# =========================================================
-def calc_volume_price_phase(df):
-    """Classify the latest daily bar into a transparent volume-price lifecycle.
-
-    IMPORTANT: VP1 is diagnostic/test-only in this version. It is stored, displayed
-    and replayed, but it does NOT alter A5.2R FIX3 score, hard filter, ranking or
-    final 买/不买 decision.
-    """
-    empty = {
-        "VP阶段": "N", "VP分": 0, "VP说明": "数据不足",
-        "VP量比20": np.nan, "VP前期缩量": "否",
-        "VP放量启动": "否", "VP派发风险": "否",
-    }
-    try:
-        if df is None or len(df) < 30:
-            return empty
-        d = df.copy()
-        for c in ["Open", "High", "Low", "Close", "Volume"]:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
-        d = d.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-        if len(d) < 30:
-            return empty
-
-        o, h, l, c, v = (d[x] for x in ["Open", "High", "Low", "Close", "Volume"])
-        px = float(c.iloc[-1])
-        vol20_prev = float(v.iloc[-21:-1].mean())
-        vol5_prev = float(v.iloc[-6:-1].mean())
-        vol5_earlier = float(v.iloc[-11:-6].mean())
-        if vol20_prev <= 0 or px <= 0:
-            return empty
-
-        rvol20 = float(v.iloc[-1] / vol20_prev)
-        dry5 = float(vol5_prev / vol20_prev)
-        earlier_dry = float(vol5_earlier / vol20_prev)
-        high10_prev = float(h.iloc[-11:-1].max())
-        high20_prev = float(h.iloc[-21:-1].max())
-        low5 = float(l.iloc[-6:-1].min())
-        high5 = float(h.iloc[-6:-1].max())
-        compression5 = (high5 - low5) / px
-        ret1 = float(c.iloc[-1] / c.iloc[-2] - 1)
-        rng = float(h.iloc[-1] - l.iloc[-1])
-        if rng > 0:
-            close_loc = float((c.iloc[-1] - l.iloc[-1]) / rng)
-            upper_wick = float((h.iloc[-1] - max(o.iloc[-1], c.iloc[-1])) / rng)
-        else:
-            close_loc, upper_wick = 0.5, 0.0
-
-        # A: healthy contraction near the recent high, without requiring a breakout.
-        phase_a = bool(dry5 < 0.80 and compression5 < 0.08 and px >= high20_prev * 0.88)
-
-        # B: renewed expansion through a local pivot, preferably after contraction.
-        breakout = bool(px > high10_prev or px > high20_prev)
-        phase_b = bool(rvol20 >= 1.30 and breakout and close_loc >= 0.65 and ret1 > 0)
-        prior_dryup = bool(dry5 < 0.85 or earlier_dry < 0.85)
-
-        # C: abnormal volume that fails to produce healthy price progress.
-        stall = bool(rvol20 >= 1.80 and ret1 < 0.01)
-        upper_wick_risk = bool(rvol20 >= 1.50 and upper_wick >= 0.35)
-        heavy_down = bool(rvol20 >= 1.50 and ret1 <= -0.025)
-        phase_c = bool(stall or upper_wick_risk or heavy_down)
-
-        if phase_c:
-            reasons = []
-            if stall: reasons.append("巨量但价格滞涨")
-            if upper_wick_risk: reasons.append("放量长上影")
-            if heavy_down: reasons.append("放量下跌")
-            phase, score, reason = "C", -3, "；".join(reasons)
-        elif phase_b:
-            if prior_dryup:
-                phase, score, reason = "B", 3, "缩量整理后放量突破"
-            else:
-                phase, score, reason = "B", 2, "放量突破"
-        elif phase_a:
-            phase, score, reason = "A", 1, "缩量蓄势，等待重新放量"
-        else:
-            phase, score, reason = "N", 0, "暂无明显量价阶段"
-
-        return {
-            "VP阶段": phase, "VP分": score, "VP说明": reason,
-            "VP量比20": round(rvol20, 2),
-            "VP前期缩量": "是" if prior_dryup else "否",
-            "VP放量启动": "是" if phase_b else "否",
-            "VP派发风险": "是" if phase_c else "否",
-        }
-    except Exception:
-        return empty
-
 
 # =========================================================
 # TRUE SUPPORT / RESISTANCE ZONES
@@ -863,6 +772,115 @@ def calc_a5_resonance(df, row=None):
         "当日RVOL_A5": rvol,
     }
 
+
+# =========================================================
+# VP1 — VOLUME-PRICE PHASE (TEST LAYER; DOES NOT CHANGE FIX3 DECISION)
+# =========================================================
+def calc_volume_price_phase(df):
+    """Classify volume-price behavior into A/B/C/N using only data available as-of the bar.
+
+    A = 缩量蓄势: healthy dry-up/compression near recent highs.
+    B = 放量启动: volume expansion + breakout/strong close; strongest when preceded by dry-up.
+    C = 派发/衰竭风险: abnormal volume with stall, upper wick, or heavy down day.
+    N = 普通: no clear phase.
+
+    This is a diagnostic/test layer only. It does NOT alter A5.2R FIX3 买/不买.
+    """
+    out = {
+        'VP阶段': 'N 普通', 'VP分': 0, 'VP说明': '暂无明显量价阶段',
+        'VP量比20': np.nan, 'VP缩量比': np.nan,
+        'VP前期缩量': '否', 'VP放量启动': '否', 'VP派发风险': '否'
+    }
+    try:
+        if df is None or len(df) < 30:
+            out['VP说明'] = '数据不足'
+            return out
+        d = df.copy()
+        for c in ['Open','High','Low','Close','Volume']:
+            d[c] = pd.to_numeric(d[c], errors='coerce')
+        d = d.dropna(subset=['Open','High','Low','Close','Volume'])
+        if len(d) < 30:
+            out['VP说明'] = '有效数据不足'
+            return out
+
+        o,h,l,c,v = d['Open'],d['High'],d['Low'],d['Close'],d['Volume']
+        px = float(c.iloc[-1]); prev = float(c.iloc[-2])
+        vol20_prev = safe_num(v.iloc[-21:-1].mean())
+        vol5_prev = safe_num(v.iloc[-6:-1].mean())
+        if not (vol20_prev > 0 and px > 0 and prev > 0):
+            out['VP说明'] = '成交量基准不足'
+            return out
+
+        rvol = float(v.iloc[-1] / vol20_prev)
+        dry_ratio = float(vol5_prev / vol20_prev)
+        ret1 = float(px / prev - 1)
+        high10_prev = safe_num(h.iloc[-11:-1].max())
+        high20_prev = safe_num(h.iloc[-21:-1].max())
+        close20_prev = safe_num(c.iloc[-21:-1].max())
+
+        # Recent price compression measured BEFORE current bar, avoiding current breakout contamination.
+        pre5h = safe_num(h.iloc[-6:-1].max())
+        pre5l = safe_num(l.iloc[-6:-1].min())
+        compression5 = (pre5h - pre5l) / px if px > 0 and not pd.isna(pre5h) and not pd.isna(pre5l) else np.nan
+
+        rng = float(h.iloc[-1] - l.iloc[-1])
+        if rng > 0:
+            close_loc = float((px - l.iloc[-1]) / rng)
+            upper_wick = float((h.iloc[-1] - max(o.iloc[-1], px)) / rng)
+        else:
+            close_loc, upper_wick = 0.5, 0.0
+
+        # Prior dry-up: either the immediate prior 5 bars or the preceding 5-bar block dried up.
+        prior_block5 = safe_num(v.iloc[-11:-6].mean())
+        prior_block_ratio = prior_block5 / vol20_prev if vol20_prev > 0 and not pd.isna(prior_block5) else np.nan
+        prior_dryup = bool(
+            dry_ratio <= 0.82 or
+            (not pd.isna(prior_block_ratio) and prior_block_ratio <= 0.82)
+        )
+
+        near_high = bool(not pd.isna(high20_prev) and px >= high20_prev * 0.88)
+        compressed = bool(not pd.isna(compression5) and compression5 <= 0.08)
+        accumulation_phase = bool(dry_ratio <= 0.80 and near_high and compressed)
+
+        breakout_price = bool(
+            (not pd.isna(high10_prev) and px > high10_prev) or
+            (not pd.isna(close20_prev) and px > close20_prev)
+        )
+        expansion = bool(rvol >= 1.30 and ret1 > 0 and close_loc >= 0.65 and breakout_price)
+
+        huge_volume = rvol >= 1.80
+        stall = bool(huge_volume and ret1 < 0.01)
+        wick_risk = bool(rvol >= 1.50 and upper_wick >= 0.35)
+        heavy_down = bool(rvol >= 1.50 and ret1 <= -0.025)
+        distribution = bool(stall or wick_risk or heavy_down)
+
+        if distribution:
+            reasons=[]
+            if stall: reasons.append('巨量但价格滞涨')
+            if wick_risk: reasons.append('放量长上影')
+            if heavy_down: reasons.append('放量下跌')
+            phase, score, reason = 'C 派发风险', -3, '；'.join(reasons)
+        elif expansion:
+            if prior_dryup:
+                phase, score, reason = 'B 放量启动', 3, '缩量整理后放量突破'
+            else:
+                phase, score, reason = 'B 放量启动', 2, '放量突破，但前期缩量不明显'
+        elif accumulation_phase:
+            phase, score, reason = 'A 缩量蓄势', 1, '缩量+波动收窄，等待重新放量'
+        else:
+            phase, score, reason = 'N 普通', 0, '暂无明显量价阶段'
+
+        out.update({
+            'VP阶段': phase, 'VP分': score, 'VP说明': reason,
+            'VP量比20': round(rvol, 3), 'VP缩量比': round(dry_ratio, 3),
+            'VP前期缩量': '是' if prior_dryup else '否',
+            'VP放量启动': '是' if expansion else '否',
+            'VP派发风险': '是' if distribution else '否',
+        })
+        return out
+    except Exception:
+        out['VP说明'] = '计算异常'
+        return out
 
 # =========================================================
 # MODULE 3 — ACCUMULATION (MAX 20)
@@ -1561,9 +1579,6 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Headlines": " | ".join(headlines[:3]),
         }
 
-        # VP1 test layer: record only; FIX3 decision/ranking remains untouched.
-        row.update(calc_volume_price_phase(df))
-
         stage, structure_quality, structure_basis = classify_structure_stage(row, structure_raw, atr14)
         row["结构阶段"] = stage
         row["结构质量"] = structure_quality
@@ -1577,6 +1592,8 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
         row.update(calc_a5_resonance(df, row))
+        # VP1 is diagnostic only; FIX3 decision remains untouched.
+        row.update(calc_volume_price_phase(df))
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         row["Confidence"] = final_confidence(row)
         return row
@@ -1588,7 +1605,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 # =========================================================
 DAILY_WORKSHEET = "A_Candidates"
 
-A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段': '量价阶段', 'VP分': '量价分', 'VP说明': '量价说明', 'VP量比20': '量比20', 'VP前期缩量': '前期缩量', 'VP放量启动': '放量启动', 'VP派发风险': '派发风险'}
+A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段':'量价阶段', 'VP分':'量价分', 'VP说明':'量价说明', 'VP量比20':'量比20', 'VP缩量比':'缩量比', 'VP前期缩量':'前期缩量', 'VP放量启动':'放量启动', 'VP派发风险':'派发风险'}
 
 def _cell(v):
     if v is None:
@@ -1744,7 +1761,7 @@ def save_all_scanned_history(all_df):
 
     keep = ["Scan Date","Scan Time","Ticker","Company","Sector","Universe Rank","Hard Filter","Hard Filter Reason",
             "质量检查","结构阶段","Early V2 Score","Structure Score","Trend & Momentum Score","Accumulation Score",
-            "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","VP阶段","VP分","VP量比20","VP说明","VP前期缩量","VP放量启动","VP派发风险","Dollar Volume",
+            "Leadership Score","Catalyst Score","Catalyst Label","Price","ATR14","RVOL","Dollar Volume",
             "MA20 Slope 5D","MACD Phase","RSI14","Volume Build Ratio","Up/Down Volume Ratio",
             "Stock vs SPY 20D","Sector vs SPY 20D","Stock vs Sector 20D","RS Acceleration","Confidence",
             "Fundamental Confirmation"]
@@ -1990,8 +2007,9 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
             'RS Acceleration': m4['RS Acceleration'],
         }
 
-        row.update(calc_volume_price_phase(df))
         row.update(calc_a5_resonance(df, row))
+        # Historical VP1 uses the same as-of-date OHLCV only; no future leakage.
+        row.update(calc_volume_price_phase(df))
 
         hard_ok, hard_reason = passes_v43a_hard_filter(row)
         row['Hard Filter'] = '通过' if hard_ok else '未通过'
@@ -2690,6 +2708,105 @@ def render_ranking_diagnostics(bt):
         )
 
 
+def _vp_summary(x, label):
+    g = pd.to_numeric(x.get('5D Max Gain'), errors='coerce').dropna() if isinstance(x, pd.DataFrame) else pd.Series(dtype=float)
+    return {
+        '版本/阶段': label,
+        '样本': len(g),
+        '≥3%': (g >= .03).mean() if len(g) else np.nan,
+        '≥5%': (g >= .05).mean() if len(g) else np.nan,
+        '≥8%': (g >= .08).mean() if len(g) else np.nan,
+        '平均5日最大涨幅': g.mean() if len(g) else np.nan,
+        '中位数5日最大涨幅': g.median() if len(g) else np.nan,
+        '弱股<2%': (g < .02).mean() if len(g) else np.nan,
+    }
+
+
+def _current_fix3_selection_for_vp(d):
+    """Rebuild exactly the current A5.2R FIX3 historical selection; no forced 10."""
+    pool = d[d['Hard Filter'].eq('通过')].copy()
+    pool['_buy'] = (pool['A5决策'] == '买').astype(int)
+    pool['共振数'] = pd.to_numeric(pool['共振数'], errors='coerce')
+    pool = pool.sort_values(
+        ['Replay Date','_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
+        ascending=[True,False,False,False,False,False]
+    )
+    out = pool.groupby('Replay Date', group_keys=False).head(10).copy()
+    return out[out['A5决策'].eq('买')].copy()
+
+
+def render_vp1_backtest(bt):
+    """VP1 diagnostic backtest. Does not modify FIX3 selection logic."""
+    if bt is None or bt.empty:
+        return
+    d = bt.copy()
+    req = ['Replay Date','Ticker','Hard Filter','A5决策','共振数','VP阶段','VP分','VP量比20','5D Max Gain']
+    missing = [c for c in req if c not in d.columns]
+    if missing:
+        st.warning('VP1历史字段尚未生成。请重新点击上方“运行60日 A5.2R + VP1 回测”。')
+        return
+    d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
+    d = d.dropna(subset=['5D Max Gain'])
+    if d.empty:
+        return
+
+    st.header('🧪 VP1 — Volume-Price Phase 历史回测')
+    st.caption('VP1只做诊断，不改变 A5.2R FIX3 的买/不买。所有阶段均使用当时已知OHLCV计算，再观察随后5个交易日。')
+
+    # Table A: all replay samples by phase — validates whether phases themselves separate outcomes.
+    phase_order = ['A 缩量蓄势','B 放量启动','C 派发风险','N 普通']
+    rows=[]
+    for ph in phase_order:
+        rows.append(_vp_summary(d[d['VP阶段'].eq(ph)], ph))
+    phase_df=pd.DataFrame(rows)
+    st.subheader('① 全历史样本：A / B / C / N 各阶段未来5日表现')
+    st.dataframe(phase_df.style.format({
+        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    # Table B: only names that FIX3 actually selected. This is the key apples-to-apples diagnostic.
+    fix3 = _current_fix3_selection_for_vp(d)
+    rows=[]
+    for ph in phase_order:
+        rows.append(_vp_summary(fix3[fix3['VP阶段'].eq(ph)], f'FIX3买入 + {ph}'))
+    fix3_phase=pd.DataFrame(rows)
+    st.subheader('② FIX3实际入选样本内部：不同VP阶段表现')
+    st.dataframe(fix3_phase.style.format({
+        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    # Table C: candidate VP gates vs unchanged benchmark. This does NOT apply them to live selection.
+    variants = [
+        ('FIX3 原版 Benchmark', fix3),
+        ('FIX3 + 仅B放量启动', fix3[fix3['VP阶段'].eq('B 放量启动')]),
+        ('FIX3 + A/B健康阶段', fix3[fix3['VP阶段'].isin(['A 缩量蓄势','B 放量启动'])]),
+        ('FIX3 + 排除C派发风险', fix3[~fix3['VP阶段'].eq('C 派发风险')]),
+    ]
+    comp=pd.DataFrame([_vp_summary(x,label) for label,x in variants])
+    st.subheader('③ FIX3 Benchmark vs VP候选过滤方式（仅回测，不改正式逻辑）')
+    st.dataframe(comp.style.format({
+        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    # Transition-like B quality: B preceded by dry-up vs B without clear dry-up.
+    if 'VP前期缩量' in fix3.columns:
+        b = fix3[fix3['VP阶段'].eq('B 放量启动')]
+        trans = pd.DataFrame([
+            _vp_summary(b[b['VP前期缩量'].eq('是')], 'B：前期缩量→放量启动'),
+            _vp_summary(b[b['VP前期缩量'].ne('是')], 'B：直接放量启动'),
+        ])
+        st.subheader('④ B阶段细分：真正的“缩量 → 放量启动”是否更强')
+        st.dataframe(trans.style.format({
+            '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+            '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+        }, na_rep=''), hide_index=True, use_container_width=True)
+
+    st.info('判断标准：如果 B（尤其“前期缩量→B”）的 ≥5%/≥8% 命中率明显高于 FIX3 Benchmark，同时 C 的弱股率明显更高，VP1 才值得进入下一轮正式规则测试。当前页面不会自动修改 FIX3。')
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -2699,6 +2816,8 @@ def render_historical_a_replay(bt):
     st.header('🎯 A5.2R FIX3 — 核心回测结果')
     st.caption('先看 A4 vs A5.2R 的同窗口结果；下面再看 Hard Filter 和排名诊断。选股逻辑未改变，只调整显示顺序。')
     render_a4_a5_resonance_comparison(bt)
+    st.divider()
+    render_vp1_backtest(bt)
     st.divider()
 
     # Historical Hard Filter comparison remains available below for diagnostics.
@@ -2787,7 +2906,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A5.2R 共振 + 支撑/压力")
+    st.header("A5.2R FIX3 + VP1")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2801,7 +2920,7 @@ with st.sidebar:
     st.success("V4.3A.4 正式规则：仅放宽 MA200；MA20、MA50、MA20斜率≥0.2%、Structure 均保留。")
 
 st.info(
-    "A5.2R FIX3 + VP1：FIX3正式决策保持不变；VP1独立记录 A缩量蓄势 / B放量启动 / C派发风险 / N普通。"
+    "A5.2R FIX3：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力空间 → 买/不买。VP1仅做量价阶段诊断，不改变FIX3决定。"
     "V4.3B负责1H、15min和真正盘中买入/持仓管理信号。"
 )
 
@@ -2865,9 +2984,10 @@ def render_results(top_df, all_df):
     display_cols = [
         # 结果放最前；最终只给“买 / 不买”
         "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
-        "VP阶段", "VP分", "VP量比20", "VP说明",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
+        # VP1 测试层：只显示，不改变 FIX3 决策
+        "VP阶段", "VP分", "VP量比20", "VP缩量比", "VP说明",
         "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
         # 关键数值，便于复核
         "Early V2 Score", "Structure Score", "Trend & Momentum Score",
@@ -2886,6 +3006,8 @@ def render_results(top_df, all_df):
         "RSI14": "{:.1f}",
         "Volume Build Ratio": "{:.2f}",
         "Up/Down Volume Ratio": "{:.2f}",
+        "VP量比20": "{:.2f}",
+        "VP缩量比": "{:.2f}",
         "上方空间": "{:+.1%}",
         "距支撑区": "{:.1%}",
         "Stock vs SPY 20D": "{:+.1%}",
@@ -2902,7 +3024,7 @@ def render_results(top_df, all_df):
 
     st.subheader("🎯 A5.2R — 次日重点候选（不强制凑10只）")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "VP阶段":"量价阶段", "VP分":"量价分", "VP量比20":"量比20", "VP说明":"量价说明", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "VP阶段":"量价阶段", "VP分":"量价分", "VP量比20":"量比20", "VP缩量比":"缩量比", "VP说明":"量价说明", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -2960,8 +3082,7 @@ def render_results(top_df, all_df):
 **③ 资金积累（20）**：Volume Build + Up/Down Volume + OBV。日K只能判断‘资金积累证据’，不能宣称真实主动买盘。  
 **④ 领导力（20）**：Stock vs SPY、Sector vs SPY、Stock vs Sector；5D只判断近期是否加速，不继续增加更多基准。  
 **⑤ Catalyst（15）**：扩大正面/负面关键词并按事件类别识别；没有Catalyst不会直接淘汰，但明显负面Catalyst会压低候选级别。  
-**⑥ VP1量价阶段（测试层，不计入FIX3决策）**：A=缩量蓄势；B=放量启动；C=派发/衰竭风险；N=普通。先通过历史Replay验证，不改变当前买/不买。  
-**⑦ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
+**⑥ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
 """
         )
 
@@ -2997,9 +3118,9 @@ r1, r2 = st.columns([1,2])
 with r1:
     replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("建议直接跑60日。结果顶部会先显示 A4 vs A5.2R：样本数、≥3%、≥5%、≥8%、平均/中位数5日最大涨幅和弱股<2%；下面再显示Hard Filter诊断。")
+    st.caption("建议直接跑60日。结果顶部先显示 FIX3 Benchmark，随后显示 VP1 的 A/B/C/N、FIX3内部VP阶段，以及 FIX3 vs VP候选过滤方式；最后保留Hard Filter诊断。")
 
-if st.button("🧪 运行60日 A5.2R 核心回测", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A5.2R + VP1 回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
