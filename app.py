@@ -3003,14 +3003,134 @@ def render_pivot_room_backtest(bt):
         '同时样本量没有被过度砍掉，才考虑把更严格Room阈值并入A。否则继续保留FIX3当前只否决“重复压力且<2%”的规则。'
     )
 
+
+
+def render_core_contribution_diagnostic(bt):
+    """Temporary diagnostic: quantify how much Early/core ranking vs 4/5 resonance contributes."""
+    if bt is None or bt.empty:
+        return
+    d = bt.copy()
+    req = [
+        'Replay Date','Ticker','Replay Eligible Rank','Hard Filter','Replay Core Score 85',
+        '5D Max Gain','共振数','A5决策','MACD共振','KDJ共振','RSI共振','量价共振','RS共振'
+    ]
+    missing = [c for c in req if c not in d.columns]
+    if missing:
+        st.warning('核心贡献诊断缺少字段：' + ', '.join(missing) + '。请重新运行历史回测。')
+        return
+
+    for c in ['Replay Eligible Rank','Replay Core Score 85','5D Max Gain','共振数']:
+        d[c] = pd.to_numeric(d[c], errors='coerce')
+    d = d.dropna(subset=['5D Max Gain','Replay Date'])
+    if d.empty:
+        return
+
+    hf = d[d['Hard Filter'].eq('通过')].copy()
+
+    # ① Early/Core only: existing A4 eligible Top10 each replay day.
+    early = hf[hf['Replay Eligible Rank'] <= 10].copy()
+
+    # ② 4/5 resonance only: no MACD-mandatory rule and no room veto.
+    # To keep daily capacity comparable to A4/FIX3, rank by resonance then core and take up to 10/day.
+    res = hf[hf['共振数'] >= 4].copy()
+    res = res.sort_values(
+        ['Replay Date','共振数','Replay Core Score 85'],
+        ascending=[True,False,False]
+    ).groupby('Replay Date', group_keys=False).head(10)
+
+    # ③ Early/Core + 4/5 resonance: intersection of A4 Top10 and raw 4/5 resonance.
+    combo = hf[(hf['Replay Eligible Rank'] <= 10) & (hf['共振数'] >= 4)].copy()
+
+    # ④ Current FIX3: formal BUY logic (includes MACD requirement, volume-or-RS, and pressure-too-close veto), no forced 10.
+    fix3 = hf[hf['A5决策'].eq('买')].copy()
+    fix3 = fix3.sort_values(
+        ['Replay Date','共振数','Replay Core Score 85'],
+        ascending=[True,False,False]
+    ).groupby('Replay Date', group_keys=False).head(10)
+
+    def summary(x, label):
+        g = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
+        return {
+            '版本': label,
+            '样本': len(g),
+            '≥3%': (g >= .03).mean() if len(g) else np.nan,
+            '≥5%': (g >= .05).mean() if len(g) else np.nan,
+            '≥8%': (g >= .08).mean() if len(g) else np.nan,
+            '平均5日最大涨幅': g.mean() if len(g) else np.nan,
+            '中位数5日最大涨幅': g.median() if len(g) else np.nan,
+            '弱股<2%': (g < .02).mean() if len(g) else np.nan,
+        }
+
+    comp = pd.DataFrame([
+        summary(early, '① Early/Core Top10 单独'),
+        summary(res, '② 4/5共振单独（不要求MACD/不看Room）'),
+        summary(combo, '③ Early/Core Top10 + 4/5共振'),
+        summary(fix3, '④ 当前A5.2R FIX3'),
+    ])
+
+    st.header('🧬 A核心贡献诊断 — 到底是强股筛选还是指标共振在主导？')
+    st.caption(
+        '临时研究页，不改变 FINAL 正式逻辑。①看原始强股排名；②只看4/5共振；③看两者交集；④看当前完整FIX3。'
+        '四组统一使用同一历史窗口和未来5日标签。'
+    )
+    st.dataframe(
+        comp.style.format({
+            '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+            '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+        }, na_rep=''),
+        hide_index=True, use_container_width=True
+    )
+
+    # Incremental deltas make the interpretation explicit.
+    try:
+        r1 = comp.iloc[0]
+        r2 = comp.iloc[1]
+        r3 = comp.iloc[2]
+        r4 = comp.iloc[3]
+        delta = pd.DataFrame([
+            {
+                '比较':'③ Early+共振 vs ① Early单独',
+                'Δ≥5%':r3['≥5%']-r1['≥5%'], 'Δ≥8%':r3['≥8%']-r1['≥8%'],
+                'Δ平均5D':r3['平均5日最大涨幅']-r1['平均5日最大涨幅'],
+                'Δ弱股':r3['弱股<2%']-r1['弱股<2%']
+            },
+            {
+                '比较':'③ Early+共振 vs ② 共振单独',
+                'Δ≥5%':r3['≥5%']-r2['≥5%'], 'Δ≥8%':r3['≥8%']-r2['≥8%'],
+                'Δ平均5D':r3['平均5日最大涨幅']-r2['平均5日最大涨幅'],
+                'Δ弱股':r3['弱股<2%']-r2['弱股<2%']
+            },
+            {
+                '比较':'④ FIX3 vs ③ Early+共振',
+                'Δ≥5%':r4['≥5%']-r3['≥5%'], 'Δ≥8%':r4['≥8%']-r3['≥8%'],
+                'Δ平均5D':r4['平均5日最大涨幅']-r3['平均5日最大涨幅'],
+                'Δ弱股':r4['弱股<2%']-r3['弱股<2%']
+            },
+        ])
+        st.subheader('增量贡献')
+        st.dataframe(
+            delta.style.format({
+                'Δ≥5%':'{:+.1%}','Δ≥8%':'{:+.1%}','Δ平均5D':'{:+.2%}','Δ弱股':'{:+.1%}'
+            }, na_rep=''),
+            hide_index=True, use_container_width=True
+        )
+    except Exception:
+        pass
+
+    st.info(
+        '判定方法：如果③明显优于②，说明 Early/Core 强股筛选提供了独立价值，A不是单纯MACD/KDJ等指标选股；'
+        '如果②≈③≈④，则共振层可能在主导；如果④再明显优于③，则当前MACD必需条件/量价或RS条件/压力否决也提供了额外价值。'
+    )
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
         return
 
-    st.header('🎯 A5.2R FINAL v1 — 精简历史验证')
-    st.caption('FINAL 页面只保留核心 Benchmark，不再显示 VP1、Pivot/Room 实验表、旧 Hard Filter A/B 测试和参数研究结果。')
+    st.header('🎯 A5.2R FINAL v1 — 核心验证 + 临时贡献诊断')
+    st.caption('临时诊断版：保留 FINAL 核心 Benchmark，并增加 Early/Core vs 4/5共振 vs 当前FIX3 的贡献拆解；不改变正式买/不买逻辑。')
     render_a4_a5_resonance_comparison(bt)
+    render_core_contribution_diagnostic(bt)
 
     d = bt.copy()
     if '5D Max Gain' in d.columns:
