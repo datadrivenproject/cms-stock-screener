@@ -12,3 +12,5 @@ openai>=1.0.0
 matplotlib>=3.8
 Pillow>=10.0
 plotly
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
