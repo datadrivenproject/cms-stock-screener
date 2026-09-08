@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.4
+# CMS UNIFIED APP V1.5
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -174,7 +174,7 @@ def get_book():
     client = gspread.authorize(creds)
     return client.open(st.secrets["tracker"]["sheet_name"])
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def load_sheet(sheet_name):
     book = get_book()
     ws = book.worksheet(sheet_name)
@@ -247,6 +247,18 @@ def holdings(master):
     if "是否持仓" not in master.columns:
         return pd.DataFrame(columns=master.columns)
     return master[master["是否持仓"].map(truthy)].copy()
+
+def latest_master_per_ticker(master):
+    """Return one latest B_MasterList row per ticker for live Unified display."""
+    if master is None or master.empty or "Ticker" not in master.columns:
+        return pd.DataFrame()
+    x = master.copy()
+    tcol = first_existing(x, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "DateTime", "时间"])
+    if tcol:
+        x["_live_ts"] = pd.to_datetime(x[tcol], errors="coerce")
+        x = x.sort_values(["Ticker", "_live_ts"], na_position="first")
+    x = x.drop_duplicates(subset=["Ticker"], keep="last")
+    return x.drop(columns=["_live_ts"], errors="ignore")
 
 def decision_counts(master):
     if master is None or master.empty:
@@ -624,7 +636,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.4 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.5 · B/C 最新状态同步")
     page = st.radio(
         "功能",
         [
@@ -641,7 +653,7 @@ with st.sidebar:
 
     st.divider()
     auto = st.toggle("自动刷新", value=True)
-    refresh_seconds = st.selectbox("刷新频率", [60, 120, 300, 900], index=1)
+    refresh_seconds = st.selectbox("刷新频率", [60, 120, 300, 900], index=0)
 
     if st.button("🔄 立即刷新", use_container_width=True):
         st.cache_data.clear()
@@ -667,8 +679,9 @@ except Exception as e:
     st.stop()
 
 a_buy = latest_a_buys(a_df)
-master_active = active_master(master_df)
-pos_df = holdings(master_df)
+master_latest = latest_master_per_ticker(master_df)
+master_active = active_master(master_latest)
+pos_df = holdings(master_latest)
 counts = decision_counts(master_active)
 now = market_now()
 
@@ -688,9 +701,15 @@ with hr:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
 st.caption(
-    "Unified App V1.4：一个网址统一查看 A、B、C。"
-    "当前版本是安全的只读整合层，不改变已经冻结的交易引擎。"
+    "Unified App V1.5：实时读取 B_MasterList / B_Log 最新写入；只改展示同步层，不改变 A/B/C 交易逻辑。"
 )
+
+# Live B/C sync status
+_ts_col = first_existing(master_df, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "DateTime", "时间"])
+if _ts_col and not master_df.empty:
+    _ts = pd.to_datetime(master_df[_ts_col], errors="coerce")
+    if _ts.notna().any():
+        st.caption(f"🔄 B/C 最新同步：{_ts.max().strftime('%Y-%m-%d %H:%M')} · Unified Sheet cache 15秒")
 
 # ============================================================
 # HOME
@@ -945,8 +964,7 @@ elif page == "⚡ B 买点监控":
         st.dataframe(opp, hide_index=True, use_container_width=True, height=590)
 
     st.info(
-        "正式 B/C LIVE 程序仍负责实际 15 分钟检查和写入。"
-        "Unified App V1 暂时只读取结果。"
+        "B/C LIVE 仍负责15分钟计算与写入；Unified v1.5 会读取每只股票最新 B_MasterList 状态并自动同步显示。"
     )
 
 
@@ -988,8 +1006,7 @@ elif page == "💼 C 持仓管理":
                     st.caption(reason)
 
     st.info(
-        "V1 里持仓的“标记 / 修改实际买入价 / 手动更新”仍在 B/C FINAL v1.8 LIVE App 完成。"
-        "下一阶段可把这些操作搬进这里。"
+        "真实持仓仍在 B/C FINAL v1.8 LIVE 中标记；一旦写入 B_MasterList，Unified v1.5 会自动同步显示。"
     )
 
 
@@ -1106,6 +1123,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.4 · 首页五个统计框本身即可点击展开明细，并保留日K蜡烛图、成交量、关键价位与 B 数据联动。"
+    "CMS Unified App V1.5 · 首页五个统计框可点击展开明细；B/C 状态按每只股票最新 B_MasterList 记录同步，并保留日K、成交量与关键价位。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
