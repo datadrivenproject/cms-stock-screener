@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
 import time
 from datetime import datetime, timezone
 
@@ -16,14 +17,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1 — 盘后选股",
+    page_title="CMS Stock Screener A5.2R FINAL v1 — Supabase 日线",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1 — 盘后选股")
+st.title("📈 CMS Stock Screener A5.2R FINAL v1 — Supabase 日线")
 st.caption(
-    "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
+    "正式盘后扫描日K来自 Supabase stock_daily；选股逻辑保持 A5.2R FINAL v1 不变。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -214,6 +215,114 @@ def safe_download_single(ticker, period="1y"):
         if attempt < MAX_RETRIES - 1:
             time.sleep(RETRY_WAIT[attempt])
     return None
+
+# =========================================================
+# SUPABASE DAILY OHLCV — production scan data source
+# The frozen A5.2R decision logic below is unchanged.
+# GitHub Actions keeps public.stock_daily updated.
+# Streamlit Cloud must have these top-level secrets:
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+# =========================================================
+def _get_supabase_runtime_config():
+    try:
+        base_url = str(st.secrets["SUPABASE_URL"]).strip().rstrip("/")
+        api_key = str(st.secrets["SUPABASE_SERVICE_ROLE_KEY"]).strip()
+    except Exception:
+        raise RuntimeError(
+            "Streamlit Secrets 缺少 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY。"
+            "请把 GitHub Actions 中对应的两个值也加入 Streamlit Cloud Secrets。"
+        )
+    if not base_url or not api_key:
+        raise RuntimeError("Supabase Streamlit Secrets 为空。")
+    if "/rest/v1" in base_url:
+        base_url = base_url.split("/rest/v1", 1)[0].rstrip("/")
+    return base_url, api_key
+
+
+def _supabase_headers(api_key):
+    return {
+        "apikey": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+
+
+def _daily_rows_to_df(rows):
+    if not rows:
+        return None
+    d = pd.DataFrame(rows)
+    required = ["trade_date", "open", "high", "low", "close", "volume"]
+    if any(c not in d.columns for c in required):
+        return None
+    d["trade_date"] = pd.to_datetime(d["trade_date"], errors="coerce")
+    d = d.dropna(subset=["trade_date"]).sort_values("trade_date")
+    d = d.drop_duplicates(subset=["trade_date"], keep="last")
+    for c in ["open", "high", "low", "close", "volume"]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=["open", "high", "low", "close", "volume"])
+    if d.empty:
+        return None
+    d = d.set_index("trade_date")
+    d.index.name = "Date"
+    return d[["open", "high", "low", "close", "volume"]].rename(columns={
+        "open":"Open", "high":"High", "low":"Low", "close":"Close", "volume":"Volume"
+    })
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def supabase_batch_download(tickers_tuple):
+    """Load all available stock_daily rows for tickers from Supabase.
+
+    REST is paginated explicitly so the PostgREST row limit does not silently
+    truncate the universe. Returned frames intentionally match the OHLCV shape
+    used by the frozen A5.2R analyzer.
+    """
+    tickers = [str(t).upper().strip() for t in tickers_tuple if str(t).strip()]
+    if not tickers:
+        return {}
+
+    base_url, api_key = _get_supabase_runtime_config()
+    endpoint = f"{base_url}/rest/v1/stock_daily"
+    headers = _supabase_headers(api_key)
+    rows_by_ticker = {t: [] for t in tickers}
+
+    # Keep URL size modest and paginate every chunk.
+    for chunk in split_chunks(tickers, 20):
+        ticker_filter = "in.(" + ",".join(chunk) + ")"
+        start = 0
+        page_size = 1000
+        while True:
+            params = {
+                "select": "ticker,trade_date,open,high,low,close,volume",
+                "ticker": ticker_filter,
+                "order": "ticker.asc,trade_date.asc",
+            }
+            h = dict(headers)
+            h["Range"] = f"{start}-{start + page_size - 1}"
+            r = requests.get(endpoint, params=params, headers=h, timeout=60)
+            if not r.ok:
+                raise RuntimeError(f"Supabase stock_daily 读取失败 HTTP {r.status_code}: {r.text[:500]}")
+            page = r.json()
+            for row in page:
+                t = str(row.get("ticker", "")).upper()
+                if t in rows_by_ticker:
+                    rows_by_ticker[t].append(row)
+            if len(page) < page_size:
+                break
+            start += page_size
+
+    out = {}
+    for t, rows in rows_by_ticker.items():
+        df = _daily_rows_to_df(rows)
+        if df is not None and not df.empty:
+            out[t] = df
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def supabase_download_single(ticker):
+    return supabase_batch_download((str(ticker).upper(),)).get(str(ticker).upper())
 
 # =========================================================
 # BASIC HELPERS
@@ -1240,7 +1349,9 @@ def get_catalyst_v2(ticker):
 # =========================================================
 @st.cache_data(ttl=1800)
 def get_benchmark_returns():
-    data = safe_batch_download(tuple(BENCHMARK_TICKERS), "3mo")
+    # Production RS benchmark data now comes from the same Supabase daily source
+    # as the 110-stock A universe, preventing mixed daily-price providers.
+    data = supabase_batch_download(tuple(BENCHMARK_TICKERS))
     out = {}
     for t, df in data.items():
         try:
@@ -3064,16 +3175,24 @@ if scan_clicked:
     progress = st.progress(0)
     status = st.empty()
 
-    status.write("正在下载约1年日K数据……")
-    data = safe_batch_download(tuple(tickers), "1y")
-    benchmarks = get_benchmark_returns()
+    status.write("正在从 Supabase 读取约1年日K数据……")
+    try:
+        data = supabase_batch_download(tuple(tickers))
+        benchmarks = get_benchmark_returns()
+    except Exception as e:
+        st.error(f"Supabase 日K读取失败：{e}")
+        st.stop()
+
+    missing_daily = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
+    if missing_daily:
+        st.warning("Supabase 缺少以下股票日K，将跳过：" + ", ".join(missing_daily))
 
     results = []
     for i, ticker in enumerate(tickers, start=1):
         status.write(f"正在分析 {ticker}（{i}/{len(tickers)}）")
+        # Production scan intentionally does not fall back to Yahoo daily OHLCV.
+        # Missing Supabase data is skipped so the daily-price provider stays consistent.
         df = data.get(ticker)
-        if df is None:
-            df = safe_download_single(ticker, "1y")
         row = analyze_daily_candidate(ticker, df, benchmarks)
         if row is not None:
             results.append(row)
@@ -3235,9 +3354,9 @@ else:
     st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
 
 st.divider()
-st.header("🧪 FINAL 核心历史验证")
+st.header("🧪 FINAL 核心历史验证（暂保留原 Yahoo 2年历史源）")
 st.caption(
-    "用于定期复核 FINAL 是否继续有效。研究阶段的 VP1、Pivot/Room 和旧参数对照表已从正式页面移除。"
+    "正式盘后扫描已改用 Supabase；历史Replay暂保留原 Yahoo 2年历史源，因为当前 Supabase 只初始化约1年。选股规则不变。"
 )
 st.info(
     "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
