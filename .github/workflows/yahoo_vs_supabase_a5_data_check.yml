@@ -1,0 +1,37 @@
+name: Yahoo vs Supabase A5 Data Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compare-a5-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy yfinance
+
+      - name: Compare Yahoo and Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python yahoo_vs_supabase_a5_data_check.py
+
+      - name: Upload comparison CSVs
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-vs-supabase-a5-data-check
+          path: |
+            yahoo_vs_supabase_summary.csv
+            yahoo_vs_supabase_detail.csv
