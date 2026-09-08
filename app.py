@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
 import time
 from datetime import datetime, timezone
 
@@ -16,14 +17,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1 — 盘后选股",
+    page_title="CMS Stock Screener A5.2R FINAL v1.2 — Supabase 复权日线",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1 — 盘后选股")
+st.title("📈 CMS Stock Screener A5.2R FINAL v1.2 — Supabase 复权日线")
 st.caption(
-    "盘后日K选股：市场结构 + 趋势动量 + 资金积累 + 领导力 + Catalyst。"
+    "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；选股逻辑保持 A5.2R FINAL v1 不变。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -214,6 +215,197 @@ def safe_download_single(ticker, period="1y"):
         if attempt < MAX_RETRIES - 1:
             time.sleep(RETRY_WAIT[attempt])
     return None
+
+# =========================================================
+# SUPABASE DAILY OHLCV — production scan data source
+# The frozen A5.2R decision logic below is unchanged.
+# GitHub Actions keeps public.stock_daily updated.
+# Streamlit Cloud must have these top-level secrets:
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+# =========================================================
+def _find_streamlit_secret(key):
+    """
+    Find a secret by name anywhere in st.secrets.
+
+    Why recursive:
+    Existing CMS Streamlit secrets already contain TOML sections such as
+    [gcp_service_account] / [tracker]. If SUPABASE_* lines are pasted after
+    a section header, TOML is valid but those values become nested inside
+    that section instead of being top-level. This helper supports both
+    top-level and accidentally nested placement without exposing values.
+    """
+    try:
+        root = st.secrets
+    except Exception:
+        return None
+
+    # Top-level first.
+    try:
+        if key in root:
+            value = root[key]
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    except Exception:
+        pass
+
+    # Recursive search through TOML sections.
+    def walk(obj):
+        try:
+            items = obj.items()
+        except Exception:
+            return None
+
+        for k, v in items:
+            if str(k) == key:
+                try:
+                    text = str(v).strip()
+                except Exception:
+                    text = ""
+                if text:
+                    return text
+
+            # Streamlit Secrets sections behave like mappings.
+            try:
+                if hasattr(v, "items"):
+                    found = walk(v)
+                    if found:
+                        return found
+            except Exception:
+                pass
+        return None
+
+    return walk(root)
+
+
+def _get_supabase_runtime_config():
+    base_url = _find_streamlit_secret("SUPABASE_URL")
+    api_key = _find_streamlit_secret("SUPABASE_SERVICE_ROLE_KEY")
+
+    missing = []
+    if not base_url:
+        missing.append("SUPABASE_URL")
+    if not api_key:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+
+    if missing:
+        raise RuntimeError(
+            "Streamlit Secrets 未读取到：" + ", ".join(missing) +
+            "。请确认这两个名称拼写完全一致；程序已同时支持顶层和 TOML 分组内的 Secrets。"
+        )
+
+    base_url = str(base_url).strip().rstrip("/")
+    api_key = str(api_key).strip()
+
+    if "/rest/v1" in base_url:
+        base_url = base_url.split("/rest/v1", 1)[0].rstrip("/")
+
+    if not base_url.startswith("https://") or not base_url.endswith(".supabase.co"):
+        raise RuntimeError(
+            "SUPABASE_URL 格式不正确。应类似 https://xxxx.supabase.co，且不要包含 /rest/v1/。"
+        )
+
+    return base_url, api_key
+
+
+def _supabase_headers(api_key):
+    return {
+        "apikey": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+
+
+def _daily_rows_to_df(rows):
+    """Convert Supabase adjusted OHLCV rows to the exact dataframe shape A5.2R expects.
+
+    Production A intentionally requires adj_open/adj_high/adj_low/adj_close.
+    It does NOT silently fall back to raw OHLC, because mixing adjusted and
+    unadjusted price histories can change MACD/RSI/RS/support-resistance results.
+    """
+    if not rows:
+        return None
+    d = pd.DataFrame(rows)
+    required = ["trade_date", "adj_open", "adj_high", "adj_low", "adj_close", "volume"]
+    if any(c not in d.columns for c in required):
+        return None
+
+    d["trade_date"] = pd.to_datetime(d["trade_date"], errors="coerce")
+    d = d.dropna(subset=["trade_date"]).sort_values("trade_date")
+    d = d.drop_duplicates(subset=["trade_date"], keep="last")
+
+    for c in ["adj_open", "adj_high", "adj_low", "adj_close", "volume"]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+
+    d = d.dropna(subset=["adj_open", "adj_high", "adj_low", "adj_close", "volume"])
+    if d.empty:
+        return None
+
+    d = d.set_index("trade_date")
+    d.index.name = "Date"
+
+    return d[["adj_open", "adj_high", "adj_low", "adj_close", "volume"]].rename(columns={
+        "adj_open":"Open",
+        "adj_high":"High",
+        "adj_low":"Low",
+        "adj_close":"Close",
+        "volume":"Volume",
+    })
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def supabase_batch_download(tickers_tuple):
+    """Load all available stock_daily rows for tickers from Supabase.
+
+    REST is paginated explicitly so the PostgREST row limit does not silently
+    truncate the universe. Returned frames intentionally match the OHLCV shape
+    used by the frozen A5.2R analyzer.
+    """
+    tickers = [str(t).upper().strip() for t in tickers_tuple if str(t).strip()]
+    if not tickers:
+        return {}
+
+    base_url, api_key = _get_supabase_runtime_config()
+    endpoint = f"{base_url}/rest/v1/stock_daily"
+    headers = _supabase_headers(api_key)
+    rows_by_ticker = {t: [] for t in tickers}
+
+    # Keep URL size modest and paginate every chunk.
+    for chunk in split_chunks(tickers, 20):
+        ticker_filter = "in.(" + ",".join(chunk) + ")"
+        start = 0
+        page_size = 1000
+        while True:
+            params = {
+                "select": "ticker,trade_date,adj_open,adj_high,adj_low,adj_close,volume",
+                "ticker": ticker_filter,
+                "order": "ticker.asc,trade_date.asc",
+            }
+            h = dict(headers)
+            h["Range"] = f"{start}-{start + page_size - 1}"
+            r = requests.get(endpoint, params=params, headers=h, timeout=60)
+            if not r.ok:
+                raise RuntimeError(f"Supabase stock_daily 读取失败 HTTP {r.status_code}: {r.text[:500]}")
+            page = r.json()
+            for row in page:
+                t = str(row.get("ticker", "")).upper()
+                if t in rows_by_ticker:
+                    rows_by_ticker[t].append(row)
+            if len(page) < page_size:
+                break
+            start += page_size
+
+    out = {}
+    for t, rows in rows_by_ticker.items():
+        df = _daily_rows_to_df(rows)
+        if df is not None and not df.empty:
+            out[t] = df
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def supabase_download_single(ticker):
+    return supabase_batch_download((str(ticker).upper(),)).get(str(ticker).upper())
 
 # =========================================================
 # BASIC HELPERS
@@ -1240,7 +1432,9 @@ def get_catalyst_v2(ticker):
 # =========================================================
 @st.cache_data(ttl=1800)
 def get_benchmark_returns():
-    data = safe_batch_download(tuple(BENCHMARK_TICKERS), "3mo")
+    # Production RS benchmark data now comes from the same Supabase daily source
+    # as the 110-stock A universe, preventing mixed daily-price providers.
+    data = supabase_batch_download(tuple(BENCHMARK_TICKERS))
     out = {}
     for t, df in data.items():
         try:
@@ -3064,16 +3258,35 @@ if scan_clicked:
     progress = st.progress(0)
     status = st.empty()
 
-    status.write("正在下载约1年日K数据……")
-    data = safe_batch_download(tuple(tickers), "1y")
-    benchmarks = get_benchmark_returns()
+    status.write("正在从 Supabase 读取约1年复权日K数据……")
+    try:
+        data = supabase_batch_download(tuple(tickers))
+        benchmarks = get_benchmark_returns()
+        missing_bench = [t for t in BENCHMARK_TICKERS if t not in benchmarks]
+        if missing_bench:
+            st.error(
+                "Supabase 缺少复权基准/板块ETF数据：" + ", ".join(missing_bench) +
+                "。RS模块需要与个股使用同一复权口径，本次扫描已停止。"
+            )
+            st.stop()
+    except Exception as e:
+        st.error(f"Supabase 复权日K读取失败：{e}")
+        st.stop()
+
+    missing_daily = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
+    if missing_daily:
+        st.error(
+            "Supabase 缺少复权日K：" + ", ".join(missing_daily) +
+            "。为避免混用原始/复权价格，本次扫描已停止。"
+        )
+        st.stop()
 
     results = []
     for i, ticker in enumerate(tickers, start=1):
         status.write(f"正在分析 {ticker}（{i}/{len(tickers)}）")
+        # Production scan intentionally does not fall back to Yahoo daily OHLCV.
+        # Missing Supabase data is skipped so the daily-price provider stays consistent.
         df = data.get(ticker)
-        if df is None:
-            df = safe_download_single(ticker, "1y")
         row = analyze_daily_candidate(ticker, df, benchmarks)
         if row is not None:
             results.append(row)
@@ -3235,9 +3448,9 @@ else:
     st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
 
 st.divider()
-st.header("🧪 FINAL 核心历史验证")
+st.header("🧪 FINAL 核心历史验证（暂保留原 Yahoo 2年历史源）")
 st.caption(
-    "用于定期复核 FINAL 是否继续有效。研究阶段的 VP1、Pivot/Room 和旧参数对照表已从正式页面移除。"
+    "正式盘后扫描使用 Supabase 复权日线；历史Replay暂保留 Yahoo 2年历史源，因为当前 Supabase 只初始化约1年。A5.2R 选股规则不变。"
 )
 st.info(
     "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
