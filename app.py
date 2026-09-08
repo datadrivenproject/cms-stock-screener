@@ -17,12 +17,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1 — Supabase 日线",
+    page_title="CMS Stock Screener A5.2R FINAL v1.1 — Supabase 日线",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1 — Supabase 日线")
+st.title("📈 CMS Stock Screener A5.2R FINAL v1.1 — Supabase 日线")
 st.caption(
     "正式盘后扫描日K来自 Supabase stock_daily；选股逻辑保持 A5.2R FINAL v1 不变。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -224,19 +224,87 @@ def safe_download_single(ticker, period="1y"):
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_ROLE_KEY
 # =========================================================
-def _get_supabase_runtime_config():
+def _find_streamlit_secret(key):
+    """
+    Find a secret by name anywhere in st.secrets.
+
+    Why recursive:
+    Existing CMS Streamlit secrets already contain TOML sections such as
+    [gcp_service_account] / [tracker]. If SUPABASE_* lines are pasted after
+    a section header, TOML is valid but those values become nested inside
+    that section instead of being top-level. This helper supports both
+    top-level and accidentally nested placement without exposing values.
+    """
     try:
-        base_url = str(st.secrets["SUPABASE_URL"]).strip().rstrip("/")
-        api_key = str(st.secrets["SUPABASE_SERVICE_ROLE_KEY"]).strip()
+        root = st.secrets
     except Exception:
+        return None
+
+    # Top-level first.
+    try:
+        if key in root:
+            value = root[key]
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    except Exception:
+        pass
+
+    # Recursive search through TOML sections.
+    def walk(obj):
+        try:
+            items = obj.items()
+        except Exception:
+            return None
+
+        for k, v in items:
+            if str(k) == key:
+                try:
+                    text = str(v).strip()
+                except Exception:
+                    text = ""
+                if text:
+                    return text
+
+            # Streamlit Secrets sections behave like mappings.
+            try:
+                if hasattr(v, "items"):
+                    found = walk(v)
+                    if found:
+                        return found
+            except Exception:
+                pass
+        return None
+
+    return walk(root)
+
+
+def _get_supabase_runtime_config():
+    base_url = _find_streamlit_secret("SUPABASE_URL")
+    api_key = _find_streamlit_secret("SUPABASE_SERVICE_ROLE_KEY")
+
+    missing = []
+    if not base_url:
+        missing.append("SUPABASE_URL")
+    if not api_key:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+
+    if missing:
         raise RuntimeError(
-            "Streamlit Secrets 缺少 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY。"
-            "请把 GitHub Actions 中对应的两个值也加入 Streamlit Cloud Secrets。"
+            "Streamlit Secrets 未读取到：" + ", ".join(missing) +
+            "。请确认这两个名称拼写完全一致；程序已同时支持顶层和 TOML 分组内的 Secrets。"
         )
-    if not base_url or not api_key:
-        raise RuntimeError("Supabase Streamlit Secrets 为空。")
+
+    base_url = str(base_url).strip().rstrip("/")
+    api_key = str(api_key).strip()
+
     if "/rest/v1" in base_url:
         base_url = base_url.split("/rest/v1", 1)[0].rstrip("/")
+
+    if not base_url.startswith("https://") or not base_url.endswith(".supabase.co"):
+        raise RuntimeError(
+            "SUPABASE_URL 格式不正确。应类似 https://xxxx.supabase.co，且不要包含 /rest/v1/。"
+        )
+
     return base_url, api_key
 
 
