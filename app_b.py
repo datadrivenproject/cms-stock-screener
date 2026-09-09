@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -54,6 +55,12 @@ def chinese_sheet_columns(df):
 MARKET_TZ = ZoneInfo("America/New_York")
 AUTO_REFRESH_MS = 15 * 60 * 1000
 REMINDER_HOURS = {11, 13, 15}
+
+# GitHub Actions / command-line background mode.
+# When HEADLESS_B_RUN=1, this file runs B/C once and exits without needing
+# the Streamlit page to stay open.
+HEADLESS_B_RUN = os.getenv("HEADLESS_B_RUN", "0").strip() == "1"
+HEADLESS_MAX_NAMES = int(os.getenv("HEADLESS_MAX_NAMES", "20"))
 
 
 
@@ -1867,6 +1874,195 @@ def render_c_backtest(detail, summary):
                        mime="text/csv", use_container_width=True)
 
 
+
+# =========================================================
+# HEADLESS B/C RUNNER — for GitHub Actions
+# =========================================================
+def run_b_headless_once(max_candidates=20):
+    """
+    Run one full B/C monitoring cycle without keeping Streamlit open.
+
+    Intended usage:
+        HEADLESS_B_RUN=1 python app.py
+
+    What it does:
+      1) Read latest formal A='买' candidates.
+      2) Sync/retain the rolling B_MasterList.
+      3) Analyze active TRACKING candidates and all HOLDING positions.
+      4) Write this run to B_Log.
+      5) Write latest decision/price and C-state back to B_MasterList.
+      6) Print BUY / C-action changes to the GitHub Actions log.
+
+    The existing decision(), analyze_one(), stop rules and C logic are unchanged.
+    """
+    run_time = market_now()
+
+    if not is_regular_market_hours(run_time):
+        print(
+            f"[B/C] Skip: outside regular market hours "
+            f"({run_time.strftime('%Y-%m-%d %H:%M:%S %Z')})."
+        )
+        return pd.DataFrame()
+
+    try:
+        a_df, scan_date = load_latest_a_candidates()
+    except Exception as e:
+        print(f"[B/C] ERROR reading A candidates: {e}")
+        raise
+
+    if a_df is None or a_df.empty:
+        print("[B/C] No formal A='买' candidates in the latest A scan.")
+        return pd.DataFrame()
+
+    master = load_b_master()
+    master = sync_master_with_a(master, a_df, scan_date)
+    save_b_master(master)
+
+    monitor = active_master_pool(master, max_candidates=max_candidates)
+    if monitor is None or monitor.empty:
+        print("[B/C] B_MasterList has no active TRACKING/HOLDING names.")
+        return pd.DataFrame()
+
+    previous_states = load_previous_b_states()
+    rows = []
+
+    for _, row in monitor.iterrows():
+        ticker = str(row.get("Ticker", "")).strip().upper()
+        try:
+            result = analyze_one(row)
+            rows.append(result)
+            print(f"[B/C] {ticker}: {result.get('盘中决策', 'DATA')}")
+        except Exception as e:
+            print(f"[B/C] {ticker}: ERROR - {e}")
+
+    if not rows:
+        print("[B/C] No analyzable rows.")
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows)
+    out["上一轮状态"] = out["Ticker"].map(previous_states).fillna("首次检查")
+
+    out["状态变化"] = out.apply(
+        lambda r: (
+            f"{r['上一轮状态']} → {r['盘中决策']}"
+            if r["上一轮状态"] != "首次检查"
+            and r["上一轮状态"] != r["盘中决策"]
+            else ("首次检查" if r["上一轮状态"] == "首次检查" else "无变化")
+        ),
+        axis=1
+    )
+
+    out["新BUY提醒"] = out.apply(
+        lambda r: (
+            "🔔 新BUY"
+            if r["盘中决策"] == "🟢 BUY"
+            and r["上一轮状态"] != "🟢 BUY"
+            else ""
+        ),
+        axis=1
+    )
+
+    order = {
+        "🛑 STOP LOSS": 0,
+        "🔻 PROFIT PROTECT": 1,
+        "🟣 TAKE PROFIT TP2": 2,
+        "🟠 TAKE PROFIT TP1": 3,
+        "🟢 BUY": 4,
+        "🟠 EARLY BUY": 5,
+        "🟡 HOLD / 趋势转弱": 6,
+        "🟢 HOLD": 7,
+        "🟡 WAIT": 8,
+        "🔴 AVOID": 9,
+        "⚪ DATA": 10,
+    }
+    out["_o"] = out["盘中决策"].map(order).fillna(9)
+    sort_cols = ["_o"] + (["A排名"] if "A排名" in out.columns else [])
+    out = out.sort_values(sort_cols).drop(columns="_o").reset_index(drop=True)
+
+    append_b_log(out, run_time)
+
+    # Persist this run's latest decision/price and C-state back to Master.
+    mm = master.copy()
+    if mm is not None and not mm.empty:
+        for _, rr in out.iterrows():
+            mask = mm["Ticker"].astype(str).str.upper().eq(str(rr["Ticker"]).upper())
+            if not mask.any():
+                continue
+
+            mm.loc[mask, "最后检查时间"] = run_time.strftime("%Y-%m-%d %H:%M:%S")
+            mm.loc[mask, "最后价格"] = rr.get("当前价格", "")
+            mm.loc[mask, "最后决策"] = rr.get("盘中决策", "")
+            mm.loc[mask, "最后决策依据"] = rr.get("决策依据", "")
+
+            is_hold = (
+                mm.loc[mask, "是否持仓"]
+                .astype(str)
+                .isin(["是", "Y", "YES", "TRUE", "1"])
+                .any()
+                if "是否持仓" in mm.columns
+                else False
+            )
+
+            if is_hold:
+                for c in ["C阶段", "持仓最高价", "最高浮盈%", "动态保护价", "利润回吐%"]:
+                    if c in rr.index:
+                        mm.loc[mask, c] = rr.get(c, "")
+            else:
+                entry = safe_float(rr.get("参考入场", np.nan))
+                stop = safe_float(rr.get("参考止损", np.nan))
+                if not pd.isna(entry):
+                    mm.loc[mask, "参考入场"] = rr.get("参考入场", "")
+                if not pd.isna(stop):
+                    mm.loc[mask, "参考止损"] = rr.get("参考止损", "")
+
+        save_b_master(mm)
+
+    new_buys = out[out["新BUY提醒"].eq("🔔 新BUY")]
+    c_actions = out[
+        out["盘中决策"].isin(
+            ["🛑 STOP LOSS", "🔻 PROFIT PROTECT", "🟣 TAKE PROFIT TP2", "🟠 TAKE PROFIT TP1"]
+        )
+    ]
+
+    print(
+        f"[B/C] Completed {len(out)} names at "
+        f"{run_time.strftime('%Y-%m-%d %H:%M:%S %Z')}."
+    )
+
+    if not new_buys.empty:
+        print("[B/C] NEW BUY: " + ", ".join(new_buys["Ticker"].astype(str).tolist()))
+
+    if not c_actions.empty:
+        print(
+            "[B/C] C ACTION: "
+            + "; ".join(
+                c_actions.apply(
+                    lambda r: f"{r['Ticker']} {r['盘中决策']}",
+                    axis=1
+                ).tolist()
+            )
+        )
+
+    changed = out[~out["状态变化"].isin(["无变化", "首次检查"])]
+    if not changed.empty:
+        print(
+            "[B/C] STATE CHANGE: "
+            + "; ".join(
+                changed.apply(
+                    lambda r: f"{r['Ticker']} {r['状态变化']}",
+                    axis=1
+                ).tolist()
+            )
+        )
+
+    return out
+
+
+if HEADLESS_B_RUN:
+    run_b_headless_once(max_candidates=HEADLESS_MAX_NAMES)
+    raise SystemExit(0)
+
+
 with st.sidebar:
     st.header("B/C FINAL v1.8 LIVE")
     max_names=st.slider("最多监控B跟踪池股票",3,30,20,1)
@@ -2242,4 +2438,3 @@ with st.expander("📘 查看 B/C FINAL v1.8 LIVE 最终规则", expanded=False)
     )
 
 st.success("✅ B/C FINAL v1.8 LIVE 已定型：B买点逻辑不变，初始Stop正式采用1.50×距离，C分阶段保护保持不变。")
-
