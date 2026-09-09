@@ -17,17 +17,13 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线",
+    page_title="CMS A — 盘后选股",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线")
-st.caption(
-    "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；A5.2R核心共振保持不变。v1.3仅取消‘压力过近’对最终买/不买的一票否决，Zone继续保留为位置/风险信息。"
-    "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
-    "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
-)
+st.title("📈 CMS A — 盘后选股")
+st.caption("A5.2R FINAL v1.3 CLEAN · Supabase复权日线 · 压力/支撑仅作位置参考，不再一票否决")
 
 # =========================================================
 # SETTINGS
@@ -3230,44 +3226,33 @@ def render_historical_a_replay(bt):
                        mime='text/csv', use_container_width=True)
 
 # =========================================================
-# UI
+# CLEAN PRODUCTION UI
 # =========================================================
 with st.sidebar:
-    st.header("A5.2R FINAL v1")
-    top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
-    st.markdown("**Early Engine V2 权重**")
-    st.write("市场结构 25")
-    st.write("趋势动量 20")
-    st.write("资金积累 20")
-    st.write("领导力 20")
-    st.write("Catalyst 15")
-    st.markdown("**Fundamental Confirmation（不计入100分）**")
-    st.write("Quality / FCF / Debt / Valuation / Growth")
-    st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("FINAL v1.3：核心共振规则冻结；支撑/压力/Room 仅做位置与风险标签，不再否决买入。")
+    st.header("扫描设置")
+    top_n = st.slider("重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
+    st.caption("正式版只保留盘后扫描与必要诊断。")
+    st.success("v1.3：压力过近不再直接否决买入。")
 
 st.info(
-    "A5.2R FINAL v1.3：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → 核心买/不买；OHLCV支撑/压力继续计算，但只作为位置/风险信息。"
-    "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
+    "A负责找强股：基础筛选 → MACD/KDJ/RSI → 量价 → RS → 共振 → 买/不买。"
+    " 支撑/压力继续计算，但只作为位置与风险信息；盘中买点由B确认。"
 )
 
-scan_clicked = st.button("🚀 运行 V4.3A 盘后扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行盘后扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     tickers = get_universe()
     progress = st.progress(0)
     status = st.empty()
 
-    status.write("正在从 Supabase 读取约1年复权日K数据……")
+    status.write("正在读取 Supabase 复权日K……")
     try:
         data = supabase_batch_download(tuple(tickers))
         benchmarks = get_benchmark_returns()
         missing_bench = [t for t in BENCHMARK_TICKERS if t not in benchmarks]
         if missing_bench:
-            st.error(
-                "Supabase 缺少复权基准/板块ETF数据：" + ", ".join(missing_bench) +
-                "。RS模块需要与个股使用同一复权口径，本次扫描已停止。"
-            )
+            st.error("Supabase 缺少基准/板块ETF数据：" + ", ".join(missing_bench))
             st.stop()
     except Exception as e:
         st.error(f"Supabase 复权日K读取失败：{e}")
@@ -3275,17 +3260,22 @@ if scan_clicked:
 
     missing_daily = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
     if missing_daily:
-        st.error(
-            "Supabase 缺少复权日K：" + ", ".join(missing_daily) +
-            "。为避免混用原始/复权价格，本次扫描已停止。"
-        )
+        st.error("Supabase 缺少复权日K：" + ", ".join(missing_daily))
         st.stop()
+
+    # capture the freshest market date once for display only
+    latest_dates = []
+    for _df in data.values():
+        try:
+            if _df is not None and not _df.empty:
+                latest_dates.append(pd.Timestamp(_df.index.max()).date())
+        except Exception:
+            pass
+    market_date = max(latest_dates).isoformat() if latest_dates else "未知"
 
     results = []
     for i, ticker in enumerate(tickers, start=1):
         status.write(f"正在分析 {ticker}（{i}/{len(tickers)}）")
-        # Production scan intentionally does not fall back to Yahoo daily OHLCV.
-        # Missing Supabase data is skipped so the daily-price provider stays consistent.
         df = data.get(ticker)
         row = analyze_daily_candidate(ticker, df, benchmarks)
         if row is not None:
@@ -3294,7 +3284,7 @@ if scan_clicked:
 
     status.empty()
     if not results:
-        st.error("扫描没有得到有效结果，请稍后再试。")
+        st.error("扫描没有得到有效结果。")
         st.stop()
 
     all_df = pd.DataFrame(results)
@@ -3308,11 +3298,11 @@ if scan_clicked:
     eligible["Rank"] = eligible.index + 1
     top_df = eligible.head(top_n).copy()
 
-    # Keep the latest result during Streamlit reruns.
     st.session_state["v43a_top_df"] = top_df.copy()
     st.session_state["v43a_all_df"] = all_df.copy()
     st.session_state["v43a_scan_date"] = datetime.now().strftime("%Y-%m-%d")
-    # Full-universe history is kept separately for A strength backtesting.
+    st.session_state["a_market_date"] = market_date
+
     try:
         n_all, u_all = save_all_scanned_history(all_df)
         st.session_state["a_all_history_save_msg"] = f"全扫描池历史：新增 {n_all} 行，更新 {u_all} 行"
@@ -3320,94 +3310,65 @@ if scan_clicked:
         st.session_state["a_all_history_save_msg"] = f"全扫描池历史保存失败：{e}"
 
 
+def _clean_fmt():
+    return {
+        "当前价格": "${:.2f}",
+        "上方空间": "{:+.1%}",
+        "距支撑": "{:.1%}",
+        "RSI14": "{:.1f}",
+        "量能增强比": "{:.2f}",
+        "涨跌量比": "{:.2f}",
+    }
+
+
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
-        st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
+        st.warning("当前没有通过 Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ A5.2R 扫描完成：{len(top_df)}只次日重点候选")
+    market_date = st.session_state.get("a_market_date", "未知")
+    hard_n = int((all_df.get("Hard Filter", pd.Series(dtype=str)) == "通过").sum())
+    buy_n_all = int((all_df.get("A5决策", pd.Series(dtype=str)) == "买").sum())
+    buy_n_top = int((top_df.get("A5决策", pd.Series(dtype=str)) == "买").sum())
 
-    display_cols = [
-        # 结果放最前；最终只给“买 / 不买”
-        "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
-        # 一个指标一个col
-        "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
-        "空间等级", "空间优先级",
-        "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
-        # 关键数值，便于复核
-        "Early V2 Score", "Structure Score", "Trend & Momentum Score",
-        "Accumulation Score", "Leadership Score",
-        "KDJ_K", "KDJ_D", "KDJ_J", "RSI14", "MACD Phase",
-        "Volume Build Ratio", "Up/Down Volume Ratio", "RS Acceleration",
-        "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
-        "Confidence"
+    st.subheader("今日扫描结果")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("行情日期", market_date)
+    c2.metric("完成扫描", len(all_df))
+    c3.metric("Hard Filter通过", hard_n)
+    c4.metric("正式买入候选", buy_n_all)
+
+    st.caption(f"当前展示 Top {len(top_df)} 重点候选，其中正式‘买’ {buy_n_top} 只。")
+
+    cn = {
+        "A5决策":"结果", "Rank":"排名", "Ticker":"股票", "Company":"公司", "Price":"当前价格",
+        "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI",
+        "量价共振":"量价", "RS共振":"RS", "空间等级":"空间等级", "位置判断":"位置判断",
+        "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间",
+        "Confidence":"信心等级",
+    }
+    main_cols = [
+        "A5决策","Rank","Ticker","Company","Price","共振数",
+        "MACD共振","KDJ共振","RSI共振","量价共振","RS共振",
+        "A5.2R支撑区","A5.2R压力区","上方空间","位置判断","Confidence"
     ]
-    display_cols = [c for c in display_cols if c in top_df.columns]
-
-    fmt = {
-        "Price": "{:.2f}",
-        "Short-term Breakout": "{:.2f}",
-        "MA20 Slope 5D": "{:.2%}",
-        "RSI14": "{:.1f}",
-        "Volume Build Ratio": "{:.2f}",
-        "Up/Down Volume Ratio": "{:.2f}",
-        "上方空间": "{:+.1%}",
-        "距支撑区": "{:.1%}",
-        "Stock vs SPY 20D": "{:+.1%}",
-        "Sector vs SPY 20D": "{:+.1%}",
-        "Stock vs Sector 20D": "{:+.1%}",
-        "ROE": "{:.1%}",
-        "Operating Margin": "{:.1%}",
-        "Debt to Equity": "{:.1f}",
-        "Forward PE": "{:.1f}",
-        "PEG": "{:.2f}",
-        "Revenue Growth": "{:.1%}",
-        "Earnings Growth": "{:.1%}",
-    }
-
-    st.subheader("🎯 A5.2R FINAL v1 — 次日重点候选（不强制凑10只）")
-    cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "空间等级":"空间等级", "空间优先级":"空间优先级", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
-        "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
-        "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
-        "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
-        "Valuation Fundamental":"估值", "Growth Fundamental":"增长",
-        "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
-        "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
-        "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
-        "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
-        "R→S Flip Zone":"R→S回踩区", "R→S Flip Touches":"R→S历史测试次数",
-        "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
-        "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
-        "Stock vs SPY 20D":"个股 vs SPY", "Sector vs SPY 20D":"板块 vs SPY",
-        "Stock vs Sector 20D":"个股 vs 板块", "RS Acceleration":"RS加速度",
-        "Catalyst Label":"催化剂状态", "Positive Catalyst":"正面催化剂", "Negative Catalyst":"负面催化剂",
-        "ROE":"ROE", "Operating Margin":"营业利润率", "Debt to Equity":"Debt/Equity",
-        "Forward PE":"Forward P/E", "PEG":"PEG", "Revenue Growth":"营收增长", "Earnings Growth":"盈利增长",
-        "CMS Context":"CMS参考"
-    }
-    show_df = top_df[display_cols].rename(columns=cn_titles)
-    fmt_cn = {cn_titles.get(k,k): v for k,v in fmt.items()}
+    main_cols = [c for c in main_cols if c in top_df.columns]
+    show = top_df[main_cols].rename(columns=cn)
     st.dataframe(
-        show_df.style.format({k: v for k, v in fmt_cn.items() if k in show_df.columns}, na_rep=""),
+        show.style.format({k:v for k,v in _clean_fmt().items() if k in show.columns}, na_rep=""),
         hide_index=True,
         use_container_width=True,
     )
 
-    st.caption(
-        "注意：这里的‘一级/二级重点候选’表示第二天重点监控，不代表开盘立即买入。"
-        "真正买点由 B/C 用1H和15min确认；买入后继续由同一个 B/C App 管理退出。"
-    )
+    st.caption("A只负责盘后选强股；支撑/压力不再否决强股。真正入场由B盘中确认，买后由C管理。")
 
     c1, c2 = st.columns(2)
     with c1:
         csv = reorder_a_columns(top_df).rename(columns=A_SHEET_CN_MAP).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            "💾 下载 V4.3A Top 候选",
-            csv,
+            "💾 下载候选CSV", csv,
             file_name=f"A52R_FINAL_Top_{len(top_df)}_{datetime.now().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
+            mime="text/csv", use_container_width=True,
         )
     with c2:
         if st.button("☁️ 保存到 Google Sheet", use_container_width=True):
@@ -3417,78 +3378,37 @@ def render_results(top_df, all_df):
             except Exception as e:
                 st.error(f"Google Sheet 保存失败：{e}")
 
-    with st.expander("查看五大模块详细解释"):
-        st.markdown(
-            """
-**① 市场结构（25）**：一年日K Swing High/Low 聚类形成真正的压力/支撑区；同时保留20日短期突破位、Compression 和 R→S Flip。  
-**② 趋势动量（20）**：MA20 5日斜率不再只看 >0；MACD区分零轴下转强、零轴下金叉、零轴上扩大、零轴上缩短；RSI只做健康度确认。  
-**③ 资金积累（20）**：Volume Build + Up/Down Volume + OBV。日K只能判断‘资金积累证据’，不能宣称真实主动买盘。  
-**④ 领导力（20）**：Stock vs SPY、Sector vs SPY、Stock vs Sector；5D只判断近期是否加速，不继续增加更多基准。  
-**⑤ Catalyst（15）**：扩大正面/负面关键词并按事件类别识别；没有Catalyst不会直接淘汰，但明显负面Catalyst会压低候选级别。  
-**⑥ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
-"""
+    with st.expander("诊断信息（需要时再看）"):
+        diag_map = {
+            "Ticker":"股票", "Early V2 Score":"Early V2", "Structure Score":"结构分",
+            "Trend & Momentum Score":"趋势动量", "Accumulation Score":"资金积累", "Leadership Score":"领导力",
+            "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J", "RSI14":"RSI14", "MACD Phase":"MACD阶段",
+            "Volume Build Ratio":"量能增强比", "Up/Down Volume Ratio":"涨跌量比", "RS Acceleration":"RS加速度",
+            "压力测试次数_A52R":"压力触碰", "支撑测试次数_A52R":"支撑触碰",
+            "空间共振":"空间共振", "空间优先级":"空间优先级", "空间等级":"空间等级",
+            "Major Resistance Zone":"主要压力区", "Major Support Zone":"主要支撑区",
+        }
+        diag_cols = [c for c in diag_map if c in top_df.columns]
+        diag = top_df[diag_cols].rename(columns=diag_map)
+        st.dataframe(
+            diag.style.format({k:v for k,v in _clean_fmt().items() if k in diag.columns}, na_rep=""),
+            hide_index=True, use_container_width=True,
         )
+        if "a_all_history_save_msg" in st.session_state:
+            st.caption(st.session_state["a_all_history_save_msg"])
 
-    with st.expander("查看未通过 Hard Filter 的股票"):
+    with st.expander("未通过 Hard Filter（需要时再看）"):
         failed = all_df[all_df["Hard Filter"] != "通过"].copy()
         if failed.empty:
             st.write("全部股票都通过 Hard Filter。")
         else:
-            st.dataframe(
-                failed[["Ticker", "Price", "Early V2 Score", "Hard Filter Reason"]]
-                .sort_values("Early V2 Score", ascending=False),
-                hide_index=True,
-                use_container_width=True,
-            )
+            cols = [c for c in ["Ticker","Price","Early V2 Score","Hard Filter Reason"] if c in failed.columns]
+            fshow = failed[cols].sort_values("Early V2 Score", ascending=False) if "Early V2 Score" in cols else failed[cols]
+            fshow = fshow.rename(columns={"Ticker":"股票","Price":"价格","Early V2 Score":"Early V2","Hard Filter Reason":"未通过原因"})
+            st.dataframe(fshow, hide_index=True, use_container_width=True)
 
 
 if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
-    st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
-
-st.divider()
-st.header("🧪 FINAL 核心历史验证（暂保留原 Yahoo 2年历史源）")
-st.caption(
-    "正式盘后扫描使用 Supabase 复权日线；历史Replay暂保留 Yahoo 2年历史源，因为当前 Supabase 只初始化约1年。A5.2R 选股规则不变。"
-)
-st.info(
-    "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
-    "Yahoo当前News无法可靠还原过去某一天的Catalyst，因此历史Catalyst不参与Replay排名；Fundamental本来就不进入Early V2 100分。"
-)
-
-r1, r2 = st.columns([1,2])
-with r1:
-    replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
-with r2:
-    st.caption("建议跑60日。FINAL 只显示核心 A4 vs A5.2R Benchmark 和精简指标。")
-
-if st.button("🧪 运行60日 A5.2R FINAL 核心验证", type="primary", use_container_width=True):
-    try:
-        p = st.progress(0)
-        s = st.empty()
-        bt = run_historical_a_replay(replay_days=int(replay_days), progress_bar=p, status_box=s)
-        st.session_state["a_historical_replay"] = bt
-        st.session_state["a_historical_replay_days"] = int(replay_days)
-    except Exception as e:
-        st.error(f"A历史回测失败：{e}")
-
-if "a_historical_replay" in st.session_state:
-    render_historical_a_replay(st.session_state["a_historical_replay"])
-
-with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
-    if "a_all_history_save_msg" in st.session_state:
-        st.info(st.session_state["a_all_history_save_msg"])
-    st.caption("A_AllScannedHistory 保留用于以后做真实的前瞻验证，但它不是历史Replay的前提。历史Replay现在可以立刻运行。")
-    if st.button("运行已保存历史库的Forward Validation", use_container_width=True):
-        try:
-            hist = load_all_scan_history()
-            if hist.empty:
-                st.warning("A_AllScannedHistory 还没有记录。")
-            else:
-                bt_fwd = evaluate_scan_history(hist)
-                st.session_state["a_strong_bt"] = bt_fwd
-        except Exception as e:
-            st.error(f"Forward Validation失败：{e}")
-    if "a_strong_bt" in st.session_state:
-        render_strong_stock_backtest(st.session_state["a_strong_bt"])
+    st.caption("点击“运行盘后扫描”开始。")
