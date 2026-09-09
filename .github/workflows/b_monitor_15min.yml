@@ -1,0 +1,37 @@
+name: CMS B 15min Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 15 minutes, Mon-Fri. The Python code itself checks NY regular market hours.
+    - cron: "*/15 * * * 1-5"
+
+jobs:
+  run-b-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Streamlit secrets
+        env:
+          STREAMLIT_SECRETS_TOML: ${{ secrets.STREAMLIT_SECRETS_TOML }}
+        run: |
+          mkdir -p .streamlit
+          printf '%s' "$STREAMLIT_SECRETS_TOML" > .streamlit/secrets.toml
+
+      - name: Run B/C once
+        env:
+          HEADLESS_B_RUN: "1"
+          HEADLESS_MAX_NAMES: "20"
+        run: python app.py
