@@ -928,13 +928,14 @@ def calc_a5_resonance(df, row=None):
     core_flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok]
     resonance_n = int(sum(core_flags))
 
-    # Preserve A5's "do not force 10" philosophy:
-    # need 4 of 5, MACD bullish, and at least one of Volume or RS.
-    # v1.3: support/resistance/room no longer vetoes a core-qualified strong stock.
+    # A6 FINAL / V2B Core:
+    # ≥4 of 5 confirmations + MACD mandatory + Volume-Price mandatory.
+    # RS remains one of the five confirmations, but can no longer substitute for Volume-Price.
+    # Pivot/Room NEVER vetoes a V2B-qualified candidate.
     base_buy = bool(
         resonance_n >= 4
         and macd_ok
-        and (pv_ok or rs_ok)
+        and pv_ok
     )
     decision = "买" if base_buy else "不买"
 
@@ -1815,11 +1816,64 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         # A6 V3 research fields: calculated strictly as-of the replay date.
         row.update(calc_v3_pivot_room_fields(df))
         row["空间等级"], row["空间优先级"] = calc_room_quality(row)
+
+        # FINAL priority is ranking information only.
+        level, pscore, preason = calc_a6_final_priority(row)
+        row["A6优先级"] = level
+        row["A6优先分"] = pscore
+        row["A6优先原因"] = preason
+
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         row["Confidence"] = final_confidence(row)
         return row
     except Exception:
         return None
+
+
+# =========================================================
+# A6 FINAL — PRIORITY LAYER
+# Core decides candidate eligibility; Pivot/Room only ranks candidates.
+# =========================================================
+def calc_a6_final_priority(row):
+    score = 0
+    reasons = []
+
+    br = str(row.get("Breakout Room Status V3", ""))
+    fr = str(row.get("First Room Status V3", ""))
+    ps = str(row.get("Pivot Status V3", ""))
+
+    # Strongest validated research signal.
+    if br == "Room ≥8%":
+        score += 4
+        reasons.append("Breakout Room≥8%")
+    elif br == "Room 5–8%":
+        score += 3
+        reasons.append("Breakout Room 5–8%")
+    elif br == "Room 2–5%":
+        score += 1
+        reasons.append("Breakout Room 2–5%")
+
+    # Broader stable signal.
+    if fr in ["Room ≥8%", "Room 5–8%", "Room 2–5%"]:
+        score += 2
+        reasons.append("First Room≥2%")
+
+    # Early-position signal.
+    if ps == "突破前 >3%":
+        score += 2
+        reasons.append("Pivot突破前>3%")
+
+    if score >= 6:
+        level = "A+ 最高优先"
+    elif score >= 4:
+        level = "A 高优先"
+    elif score >= 2:
+        level = "B 正常优先"
+    else:
+        level = "C 普通跟踪"
+
+    return level, score, "；".join(reasons) if reasons else "V2B通过；无额外Pivot/Room加分"
+
 
 # =========================================================
 # GOOGLE SHEETS — NEW TAB, DOES NOT OVERWRITE V4.2.1 TRACKER
@@ -1827,7 +1881,12 @@ def analyze_daily_candidate(ticker, df, benchmarks):
 DAILY_WORKSHEET = "A_Candidates"
 
 A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段':'量价阶段', 'VP分':'量价分', 'VP说明':'量价说明', 'VP量比20':'量比20', 'VP缩量比':'缩量比', 'VP前期缩量':'前期缩量', 'VP放量启动':'放量启动', 'VP派发风险':'派发风险'}
-A_SHEET_CN_MAP.update({'空间等级':'空间等级', '空间优先级':'空间优先级'})
+A_SHEET_CN_MAP.update({
+    '空间等级':'空间等级', '空间优先级':'空间优先级',
+    'A6优先级':'A6优先级', 'A6优先分':'A6优先分', 'A6优先原因':'A6优先原因',
+    'Pivot Status V3':'Pivot状态', 'First Room Status V3':'First Room',
+    'Breakout Room Status V3':'Breakout Room'
+})
 
 def _cell(v):
     if v is None:
@@ -3627,7 +3686,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A6 V3.1 Research")
+    st.header("A6 FINAL")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -3638,7 +3697,7 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("A6 V3：V2B Core固定；Pivot Status / First Room / Breakout Room只做研究，不改变正式盘后买/不买。")
+    st.success("A6 FINAL：V2B Core决定正式候选；Pivot/Room只做优先级排序，不做一票否决。")
 
 st.info(
     "A6 V3.1 Research：V2B Core = 共振≥4/5 + MACD必过 + 量价必过；然后研究 Pivot Status / First Room / Breakout Room。"
@@ -3692,13 +3751,32 @@ if scan_clicked:
         st.stop()
 
     all_df = pd.DataFrame(results)
-    eligible = all_df[all_df["Hard Filter"] == "通过"].copy()
+    # A6 FINAL formal candidate pool:
+    # Hard Filter pass + V2B Core BUY. Never force-fill to top_n.
+    eligible = all_df[
+        (all_df["Hard Filter"] == "通过")
+        & (all_df["A5决策"] == "买")
+    ].copy()
+
     quality_order = {"✅ 通过": 0, "⚠️ 观察": 1, "❌ 不适合Early": 2}
     eligible["_质量排序"] = eligible["质量检查"].map(quality_order).fillna(9)
+
+    # Pivot/Room priority comes first; existing A quality scores break ties.
+    sort_cols = [
+        "_质量排序", "A6优先分", "共振数", "Early V2 Score",
+        "Structure Score", "Leadership Score", "Accumulation Score"
+    ]
+    sort_cols = [c for c in sort_cols if c in eligible.columns]
+    ascending_map = {
+        "_质量排序": True, "A6优先分": False, "共振数": False,
+        "Early V2 Score": False, "Structure Score": False,
+        "Leadership Score": False, "Accumulation Score": False
+    }
     eligible = eligible.sort_values(
-        ["_质量排序", "Early V2 Score", "Structure Score", "Leadership Score", "Accumulation Score"],
-        ascending=[True, False, False, False, False],
+        sort_cols,
+        ascending=[ascending_map[c] for c in sort_cols],
     ).drop(columns=["_质量排序"]).reset_index(drop=True)
+
     eligible["Rank"] = eligible.index + 1
     top_df = eligible.head(top_n).copy()
 
@@ -3719,11 +3797,14 @@ def render_results(top_df, all_df):
         st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
         return
 
-    st.success(f"✅ A5.2R 扫描完成：{len(top_df)}只次日重点候选")
+    st.success(f"✅ A6 FINAL 扫描完成：{len(top_df)}只正式候选（不强制凑满）")
 
     display_cols = [
         # 结果放最前；最终只给“买 / 不买”
-        "A5决策", "Rank", "Ticker", "Company", "Price", "共振数",
+        "A5决策", "Rank", "Ticker", "Company", "Price",
+        "A6优先级", "A6优先分", "A6优先原因",
+        "Pivot Status V3", "First Room Status V3", "Breakout Room Status V3",
+        "共振数",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
         "空间等级", "空间优先级",
