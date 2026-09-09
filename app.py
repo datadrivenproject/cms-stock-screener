@@ -16,19 +16,12 @@ except ImportError:
 # =========================================================
 # PAGE
 # =========================================================
-st.set_page_config(
-    page_title="CMS Stock Screener A6 V3.1 Research — Pivot / Room 60日分层",
-    page_icon="📈",
-    layout="wide",
-)
+st.set_page_config(page_title="CMS Stock Screener A6 FINAL", page_icon="📈", layout="wide")
 
-st.title("📈 CMS Stock Screener A6 V3.1 Research — Pivot / Room 60日分层")
+st.title("📈 CMS Stock Screener A6 FINAL")
 st.caption(
-    "A6 V3.1 Research：正式盘后扫描逻辑不动；历史60日回放固定使用 A6 V2B Core（≥4/5 + MACD必过 + 量价必过），新增 Pivot Status / First Room / Breakout Room 分层研究。"
-    "这些新字段当前只做研究，不参与正式买/不买。"
-
-    "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
-    "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
+    "盘后正式候选：V2B Core（共振≥4/5 + MACD必过 + 量价必过）。"
+    "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
 )
 
 # =========================================================
@@ -3540,7 +3533,7 @@ def render_a6_v3_pivot_room_research(bt):
     v2b = _v3_v2b_selection(d)
     dates_n = d["Replay Date"].nunique()
 
-    st.header("🧭 A6 V3.1 Research — V2B Core + Pivot / Room 分层")
+    st.header("🧭 Pivot / Room 优先级验证")
     st.caption(
         "V2B Core完全不变：共振≥4/5 + MACD必过 + 量价必过；"
         "Pivot Status、First Room、Breakout Room 当前只做60日分层研究，不参与正式买/不买。"
@@ -3579,7 +3572,7 @@ def render_a6_v3_pivot_room_research(bt):
     pivot_pre3 = v2b["Pivot Status V3"].eq("突破前 >3%")
     pivot_near_fresh = v2b["Pivot Status V3"].isin(["接近Pivot 0–3%", "刚突破 0–2%"])
 
-    st.subheader("⑤ A6 V3.1 精确组合实验：去掉“开放”后重新验证")
+    st.subheader("⑤ 精确组合验证")
     st.caption(
         "上一轮显示Room的“开放”组并不强，因此本轮不再把“开放”与≥5%混合。"
         "所有组合仍只做研究，不改变V2B Core。"
@@ -3643,7 +3636,7 @@ def render_a6_v3_pivot_room_research(bt):
     )
 
     st.info(
-        "V3.1判断原则：不因为小样本命中率很高就设硬门槛。"
+        "FINAL验证原则：不因为小样本命中率很高就设硬门槛。"
         "重点找≥5%/≥8%提高、弱股下降，同时仍保留足够样本和每天候选的条件。"
         "若强组合每天不足约1只，更适合做A候选优先级，而不是一票否决。"
     )
@@ -3654,8 +3647,8 @@ def render_historical_a_replay(bt):
         st.warning('历史回放没有得到有效样本。')
         return
 
-    st.header('🎯 A6 V3 — 60日核心验证 + Pivot/Room Research')
-    st.caption('先保留 A5.2R vs V2B Benchmark，再对 V2B Core 内部做 Pivot Status / First Room / Breakout Room 分层。')
+    st.header('🎯 A6 FINAL — 历史验证')
+    st.caption('验证 V2B Core 及 Pivot / Room 优先级依据；这些历史结果不改变当天正式候选资格。')
     render_a4_a5_resonance_comparison(bt)
     render_a6_v3_pivot_room_research(bt)
 
@@ -3700,11 +3693,10 @@ with st.sidebar:
     st.success("A6 FINAL：V2B Core决定正式候选；Pivot/Room只做优先级排序，不做一票否决。")
 
 st.info(
-    "A6 V3.1 Research：V2B Core = 共振≥4/5 + MACD必过 + 量价必过；然后研究 Pivot Status / First Room / Breakout Room。"
-    "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
+    "A6 FINAL：Core决定候选资格；Breakout Room、First Room、Pivot只负责排序，不做一票否决。"
 )
 
-scan_clicked = st.button("🚀 运行 V4.3A 盘后扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行 A6 FINAL 盘后扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     tickers = get_universe()
@@ -3794,7 +3786,7 @@ if scan_clicked:
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
-        st.warning("当前没有通过 V4.3A Hard Filter 的候选股票。")
+        st.warning("当前没有符合 A6 FINAL Core 的正式候选。")
         return
 
     st.success(f"✅ A6 FINAL 扫描完成：{len(top_df)}只正式候选（不强制凑满）")
@@ -3840,9 +3832,13 @@ def render_results(top_df, all_df):
         "Earnings Growth": "{:.1%}",
     }
 
-    st.subheader("🎯 A5.2R FINAL v1 — 次日重点候选（不强制凑10只）")
+    st.subheader("🎯 A6 FINAL — 次日正式候选")
     cn_titles = {
-        "A5决策":"结果", "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "空间等级":"空间等级", "空间优先级":"空间优先级", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
+        "A5决策":"结果",
+        "A6优先级":"优先级", "A6优先分":"优先分", "A6优先原因":"优先原因",
+        "Pivot Status V3":"Pivot状态", "First Room Status V3":"First Room",
+        "Breakout Room Status V3":"Breakout Room",
+        "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "空间等级":"空间等级", "空间优先级":"空间优先级", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
         "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
         "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
         "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
@@ -3878,7 +3874,7 @@ def render_results(top_df, all_df):
     with c1:
         csv = reorder_a_columns(top_df).rename(columns=A_SHEET_CN_MAP).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            "💾 下载 V4.3A Top 候选",
+            "💾 下载 A6 FINAL 候选",
             csv,
             file_name=f"A52R_FINAL_Top_{len(top_df)}_{datetime.now().strftime('%Y-%m-%d')}.csv",
             mime="text/csv",
@@ -3920,50 +3916,52 @@ def render_results(top_df, all_df):
 if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
-    st.caption("点击上方按钮开始第一次 V4.3A 扫描。V4.2.1 原版本不受影响。")
+    st.caption("点击上方按钮运行 A6 FINAL 盘后扫描。")
 
 st.divider()
-st.header("🧪 FINAL 核心历史验证（暂保留原 Yahoo 2年历史源）")
-st.caption(
-    "正式盘后扫描使用 Supabase 复权日线；历史Replay暂保留 Yahoo 2年历史源，因为当前 Supabase 只初始化约1年。A5.2R 选股规则不变。"
-)
-st.info(
-    "为避免偷看未来：历史Replay只使用能够从历史日K真实重建的 A 核心85分（结构25 + 趋势20 + 资金20 + 领导力20）。"
-    "Yahoo当前News无法可靠还原过去某一天的Catalyst，因此历史Catalyst不参与Replay排名；Fundamental本来就不进入Early V2 100分。"
-)
+with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
+    st.caption(
+        "这里仅用于验证 A6 FINAL，不参与每天正式盘后扫描。"
+        "历史 Replay 暂使用 Yahoo 约2年日K；正式盘后扫描继续使用 Supabase 复权日线。"
+    )
 
-r1, r2 = st.columns([1,2])
-with r1:
-    replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
-with r2:
-    st.caption("建议跑60日。V3会显示 V2B Benchmark + Pivot / First Room / Breakout Room 分层。")
+    replay_days = st.selectbox(
+        "历史回放交易日",
+        [20, 30, 60],
+        index=2,
+        key="a6_final_replay_days"
+    )
 
-if st.button("🧪 运行60日 A6 V3.1 精确组合回测", type="primary", use_container_width=True):
-    try:
-        p = st.progress(0)
-        s = st.empty()
-        bt = run_historical_a_replay(replay_days=int(replay_days), progress_bar=p, status_box=s)
-        st.session_state["a_historical_replay"] = bt
-        st.session_state["a_historical_replay_days"] = int(replay_days)
-    except Exception as e:
-        st.error(f"A历史回测失败：{e}")
-
-if "a_historical_replay" in st.session_state:
-    render_historical_a_replay(st.session_state["a_historical_replay"])
-
-with st.expander("查看 Forward Validation 历史库（从现在开始每天自动积累）"):
-    if "a_all_history_save_msg" in st.session_state:
-        st.info(st.session_state["a_all_history_save_msg"])
-    st.caption("A_AllScannedHistory 保留用于以后做真实的前瞻验证，但它不是历史Replay的前提。历史Replay现在可以立刻运行。")
-    if st.button("运行已保存历史库的Forward Validation", use_container_width=True):
+    if st.button("运行 A6 FINAL 历史验证", use_container_width=True):
         try:
-            hist = load_all_scan_history()
-            if hist.empty:
-                st.warning("A_AllScannedHistory 还没有记录。")
-            else:
-                bt_fwd = evaluate_scan_history(hist)
-                st.session_state["a_strong_bt"] = bt_fwd
+            p = st.progress(0)
+            s = st.empty()
+            bt = run_historical_a_replay(
+                replay_days=int(replay_days),
+                progress_bar=p,
+                status_box=s
+            )
+            st.session_state["a_historical_replay"] = bt
+            st.session_state["a_historical_replay_days"] = int(replay_days)
         except Exception as e:
-            st.error(f"Forward Validation失败：{e}")
-    if "a_strong_bt" in st.session_state:
-        render_strong_stock_backtest(st.session_state["a_strong_bt"])
+            st.error(f"A历史回测失败：{e}")
+
+    if "a_historical_replay" in st.session_state:
+        render_historical_a_replay(st.session_state["a_historical_replay"])
+
+    with st.expander("Forward Validation 历史库", expanded=False):
+        if "a_all_history_save_msg" in st.session_state:
+            st.info(st.session_state["a_all_history_save_msg"])
+        st.caption("A_AllScannedHistory 用于以后做真实前瞻验证。")
+        if st.button("运行 Forward Validation", use_container_width=True):
+            try:
+                hist = load_all_scan_history()
+                if hist.empty:
+                    st.warning("A_AllScannedHistory 还没有记录。")
+                else:
+                    st.session_state["a_strong_bt"] = evaluate_scan_history(hist)
+            except Exception as e:
+                st.error(f"Forward Validation失败：{e}")
+        if "a_strong_bt" in st.session_state:
+            render_strong_stock_backtest(st.session_state["a_strong_bt"])
+
