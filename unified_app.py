@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.5
+# CMS UNIFIED APP V1.6
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -160,6 +160,145 @@ def normalize(df):
         x["Ticker"] = x["Ticker"].astype(str).str.strip().str.upper()
     return x
 
+
+def latest_master_snapshot(master):
+    """Keep one newest B_MasterList row per ticker."""
+    if master is None or master.empty or "Ticker" not in master.columns:
+        return pd.DataFrame()
+
+    x = master.copy()
+    x["Ticker"] = x["Ticker"].astype(str).str.strip().str.upper()
+    tcol = first_existing(
+        x, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "时间", "扫描时间"]
+    )
+    x["_seq"] = np.arange(len(x))
+    if tcol:
+        x["_ts"] = pd.to_datetime(x[tcol], errors="coerce")
+        x = x.sort_values(["Ticker", "_ts", "_seq"], na_position="first")
+    else:
+        x = x.sort_values(["Ticker", "_seq"])
+    x = x.drop_duplicates("Ticker", keep="last")
+    return x.drop(columns=["_ts", "_seq"], errors="ignore").reset_index(drop=True)
+
+
+def _calc_rsi(close, period=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - 100 / (1 + rs)
+
+
+def _calc_atr(df, period=14):
+    prev = df["Close"].shift(1)
+    tr = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - prev).abs(),
+        (df["Low"] - prev).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def calc_buy_reference(df15):
+    """
+    Reference-only visualization of B v1.8 location conditions.
+    Does NOT create or override BUY signals.
+    """
+    out = {
+        "valid": False,
+        "price": np.nan, "vwap": np.nan, "ema9": np.nan, "ema20": np.nan,
+        "atr": np.nan, "rsi": np.nan, "pullback_low": np.nan,
+        "pullback_high": np.nan, "breakout": np.nan,
+        "dist_pullback_pct": np.nan, "dist_breakout_pct": np.nan,
+        "setup_type": "—",
+    }
+    if df15 is None or df15.empty or len(df15) < 40:
+        return out
+
+    x = df15.copy()
+    for c in ["Open","High","Low","Close","Volume"]:
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+    x = x.dropna(subset=["Open","High","Low","Close","Volume"])
+    if len(x) < 40:
+        return out
+
+    x["EMA9"] = x["Close"].ewm(span=9, adjust=False).mean()
+    x["EMA20"] = x["Close"].ewm(span=20, adjust=False).mean()
+    x["RSI14"] = _calc_rsi(x["Close"], 14)
+    x["ATR14"] = _calc_atr(x, 14)
+
+    typical = (x["High"] + x["Low"] + x["Close"]) / 3
+    session = pd.Series(x.index.date, index=x.index)
+    x["VWAP"] = (
+        (typical * x["Volume"]).groupby(session).cumsum()
+        / x["Volume"].groupby(session).cumsum().replace(0, np.nan)
+    )
+
+    r = x.iloc[-1]
+    price = sfloat(r["Close"], np.nan)
+    vwap = sfloat(r["VWAP"], np.nan)
+    ema9 = sfloat(r["EMA9"], np.nan)
+    ema20 = sfloat(r["EMA20"], np.nan)
+    atr = sfloat(r["ATR14"], np.nan)
+    rsi = sfloat(r["RSI14"], np.nan)
+    breakout = sfloat(x["High"].iloc[-21:-1].max(), np.nan)
+
+    if any(pd.isna(v) for v in [price, vwap, ema9, ema20, atr]) or atr <= 0:
+        return out
+
+    base = max(vwap, ema20)
+    pullback_low = max(base, ema9 - 0.40 * atr)
+    pullback_high = max(pullback_low, ema9 + 0.40 * atr)
+
+    if pullback_low <= price <= pullback_high:
+        dist_pull = 0.0
+    elif price > pullback_high:
+        dist_pull = (price - pullback_high) / pullback_high
+    else:
+        dist_pull = (price - pullback_low) / pullback_low
+
+    dist_break = (
+        (breakout - price) / price
+        if not pd.isna(breakout) and price > 0
+        else np.nan
+    )
+
+    if pullback_low <= price <= pullback_high:
+        setup = "回踩关注区内"
+    elif not pd.isna(dist_break) and -0.008 <= dist_break <= 0.012:
+        setup = "接近突破触发位"
+    elif price > pullback_high:
+        setup = "等待回踩 / 避免追高"
+    else:
+        setup = "等待重新站回结构"
+
+    out.update({
+        "valid": True, "price": price, "vwap": vwap, "ema9": ema9,
+        "ema20": ema20, "atr": atr, "rsi": rsi,
+        "pullback_low": pullback_low, "pullback_high": pullback_high,
+        "breakout": breakout, "dist_pullback_pct": dist_pull,
+        "dist_breakout_pct": dist_break, "setup_type": setup,
+    })
+    return out
+
+
+def buy_reference_text(ref):
+    if not ref or not ref.get("valid"):
+        return "—"
+    return f"${ref['pullback_low']:.2f}–${ref['pullback_high']:.2f}"
+
+
+def distance_text(v):
+    x = sfloat(v, np.nan)
+    if pd.isna(x):
+        return "—"
+    if abs(x) < 0.0005:
+        return "区域内"
+    return f"{x:+.1%}"
+
+
 def get_book():
     if gspread is None or Credentials is None:
         raise RuntimeError("requirements.txt 需要 gspread 和 google-auth")
@@ -181,8 +320,9 @@ def load_sheet(sheet_name):
     rows = ws.get_all_records()
     return normalize(pd.DataFrame(rows))
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def load_price_history(ticker, period="3mo", interval="1d"):
+    """Yahoo chart helper only. B/C decisions still come from B_MasterList."""
     if not ticker:
         return pd.DataFrame()
     try:
@@ -190,9 +330,10 @@ def load_price_history(ticker, period="3mo", interval="1d"):
             ticker,
             period=period,
             interval=interval,
-            auto_adjust=False,
+            auto_adjust=True,
             progress=False,
             threads=False,
+            prepost=False,
         )
         if df is None or df.empty:
             return pd.DataFrame()
@@ -204,8 +345,9 @@ def load_price_history(ticker, period="3mo", interval="1d"):
             return pd.DataFrame()
 
         df = df[need].copy()
-        df = df.dropna(subset=["Open", "High", "Low", "Close"])
-        return df
+        for c in need:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.dropna(subset=["Open", "High", "Low", "Close"])
     except Exception:
         return pd.DataFrame()
 
@@ -247,18 +389,6 @@ def holdings(master):
     if "是否持仓" not in master.columns:
         return pd.DataFrame(columns=master.columns)
     return master[master["是否持仓"].map(truthy)].copy()
-
-def latest_master_per_ticker(master):
-    """Return one latest B_MasterList row per ticker for live Unified display."""
-    if master is None or master.empty or "Ticker" not in master.columns:
-        return pd.DataFrame()
-    x = master.copy()
-    tcol = first_existing(x, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "DateTime", "时间"])
-    if tcol:
-        x["_live_ts"] = pd.to_datetime(x[tcol], errors="coerce")
-        x = x.sort_values(["Ticker", "_live_ts"], na_position="first")
-    x = x.drop_duplicates(subset=["Ticker"], keep="last")
-    return x.drop(columns=["_live_ts"], errors="ignore")
 
 def decision_counts(master):
     if master is None or master.empty:
@@ -435,62 +565,67 @@ def latest_row_for_ticker(ticker, master, a):
 
     return pd.Series(dtype=object)
 
-def make_candlestick_chart(ticker, hist, row):
+def make_candlestick_chart(ticker, hist, row, chart_mode="日K", buy_ref=None):
     if hist is None or hist.empty:
         return None
 
     x = hist.copy()
-    x["MA20"] = x["Close"].rolling(20).mean()
-    x["MA50"] = x["Close"].rolling(50).mean()
+
+    if chart_mode == "15m":
+        x["EMA9"] = x["Close"].ewm(span=9, adjust=False).mean()
+        x["EMA20"] = x["Close"].ewm(span=20, adjust=False).mean()
+        typical = (x["High"] + x["Low"] + x["Close"]) / 3
+        session = pd.Series(x.index.date, index=x.index)
+        x["VWAP"] = (
+            (typical * x["Volume"]).groupby(session).cumsum()
+            / x["Volume"].groupby(session).cumsum().replace(0, np.nan)
+        )
+    else:
+        x["MA20"] = x["Close"].rolling(20).mean()
+        x["MA50"] = x["Close"].rolling(50).mean()
 
     fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.76, 0.24]
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.03, row_heights=[0.76, 0.24]
     )
 
     fig.add_trace(
         go.Candlestick(
-            x=x.index,
-            open=x["Open"],
-            high=x["High"],
-            low=x["Low"],
-            close=x["Close"],
-            name="日K",
-            increasing_line_color="#0f9d76",
-            decreasing_line_color="#e54b4b",
-            increasing_fillcolor="#0f9d76",
-            decreasing_fillcolor="#e54b4b",
+            x=x.index, open=x["Open"], high=x["High"], low=x["Low"], close=x["Close"],
+            name=chart_mode,
+            increasing_line_color="#0f9d76", decreasing_line_color="#e54b4b",
+            increasing_fillcolor="#0f9d76", decreasing_fillcolor="#e54b4b",
         ),
         row=1, col=1
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=x.index, y=x["MA20"],
-            mode="lines", name="MA20",
-            line=dict(width=1.6, color="#2d7ff9")
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=x.index, y=x["MA50"],
-            mode="lines", name="MA50",
-            line=dict(width=1.6, color="#f28e2b")
-        ),
-        row=1, col=1
-    )
+    if chart_mode == "15m":
+        for c, name, color in [
+            ("EMA9", "EMA9", "#6f42c1"),
+            ("EMA20", "EMA20", "#2d7ff9"),
+            ("VWAP", "VWAP", "#f28e2b"),
+        ]:
+            fig.add_trace(
+                go.Scatter(x=x.index, y=x[c], mode="lines", name=name,
+                           line=dict(width=1.5, color=color)),
+                row=1, col=1
+            )
+    else:
+        fig.add_trace(
+            go.Scatter(x=x.index, y=x["MA20"], mode="lines", name="MA20",
+                       line=dict(width=1.6, color="#2d7ff9")),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=x.index, y=x["MA50"], mode="lines", name="MA50",
+                       line=dict(width=1.6, color="#f28e2b")),
+            row=1, col=1
+        )
 
     vol_colors = np.where(x["Close"] >= x["Open"], "#0f9d76", "#e54b4b")
     fig.add_trace(
-        go.Bar(
-            x=x.index, y=x["Volume"],
-            name="成交量",
-            marker_color=vol_colors,
-            opacity=0.75
-        ),
+        go.Bar(x=x.index, y=x["Volume"], name="成交量",
+               marker_color=vol_colors, opacity=0.75),
         row=2, col=1
     )
 
@@ -500,79 +635,65 @@ def make_candlestick_chart(ticker, hist, row):
     tp1 = level_value(row, ["TP1"])
     tp2 = level_value(row, ["TP2"])
 
-    support_low, support_high = range_bounds(row.get("支撑区", ""))
-    resist_low, resist_high = range_bounds(row.get("压力区", ""))
-    buy_low, buy_high = range_bounds(row.get("建议买入区", row.get("买入区", "")))
+    support_low, support_high = range_bounds(row.get("支撑区", row.get("A5.2R支撑区", "")))
+    resist_low, resist_high = range_bounds(row.get("压力区", row.get("A5.2R压力区", "")))
 
-    shapes = []
-    annotations = []
+    shapes, annotations = [], []
 
     def add_hline(y, color, label, dash="dot"):
         if pd.isna(y):
             return
         shapes.append(dict(
-            type="line", xref="paper", x0=0, x1=1,
-            yref="y", y0=y, y1=y,
+            type="line", xref="paper", x0=0, x1=1, yref="y", y0=y, y1=y,
             line=dict(color=color, width=1.3, dash=dash)
         ))
         annotations.append(dict(
-            x=1.0, xref="paper", y=y, yref="y",
-            text=label, showarrow=False, xanchor="left",
-            font=dict(size=11, color=color)
+            x=1.0, xref="paper", y=y, yref="y", text=label,
+            showarrow=False, xanchor="left", font=dict(size=11, color=color)
         ))
 
     def add_zone(y0, y1, color, label):
         if pd.isna(y0) or pd.isna(y1):
             return
         shapes.append(dict(
-            type="rect", xref="paper", x0=0, x1=1,
-            yref="y", y0=y0, y1=y1,
-            fillcolor=color, opacity=0.10,
-            line=dict(width=0)
+            type="rect", xref="paper", x0=0, x1=1, yref="y", y0=y0, y1=y1,
+            fillcolor=color, opacity=0.10, line=dict(width=0)
         ))
         annotations.append(dict(
             x=0.01, xref="paper", y=(y0 + y1) / 2, yref="y",
-            text=label, showarrow=False, xanchor="left",
-            font=dict(size=10)
+            text=label, showarrow=False, xanchor="left", font=dict(size=10)
         ))
 
     add_hline(last_px, "#18a36b", f"现价 {last_px:.2f}" if not pd.isna(last_px) else "")
-    add_hline(entry, "#6f42c1", f"入场 {entry:.2f}" if not pd.isna(entry) else "")
+    add_hline(entry, "#6f42c1", f"参考入场 {entry:.2f}" if not pd.isna(entry) else "")
     add_hline(stop, "#d62728", f"Stop {stop:.2f}" if not pd.isna(stop) else "")
     add_hline(tp1, "#2ca02c", f"TP1 {tp1:.2f}" if not pd.isna(tp1) else "")
     add_hline(tp2, "#0b7d4f", f"TP2 {tp2:.2f}" if not pd.isna(tp2) else "")
 
-    add_zone(support_low, support_high, "#2ca02c", "支撑区")
-    add_zone(resist_low, resist_high, "#d62728", "压力区")
-    add_zone(buy_low, buy_high, "#6f42c1", "BUY区")
+    add_zone(support_low, support_high, "#2ca02c", "A支撑区")
+    add_zone(resist_low, resist_high, "#d62728", "A压力区")
+
+    if buy_ref and buy_ref.get("valid"):
+        add_zone(
+            buy_ref["pullback_low"], buy_ref["pullback_high"],
+            "#8e44ad", "15m回踩关注区"
+        )
+        add_hline(
+            buy_ref["breakout"], "#d35400",
+            f"突破触发 {buy_ref['breakout']:.2f}", dash="dash"
+        )
 
     fig.update_layout(
-        height=610,
-        margin=dict(l=10, r=85, t=25, b=10),
-        xaxis_rangeslider_visible=False,
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.02,
-            xanchor="left", x=0
-        ),
-        shapes=shapes,
-        annotations=annotations,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        height=610, margin=dict(l=10, r=95, t=25, b=10),
+        xaxis_rangeslider_visible=False, hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        shapes=shapes, annotations=annotations,
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
 
-    for r in [1, 2]:
-        fig.update_xaxes(
-            showgrid=True,
-            gridcolor="rgba(128,128,128,0.12)",
-            row=r, col=1
-        )
-        fig.update_yaxes(
-            showgrid=True,
-            gridcolor="rgba(128,128,128,0.12)",
-            row=r, col=1
-        )
+    for rr in [1, 2]:
+        fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.12)", row=rr, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.12)", row=rr, col=1)
 
     return fig
 
@@ -636,7 +757,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.5 · B/C 最新状态同步")
+    st.caption("Unified App V1.6 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -679,11 +800,21 @@ except Exception as e:
     st.stop()
 
 a_buy = latest_a_buys(a_df)
-master_latest = latest_master_per_ticker(master_df)
+master_latest = latest_master_snapshot(master_df)
 master_active = active_master(master_latest)
 pos_df = holdings(master_latest)
 counts = decision_counts(master_active)
 now = market_now()
+
+_sync_col = first_existing(
+    master_latest,
+    ["最后检查时间", "检查时间", "更新时间", "Timestamp", "时间"]
+)
+if _sync_col and not master_latest.empty:
+    _sync_series = pd.to_datetime(master_latest[_sync_col], errors="coerce")
+    latest_bc_sync = _sync_series.max() if _sync_series.notna().any() else pd.NaT
+else:
+    latest_bc_sync = pd.NaT
 
 
 # ---------- global header ----------
@@ -700,16 +831,16 @@ with hr:
     else:
         st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
 
-st.caption(
-    "Unified App V1.5：实时读取 B_MasterList / B_Log 最新写入；只改展示同步层，不改变 A/B/C 交易逻辑。"
+sync_txt = (
+    latest_bc_sync.strftime("%Y-%m-%d %H:%M:%S")
+    if pd.notna(latest_bc_sync)
+    else "暂无"
 )
-
-# Live B/C sync status
-_ts_col = first_existing(master_df, ["最后检查时间", "检查时间", "更新时间", "Timestamp", "DateTime", "时间"])
-if _ts_col and not master_df.empty:
-    _ts = pd.to_datetime(master_df[_ts_col], errors="coerce")
-    if _ts.notna().any():
-        st.caption(f"🔄 B/C 最新同步：{_ts.max().strftime('%Y-%m-%d %H:%M')} · Unified Sheet cache 15秒")
+st.caption(
+    "Unified App V1.6：一个网址统一查看 A、B、C；"
+    f"B/C 最新同步：{sync_txt}。"
+    "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
+)
 
 # ============================================================
 # HOME
@@ -816,7 +947,7 @@ if page == "🏠 首页":
                     key=f"summary_ticker_{active_summary}"
                 )
                 if selected_from_summary:
-                    row_s = latest_row_for_ticker(selected_from_summary, master_df, a_df)
+                    row_s = latest_row_for_ticker(selected_from_summary, master_latest, a_df)
                     hs = load_price_history(selected_from_summary, "3mo", "1d")
                     if not hs.empty:
                         fig_s = make_candlestick_chart(selected_from_summary, hs, row_s)
@@ -874,11 +1005,50 @@ if page == "🏠 首页":
             key="home_ticker"
         )
         if selected_home:
-            row = latest_row_for_ticker(selected_home, master_df, a_df)
-            h = load_price_history(selected_home, "3mo", "1d")
+            row = latest_row_for_ticker(selected_home, master_latest, a_df)
+
+            h15 = load_price_history(selected_home, "10d", "15m")
+            buy_ref = calc_buy_reference(h15)
+
+            st.markdown("#### 🎯 买点参考")
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("15m回踩关注区", buy_reference_text(buy_ref))
+            q2.metric(
+                "突破触发价",
+                money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—"
+            )
+            q3.metric("距回踩区", distance_text(buy_ref.get("dist_pullback_pct", np.nan)))
+            q4.metric("买点类型", buy_ref.get("setup_type", "—"))
+
+            st.caption(
+                "回踩区/突破价是 B v1.8 条件的可视化参考，不等于 BUY；"
+                "真正入场仍以 B 的 BUY / EARLY / WAIT / AVOID 为准。"
+            )
+
+            chart_mode = st.radio(
+                "图表周期",
+                ["15m", "1H", "日K"],
+                horizontal=True,
+                key="home_chart_mode"
+            )
+
+            if chart_mode == "15m":
+                h = h15
+                chart_title = f"{selected_home} · 15分钟"
+            elif chart_mode == "1H":
+                h = load_price_history(selected_home, "3mo", "60m")
+                chart_title = f"{selected_home} · 1小时"
+            else:
+                h = load_price_history(selected_home, "3mo", "1d")
+                chart_title = f"{selected_home} · 3个月日K"
+
             if not h.empty:
-                st.subheader(f"{selected_home} · 3个月日K")
-                fig = make_candlestick_chart(selected_home, h, row)
+                st.subheader(chart_title)
+                fig = make_candlestick_chart(
+                    selected_home, h, row,
+                    chart_mode=chart_mode,
+                    buy_ref=buy_ref
+                )
                 if fig is not None:
                     st.plotly_chart(
                         fig,
@@ -886,7 +1056,8 @@ if page == "🏠 首页":
                         config={"displaylogo": False}
                     )
             else:
-                st.warning("暂时无法取得日K数据。")
+                st.warning("暂时无法取得该周期行情数据。")
+
             x1, x2, x3, x4 = st.columns(4)
             x1.metric("当前/最后价", money_text(row.get("最后价格", row.get("价格", np.nan))))
             x2.metric("参考止损", money_text(row.get("参考止损", row.get("持仓止损", np.nan))))
@@ -964,7 +1135,8 @@ elif page == "⚡ B 买点监控":
         st.dataframe(opp, hide_index=True, use_container_width=True, height=590)
 
     st.info(
-        "B/C LIVE 仍负责15分钟计算与写入；Unified v1.5 会读取每只股票最新 B_MasterList 状态并自动同步显示。"
+        "正式 B/C LIVE 程序仍负责实际 15 分钟检查和写入。"
+        "Unified App V1 暂时只读取结果。"
     )
 
 
@@ -1006,7 +1178,8 @@ elif page == "💼 C 持仓管理":
                     st.caption(reason)
 
     st.info(
-        "真实持仓仍在 B/C FINAL v1.8 LIVE 中标记；一旦写入 B_MasterList，Unified v1.5 会自动同步显示。"
+        "V1 里持仓的“标记 / 修改实际买入价 / 手动更新”仍在 B/C FINAL v1.8 LIVE App 完成。"
+        "下一阶段可把这些操作搬进这里。"
     )
 
 
@@ -1035,7 +1208,7 @@ elif page == "🔔 Alert Center":
 elif page == "📊 股票详情":
     st.subheader("📊 Stock Detail")
 
-    tickers = union_tickers(master_df, a_df)
+    tickers = union_tickers(master_latest, a_df)
     if not tickers:
         st.info("目前没有股票可查看。")
     else:
@@ -1044,13 +1217,43 @@ elif page == "📊 股票详情":
             tk = st.selectbox("股票", tickers, key="detail_ticker")
             period = st.selectbox("图表区间", ["1mo","3mo","6mo","1y"], index=1, format_func=lambda x: {"1mo":"1个月","3mo":"3个月","6mo":"6个月","1y":"1年"}[x])
         with d2:
-            row = latest_row_for_ticker(tk, master_df, a_df)
+            row = latest_row_for_ticker(tk, master_latest, a_df)
             title_company = str(row.get("Company", ""))
             st.markdown(f"### {tk} {title_company}")
 
-        hist = load_price_history(tk, period, "1d")
+        h15 = load_price_history(tk, "10d", "15m")
+        buy_ref = calc_buy_reference(h15)
+
+        st.markdown("#### 🎯 买点参考")
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("15m回踩关注区", buy_reference_text(buy_ref))
+        b2.metric(
+            "突破触发价",
+            money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—"
+        )
+        b3.metric("距回踩区", distance_text(buy_ref.get("dist_pullback_pct", np.nan)))
+        b4.metric("买点类型", buy_ref.get("setup_type", "—"))
+
+        detail_mode = st.radio(
+            "图表周期",
+            ["15m", "1H", "日K"],
+            horizontal=True,
+            key="detail_chart_mode"
+        )
+
+        if detail_mode == "15m":
+            hist = h15
+        elif detail_mode == "1H":
+            hist = load_price_history(tk, "3mo", "60m")
+        else:
+            hist = load_price_history(tk, period, "1d")
+
         if not hist.empty:
-            fig = make_candlestick_chart(tk, hist, row)
+            fig = make_candlestick_chart(
+                tk, hist, row,
+                chart_mode=detail_mode,
+                buy_ref=buy_ref
+            )
             if fig is not None:
                 st.plotly_chart(
                     fig,
@@ -1058,7 +1261,11 @@ elif page == "📊 股票详情":
                     config={"displaylogo": False}
                 )
         else:
-            st.warning("日K数据暂时不可用。")
+            st.warning("该周期行情暂时不可用。")
+
+        st.caption(
+            "买点参考只解释 B 的位置条件；真正入场仍由 B v1.8 的实时 BUY 触发决定。"
+        )
 
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("最后价格", money_text(row.get("最后价格", row.get("价格", np.nan))))
@@ -1123,6 +1330,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.5 · 首页五个统计框可点击展开明细；B/C 状态按每只股票最新 B_MasterList 记录同步，并保留日K、成交量与关键价位。"
+    "CMS Unified App V1.6 · B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
