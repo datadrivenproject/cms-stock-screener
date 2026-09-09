@@ -2375,6 +2375,12 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
         }
 
         row.update(calc_a5_resonance(df, row))
+
+        # A6 V3 FIX1:
+        # Historical replay must also generate Pivot / First Room / Breakout Room
+        # strictly from data available as of that replay date.
+        row.update(calc_v3_pivot_room_fields(df))
+
         row["空间等级"], row["空间优先级"] = calc_room_quality(row)
 
         hard_ok, hard_reason = passes_v43a_hard_filter(row)
@@ -3463,7 +3469,7 @@ def render_a6_v3_pivot_room_research(bt):
     ]
     missing = [c for c in req if c not in bt.columns]
     if missing:
-        st.warning("A6 V3字段尚未生成，请重新运行60日历史回放：" + ", ".join(missing))
+        st.warning("当前缓存还是旧回测结果，尚无A6 V3 Pivot/Room字段。请重新点击“运行60日 A6 V3 Pivot/Room 回测”。缺少：" + ", ".join(missing))
         return
 
     d = bt.copy()
