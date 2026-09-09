@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import requests
+import io
 import time
 from datetime import datetime, timezone
 
@@ -149,28 +150,71 @@ CORE_UNIVERSE = [
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_sp500_tickers():
-    """读取当前 S&P 500 成分；BRK.B / BF.B 转成 Yahoo/Supabase 常用的 BRK-B / BF-B。"""
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    try:
-        tables = pd.read_html(url)
-        if not tables:
-            return []
-        tab = tables[0]
-        symbol_col = "Symbol" if "Symbol" in tab.columns else tab.columns[0]
-        tickers = (
-            tab[symbol_col]
-            .astype(str)
-            .str.upper()
-            .str.strip()
-            .str.replace(".", "-", regex=False)
-            .tolist()
-        )
-        return sorted(set(t for t in tickers if t and t != "NAN"))
-    except Exception:
-        return []
+    """
+    A6 FINAL 500池：
+    优先从 GitHub Raw 读取当前 S&P 500 成分。
+    不再依赖 pd.read_html(Wikipedia)，避免 Streamlit Cloud 上网页表格读取失败。
+    """
+    sources = [
+        "https://raw.githubusercontent.com/chinobing/historical_sp500_constituents/refs/heads/main/sp500_constituents.csv",
+        "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv",
+    ]
+
+    for url in sources:
+        try:
+            r = requests.get(
+                url,
+                timeout=20,
+                headers={"User-Agent": "Mozilla/5.0 CMS-A6-FINAL"}
+            )
+            if not r.ok or not r.text.strip():
+                continue
+
+            df = pd.read_csv(io.StringIO(r.text))
+            symbol_col = None
+            for c in df.columns:
+                if str(c).strip().lower() in {"symbol", "ticker", "tickers"}:
+                    symbol_col = c
+                    break
+            if symbol_col is None:
+                continue
+
+            tickers = (
+                df[symbol_col]
+                .astype(str)
+                .str.upper()
+                .str.strip()
+                .str.replace(".", "-", regex=False)
+                .tolist()
+            )
+            tickers = list(dict.fromkeys(
+                t for t in tickers
+                if t and t != "NAN"
+            ))
+
+            # S&P 500 usually has just over 500 listed securities because of share classes.
+            # Fewer than 450 means the source was not read correctly; do not silently fall back to 110.
+            if len(tickers) >= 450:
+                return tickers
+        except Exception:
+            continue
+
+    return []
 
 def get_universe():
     sp500 = get_sp500_tickers()
+
+    # Important: do not silently pretend the 110-stock fallback is a 500-stock pool.
+    if len(sp500) < 450:
+        raise RuntimeError(
+            "未能读取 S&P 500 股票名单。A6 FINAL 已停止本次扫描，"
+            "不会自动退回原110只股票池。请稍后重试或检查 Streamlit Cloud 网络访问。"
+        )
+
+    # 当前 S&P500 + 原自选成长/热门股，去重。
+    # 所以目标池通常会略高于500，而不是固定正好500。
+    combined = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
+    return combined
     # S&P500 + 原自选池，去重。这样不会因为扩池把 PATH/TEM/RKLB 等原来关注股删掉。
     combined = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
     return combined if combined else CORE_UNIVERSE.copy()
@@ -2540,7 +2584,13 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     The final 5 trading days are reserved for forward outcome labels, so every
     replayed date has a complete 5-day future window available immediately.
     """
-    tickers = get_universe()
+    try:
+        tickers = get_universe()
+    except Exception as e:
+        if status_box is not None:
+            status_box.write(str(e))
+        return pd.DataFrame()
+
     all_tickers = tuple(dict.fromkeys(tickers + BENCHMARK_TICKERS))
     if status_box is not None:
         status_box.write('正在下载约2年历史日K（股票池 + SPY/板块ETF）……')
@@ -3723,13 +3773,18 @@ with st.sidebar:
     st.success("A6 FINAL：V2B Core决定正式候选；Pivot/Room只做优先级排序，不做一票否决。")
 
 st.info(
-    "A6 FINAL 500池：自动读取当前 S&P 500，并保留原自选股。Core决定候选资格；Pivot/Room只负责排序。"
+    "A6 FINAL 500池：从 GitHub Raw 读取当前 S&P 500，并保留原自选股；若读取失败会明确停止，不再偷偷退回110只。Core决定候选资格；Pivot/Room只负责排序。"
 )
 
 scan_clicked = st.button("🚀 运行 A6 FINAL 盘后扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
-    tickers = get_universe()
+    try:
+        tickers = get_universe()
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
+
     progress = st.progress(0)
     status = st.empty()
 
