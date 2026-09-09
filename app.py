@@ -17,12 +17,12 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线",
+    page_title="CMS Stock Screener A6 V2B Research — Supabase 复权日线",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线")
+st.title("📈 CMS Stock Screener A6 V2B Research — Supabase 复权日线")
 st.caption(
     "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；A5.2R核心共振保持不变。v1.3仅取消‘压力过近’对最终买/不买的一票否决，Zone继续保留为位置/风险信息。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -2671,17 +2671,17 @@ def render_3way_hardfilter_comparison(bt):
 
 
 def render_a4_a5_resonance_comparison(bt):
-    """Same-window A/B test: formal A4 ranking vs A5 resonance ranking."""
+    """Same-window comparison: A4 vs current A5.2R vs A6 V2B (Volume mandatory)."""
     if bt is None or bt.empty:
         return
     d = bt.copy()
     req = [
-        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain',
-        'A5决策','共振数',
+        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain','Hard Filter',
+        'A5决策','共振数','Replay Core Score 85','Leadership Score','Accumulation Score',
         'MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振'
     ]
     if any(c not in d.columns for c in req):
-        st.warning("当前缓存还是旧版 A5 Replay。请点击上面的历史回测按钮重新跑一次，生成 A5.2R 的支撑/压力与空间字段。")
+        st.warning("当前缓存字段不完整。请重新运行历史回测，生成完整共振字段。")
         return
 
     d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
@@ -2693,22 +2693,36 @@ def render_a4_a5_resonance_comparison(bt):
     # A4 = existing eligible Top10 per replay day.
     a4 = d[d['Replay Eligible Rank'] <= 10].copy()
 
-    # A5 = among formal A4 hard-filter pass names, BUY first, then resonance count,
-    # then existing core score as tie-breaker; take up to Top10 each day.
+    # Current A5.2R rule (CONTROL): >=4/5 + MACD + (Volume OR RS), no forced 10.
     pool = d[d['Hard Filter'].eq('通过')].copy()
-    pool['_buy'] = (pool['A5决策'] == '买').astype(int)
+    pool['_a5_buy'] = (pool['A5决策'] == '买').astype(int)
     pool = pool.sort_values(
-        ['Replay Date','_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
+        ['Replay Date','_a5_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
         ascending=[True,False,False,False,False,False]
     )
     a5 = pool.groupby('Replay Date', group_keys=False).head(10).copy()
-    a5 = a5[a5['A5决策'] == '买'].copy()  # no forced 10 names
+    a5 = a5[a5['A5决策'] == '买'].copy()
+
+    # A6 V2B EXPERIMENT: only one change from A5.2R.
+    # >=4/5 + MACD mandatory + Volume mandatory. RS remains one of the 5 resonance items,
+    # but RS can no longer substitute for failed Volume resonance.
+    exp = d[d['Hard Filter'].eq('通过')].copy()
+    macd = exp['MACD共振'].eq('是')
+    pv = exp['量价共振'].eq('是')
+    exp['_v2b_buy'] = ((exp['共振数'] >= 4) & macd & pv).astype(int)
+    exp = exp.sort_values(
+        ['Replay Date','_v2b_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
+        ascending=[True,False,False,False,False,False]
+    )
+    v2b = exp.groupby('Replay Date', group_keys=False).head(10).copy()
+    v2b = v2b[v2b['_v2b_buy'] == 1].copy()
 
     def summary(x, label):
         g = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
         return {
             '版本': label,
             '入选样本': len(g),
+            '平均每天': len(g) / max(d['Replay Date'].nunique(), 1),
             '≥3%': (g >= .03).mean() if len(g) else np.nan,
             '≥5%': (g >= .05).mean() if len(g) else np.nan,
             '≥8%': (g >= .08).mean() if len(g) else np.nan,
@@ -2717,22 +2731,72 @@ def render_a4_a5_resonance_comparison(bt):
             '弱股<2%': (g < .02).mean() if len(g) else np.nan,
         }
 
-    comp = pd.DataFrame([summary(a4,'当前A4 Top10'), summary(a5,'A5.2R 共振+空间')])
-    st.header("🆚 当前A4 vs A5.2R：共振 + 支撑/压力空间")
-    st.caption("同一历史日期、同一股票池、同一未来5日结果。A5.2R不强制每天凑10只；保留MACD/KDJ/RSI/量价/RS，并加入OHLCV计算的支撑/压力空间。")
+    comp = pd.DataFrame([
+        summary(a4,'当前A4 Top10'),
+        summary(a5,'A5.2R 当前规则'),
+        summary(v2b,'A6 V2B：量价必须通过')
+    ])
+    st.header("🧪 60日 A/B：A5.2R 当前规则 vs A6 V2B 量价必过")
+    st.caption(
+        "唯一实验改动：当前规则 = 共振≥4/5 + MACD必过 +（量价或RS至少一个）；"
+        "A6 V2B = 共振≥4/5 + MACD必过 + 量价必过。RS仍保留为5项共振之一。"
+        "支撑/压力/Room仍只做位置与风险信息，不参与一票否决。"
+    )
     st.dataframe(
         comp.style.format({
-            '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+            '平均每天':'{:.2f}','≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
             '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
         }, na_rep=''),
         hide_index=True, use_container_width=True
     )
 
-    # Indicator hit-rate table: one indicator per row, useful for deciding what to keep.
+    # Direct delta of V2B versus current A5.2R control.
+    if len(a5) and len(v2b):
+        c = summary(a5,'control')
+        e = summary(v2b,'experiment')
+        delta = pd.DataFrame([{
+            '对比':'A6 V2B - A5.2R',
+            '样本变化': e['入选样本'] - c['入选样本'],
+            'Δ平均每天': e['平均每天'] - c['平均每天'],
+            'Δ≥3%': e['≥3%'] - c['≥3%'],
+            'Δ≥5%': e['≥5%'] - c['≥5%'],
+            'Δ≥8%': e['≥8%'] - c['≥8%'],
+            'Δ平均5D最大涨幅': e['平均5日最大涨幅'] - c['平均5日最大涨幅'],
+            'Δ中位数5D最大涨幅': e['中位数5日最大涨幅'] - c['中位数5日最大涨幅'],
+            'Δ弱股<2%': e['弱股<2%'] - c['弱股<2%'],
+        }])
+        st.subheader("A6 V2B 相对当前 A5.2R 的净变化")
+        st.dataframe(
+            delta.style.format({
+                'Δ平均每天':'{:+.2f}','Δ≥3%':'{:+.1%}','Δ≥5%':'{:+.1%}','Δ≥8%':'{:+.1%}',
+                'Δ平均5D最大涨幅':'{:+.2%}','Δ中位数5D最大涨幅':'{:+.2%}','Δ弱股<2%':'{:+.1%}'
+            }, na_rep=''), hide_index=True, use_container_width=True
+        )
+
+    # Show exactly what V2B removes: names that current A5 buys because RS substitutes for Volume.
+    removed = a5[(a5['量价共振'] != '是') & (a5['RS共振'] == '是')].copy()
+    if not removed.empty:
+        g = pd.to_numeric(removed['5D Max Gain'], errors='coerce').dropna()
+        removed_summary = pd.DataFrame([{
+            '被V2B剔除的类型':'A5买入但量价=否、RS=是',
+            '样本':len(g),
+            '≥3%':(g >= .03).mean() if len(g) else np.nan,
+            '≥5%':(g >= .05).mean() if len(g) else np.nan,
+            '≥8%':(g >= .08).mean() if len(g) else np.nan,
+            '平均5D最大涨幅':g.mean() if len(g) else np.nan,
+            '弱股<2%':(g < .02).mean() if len(g) else np.nan,
+        }])
+        st.subheader("V2B 到底剔除了什么")
+        st.dataframe(
+            removed_summary.style.format({
+                '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
+                '平均5D最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
+            }, na_rep=''), hide_index=True, use_container_width=True
+        )
+
+    # Indicator hit-rate table retained for context.
     rows = []
     for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振']:
-        if c not in d.columns:
-            continue
         yes = d[d[c] == '是']
         g = pd.to_numeric(yes['5D Max Gain'], errors='coerce').dropna()
         rows.append({
@@ -2744,16 +2808,11 @@ def render_a4_a5_resonance_comparison(bt):
         })
     idf = pd.DataFrame(rows)
     st.subheader("各共振指标单独效果")
-    if idf.empty:
-        st.info("旧缓存没有 A5.2R 指标字段，请重新运行历史回测。")
-    else:
-        st.dataframe(
-            idf.style.format({
-                '≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}','平均5日最大涨幅':'{:+.2%}'
-            }, na_rep=''),
-            hide_index=True, use_container_width=True
-        )
-
+    st.dataframe(
+        idf.style.format({
+            '≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}','平均5日最大涨幅':'{:+.2%}'
+        }, na_rep=''), hide_index=True, use_container_width=True
+    )
 
 def render_ranking_diagnostics(bt):
     """Diagnose which A ranking modules distinguish future strong stocks."""
@@ -3244,10 +3303,10 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("FINAL v1.3：核心共振规则冻结；支撑/压力/Room 仅做位置与风险标签，不再否决买入。")
+    st.success("A6 V2B 研究版：正式A5.2R买/不买逻辑不改；60日回测额外测试‘量价必须通过’。支撑/压力/Room仍不否决买入。")
 
 st.info(
-    "A5.2R FINAL v1.3：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → 核心买/不买；OHLCV支撑/压力继续计算，但只作为位置/风险信息。"
+    "A6 V2B Research：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → 核心买/不买；OHLCV支撑/压力继续计算，但只作为位置/风险信息。"
     "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
 )
 
