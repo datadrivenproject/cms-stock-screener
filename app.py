@@ -17,14 +17,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A5.2R FINAL v1.2 — Supabase 复权日线",
+    page_title="CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A5.2R FINAL v1.2 — Supabase 复权日线")
+st.title("📈 CMS Stock Screener A5.2R FINAL v1.3 — Supabase 复权日线")
 st.caption(
-    "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；选股逻辑保持 A5.2R FINAL v1 不变。"
+    "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；A5.2R核心共振保持不变。v1.3仅取消‘压力过近’对最终买/不买的一票否决，Zone继续保留为位置/风险信息。"
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -897,9 +897,9 @@ def calc_a5_resonance(df, row=None):
         support_distance = np.nan
         support_touches = 0
 
-    # "上方空间" is a position filter, NOT another oscillator.
-    # Do not reject merely because no repeated resistance was found.
-    # Reject only when a meaningful repeated resistance is very close.
+    # "上方空间" / 支撑压力现在只作为位置与风险信息，不再拥有一票否决权。
+    # 保留原来的“压力过近”识别，供 A 页面、Google Sheet、B/Unified 后续参考；
+    # 但它不再改变 A 的“买 / 不买”核心决定。
     pressure_too_close = bool(
         major_res is not None
         and resistance_touches >= 2
@@ -927,14 +927,14 @@ def calc_a5_resonance(df, row=None):
     resonance_n = int(sum(core_flags))
 
     # Preserve A5's "do not force 10" philosophy:
-    # need 4 of 5, MACD bullish, and at least one of Volume or RS;
-    # then reject only when a repeated overhead resistance is too close.
+    # need 4 of 5, MACD bullish, and at least one of Volume or RS.
+    # v1.3: support/resistance/room no longer vetoes a core-qualified strong stock.
     base_buy = bool(
         resonance_n >= 4
         and macd_ok
         and (pv_ok or rs_ok)
     )
-    decision = "买" if (base_buy and space_ok) else "不买"
+    decision = "买" if base_buy else "不买"
 
     if pressure_too_close:
         position_reason = "压力过近"
@@ -3244,11 +3244,11 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("FINAL v1：FIX3 核心规则冻结；Room 仅做空间质量标签，不改变买/不买。")
+    st.success("FINAL v1.3：核心共振规则冻结；支撑/压力/Room 仅做位置与风险标签，不再否决买入。")
 
 st.info(
-    "A5.2R FINAL v1：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → OHLCV支撑/压力 → 买/不买。"
-    "空间等级只用于给 B/C 提供监控优先级参考，不新增硬过滤；盘中真正买卖由 B/C 负责。"
+    "A5.2R FINAL v1.3：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → 核心买/不买；OHLCV支撑/压力继续计算，但只作为位置/风险信息。"
+    "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
 )
 
 scan_clicked = st.button("🚀 运行 V4.3A 盘后扫描", type="primary", use_container_width=True)
