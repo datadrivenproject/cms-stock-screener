@@ -29,6 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pandas_market_calendars as mcal
 
 
 APP_FILE = Path(__file__).with_name("app.py")
@@ -171,6 +172,135 @@ def load_production_namespace():
     return ns
 
 
+def _latest_completed_nyse_session(now=None):
+    """
+    Return the latest NYSE session that should already have a completed daily bar.
+
+    - On a NYSE trading day after 16:15 ET, today is expected.
+    - Before 16:15 ET, use the prior NYSE session.
+    - On weekends / holidays, use the prior NYSE session.
+    """
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    now = now or datetime.now(ny)
+
+    cal = mcal.get_calendar("NYSE")
+    start = (pd.Timestamp(now.date()) - pd.Timedelta(days=14)).date()
+    end = pd.Timestamp(now.date()).date()
+    sched = cal.schedule(start_date=start, end_date=end)
+
+    sessions = [pd.Timestamp(x).date() for x in sched.index]
+    if not sessions:
+        raise RuntimeError("Could not resolve recent NYSE sessions.")
+
+    today = now.date()
+    if today in sessions and now.time() >= time(16, 15):
+        return today
+
+    prior = [d for d in sessions if d < today]
+    if not prior:
+        raise RuntimeError("Could not resolve prior NYSE session.")
+    return prior[-1]
+
+
+def _nyse_session_lag(latest_data_date, expected_session):
+    """
+    Count completed NYSE sessions AFTER latest_data_date through expected_session.
+    0 = current, 1 = one session stale, 2 = two sessions stale, etc.
+    """
+    if latest_data_date is None:
+        return 999
+
+    latest_data_date = pd.Timestamp(latest_data_date).date()
+    expected_session = pd.Timestamp(expected_session).date()
+
+    if latest_data_date >= expected_session:
+        return 0
+
+    cal = mcal.get_calendar("NYSE")
+    sched = cal.schedule(
+        start_date=latest_data_date,
+        end_date=expected_session
+    )
+    sessions = [pd.Timestamp(x).date() for x in sched.index]
+    return sum(1 for d in sessions if latest_data_date < d <= expected_session)
+
+
+def validate_daily_freshness(data, benchmarks, tolerance_sessions=1):
+    """
+    Safety gate before A writes anything.
+
+    Rules:
+    - Uses actual NYSE sessions, not plain weekdays.
+    - Every stock and benchmark must be no more than `tolerance_sessions`
+      completed NYSE sessions behind.
+    - If stale beyond tolerance, A stops BEFORE A_Candidates /
+      A_AllScannedHistory are written.
+    """
+    expected = _latest_completed_nyse_session()
+
+    latest_by_symbol = {}
+
+    for ticker, df in data.items():
+        if df is None or df.empty:
+            continue
+        latest_by_symbol[str(ticker).upper()] = pd.Timestamp(df.index.max()).date()
+
+    # benchmark frames are already summarized to returns, so reload their latest
+    # dates from the same production Supabase source for the freshness check.
+    bench_frames = ns_for_freshness["supabase_batch_download"](
+        tuple(ns_for_freshness["BENCHMARK_TICKERS"])
+    )
+    for ticker, df in bench_frames.items():
+        if df is None or df.empty:
+            continue
+        latest_by_symbol[str(ticker).upper()] = pd.Timestamp(df.index.max()).date()
+
+    required = set(ns_for_freshness["get_universe"]()) | set(ns_for_freshness["BENCHMARK_TICKERS"])
+    missing = sorted(t for t in required if t not in latest_by_symbol)
+    if missing:
+        raise RuntimeError(
+            "Freshness check failed: missing latest adjusted daily data for: "
+            + ", ".join(missing)
+        )
+
+    stale = []
+    one_session_stale = []
+    current = []
+
+    for ticker in sorted(required):
+        d = latest_by_symbol[ticker]
+        lag = _nyse_session_lag(d, expected)
+        if lag > tolerance_sessions:
+            stale.append((ticker, d, lag))
+        elif lag == 1:
+            one_session_stale.append((ticker, d))
+        else:
+            current.append((ticker, d))
+
+    print("\n🛡 DAILY DATA FRESHNESS CHECK", flush=True)
+    print(f"Expected latest completed NYSE session: {expected}", flush=True)
+    print(f"Current symbols: {len(current)}", flush=True)
+    print(f"1-session stale but allowed: {len(one_session_stale)}", flush=True)
+    print(f"Too stale (> {tolerance_sessions} session): {len(stale)}", flush=True)
+
+    if one_session_stale:
+        sample = ", ".join(f"{t}:{d}" for t, d in one_session_stale[:12])
+        print(f"Allowed stale sample: {sample}", flush=True)
+
+    if stale:
+        details = ", ".join(f"{t}:{d}({lag} sessions)" for t, d, lag in stale[:30])
+        raise RuntimeError(
+            "A scan blocked by stale Supabase adjusted daily data. "
+            f"Expected session={expected}; stale symbols: {details}"
+        )
+
+    print("✅ Freshness gate passed. A scan may continue.", flush=True)
+
+
+
 def main():
     print("=" * 90, flush=True)
     print("CMS A5.2R FINAL — HEADLESS DAILY RUNNER", flush=True)
@@ -185,6 +315,15 @@ def main():
     print("\n📥 Reading adjusted daily OHLCV from Supabase...", flush=True)
     data = ns["supabase_batch_download"](tuple(tickers))
     benchmarks = ns["get_benchmark_returns"]()
+
+    # Expose the already-loaded production namespace only to the freshness helper.
+    # No strategy logic is duplicated here.
+    global ns_for_freshness
+    ns_for_freshness = ns
+
+    # Safety gate: stop before any Google Sheet write if adjusted daily data
+    # is more than 1 completed NYSE session stale.
+    validate_daily_freshness(data, benchmarks, tolerance_sessions=1)
 
     missing_bench = [t for t in ns["BENCHMARK_TICKERS"] if t not in benchmarks]
     if missing_bench:
