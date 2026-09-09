@@ -17,14 +17,16 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A6 V2B Research — Supabase 复权日线",
+    page_title="CMS Stock Screener A6 V3 Research — Pivot / Room 60日分层",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A6 V2B Research — Supabase 复权日线")
+st.title("📈 CMS Stock Screener A6 V3 Research — Pivot / Room 60日分层")
 st.caption(
-    "正式盘后扫描日K来自 Supabase stock_daily 的复权字段；A5.2R核心共振保持不变。v1.3仅取消‘压力过近’对最终买/不买的一票否决，Zone继续保留为位置/风险信息。"
+    "A6 V3 Research：正式盘后扫描逻辑不动；历史60日回放固定使用 A6 V2B Core（≥4/5 + MACD必过 + 量价必过），新增 Pivot Status / First Room / Breakout Room 分层研究。"
+    "这些新字段当前只做研究，不参与正式买/不买。"
+
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
     "基本面只做确认和 Confidence，不改变 Early V2 原100分。"
 )
@@ -1810,6 +1812,8 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
         row.update(calc_a5_resonance(df, row))
+        # A6 V3 research fields: calculated strictly as-of the replay date.
+        row.update(calc_v3_pivot_room_fields(df))
         row["空间等级"], row["空间优先级"] = calc_room_quality(row)
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         row["Confidence"] = final_confidence(row)
@@ -2158,6 +2162,149 @@ def _get_replay_sector_map(tickers):
             except Exception:
                 sector_map[t] = 'Unknown'
     return sector_map
+
+
+
+def calc_v3_pivot_room_fields(df):
+    """A6 V3 Research: as-of-date Pivot / First Room / Breakout Room fields.
+
+    Research only — never changes LIVE A selection.
+
+    Definitions
+    -----------
+    Pivot:
+        Prior 20-session high (current bar excluded).
+    Pivot Status:
+        按当前收盘价相对 Pivot 的位置分层：
+        - 突破前 >3%
+        - 接近Pivot 0–3%
+        - 刚突破 0–2%
+        - 突破后延伸 >2%
+    First Room:
+        从当前价到“第一个上方障碍”的空间。
+        第一个障碍取 Pivot 与有效重复压力区中距离当前价最近者。
+        若没有上方障碍，则记为 NaN，并标记“开放”。
+    Breakout Room:
+        从 Pivot 到 Pivot 上方下一处有效重复压力区的空间。
+        这回答“如果突破当前 Pivot，突破后还有多少路可走”。
+        如果 Pivot 上方没有明确重复压力，则记为 NaN，并标记“开放”。
+
+    所有结构只使用截至当日已经出现的 OHLCV；不使用未来数据。
+    """
+    out = {
+        "Pivot Price V3": np.nan,
+        "Pivot Status V3": "数据不足",
+        "Pivot Distance V3": np.nan,
+        "First Room V3": np.nan,
+        "First Room Status V3": "不确定",
+        "First Obstacle V3": np.nan,
+        "Breakout Room V3": np.nan,
+        "Breakout Room Status V3": "不确定",
+        "Next Resistance Above Pivot V3": np.nan,
+    }
+    try:
+        if df is None or len(df) < 60:
+            return out
+
+        d = df.copy()
+        for c in ["High", "Low", "Close"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["High", "Low", "Close"])
+        if len(d) < 60:
+            return out
+
+        price = float(d["Close"].iloc[-1])
+        if not np.isfinite(price) or price <= 0:
+            return out
+
+        # Pivot = prior 20-session high, excluding today's bar.
+        pivot = safe_num(d["High"].shift(1).rolling(20).max().iloc[-1])
+        if pd.isna(pivot) or pivot <= 0:
+            return out
+
+        pivot_dist = (pivot - price) / price
+        if pivot_dist > 0.03:
+            pivot_status = "突破前 >3%"
+        elif 0 <= pivot_dist <= 0.03:
+            pivot_status = "接近Pivot 0–3%"
+        else:
+            ext = (price - pivot) / pivot
+            if ext <= 0.02:
+                pivot_status = "刚突破 0–2%"
+            else:
+                pivot_status = "突破后延伸 >2%"
+
+        # Rebuild repeated swing-high resistance zones using only as-of-date data.
+        hist = d.tail(252).copy()
+        high = hist["High"]
+        core_high = high.iloc[:-3] if len(high) > 20 else high
+        swing_highs = _swing_points(core_high, side=5, mode="high")
+
+        atr14 = safe_num(calc_atr(hist["High"], hist["Low"], hist["Close"], 14).iloc[-1])
+        atr_pct = atr14 / price if price > 0 and not pd.isna(atr14) else 0.015
+        tol = float(np.clip(max(0.012, 0.65 * atr_pct), 0.012, 0.025))
+        resistance_zones = _cluster_swings(swing_highs, tolerance_pct=tol)
+
+        # Candidate repeated resistance obstacles above current price.
+        obstacles = []
+        for z in resistance_zones:
+            low_edge = safe_num(z.get("low"))
+            if not pd.isna(low_edge) and low_edge > price * 1.001:
+                obstacles.append(low_edge)
+
+        # Pivot itself is a real first obstacle only while price is below it.
+        if pivot > price * 1.001:
+            obstacles.append(float(pivot))
+
+        if obstacles:
+            first_obstacle = float(min(obstacles))
+            first_room = first_obstacle / price - 1.0
+            first_status = (
+                "Room <2%" if first_room < .02 else
+                "Room 2–5%" if first_room < .05 else
+                "Room 5–8%" if first_room < .08 else
+                "Room ≥8%"
+            )
+        else:
+            first_obstacle = np.nan
+            first_room = np.nan
+            first_status = "开放"
+
+        # Next repeated resistance strictly above the pivot.
+        above_pivot = []
+        for z in resistance_zones:
+            low_edge = safe_num(z.get("low"))
+            if not pd.isna(low_edge) and low_edge > pivot * 1.005:
+                above_pivot.append(low_edge)
+
+        if above_pivot:
+            next_res = float(min(above_pivot))
+            breakout_room = next_res / pivot - 1.0
+            breakout_status = (
+                "Room <2%" if breakout_room < .02 else
+                "Room 2–5%" if breakout_room < .05 else
+                "Room 5–8%" if breakout_room < .08 else
+                "Room ≥8%"
+            )
+        else:
+            next_res = np.nan
+            breakout_room = np.nan
+            breakout_status = "开放"
+
+        out.update({
+            "Pivot Price V3": float(pivot),
+            "Pivot Status V3": pivot_status,
+            "Pivot Distance V3": float(pivot_dist),
+            "First Room V3": float(first_room) if not pd.isna(first_room) else np.nan,
+            "First Room Status V3": first_status,
+            "First Obstacle V3": float(first_obstacle) if not pd.isna(first_obstacle) else np.nan,
+            "Breakout Room V3": float(breakout_room) if not pd.isna(breakout_room) else np.nan,
+            "Breakout Room Status V3": breakout_status,
+            "Next Resistance Above Pivot V3": float(next_res) if not pd.isna(next_res) else np.nan,
+        })
+        return out
+    except Exception:
+        return out
 
 
 def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
@@ -3256,14 +3403,138 @@ def render_pivot_room_backtest(bt):
         '同时样本量没有被过度砍掉，才考虑把更严格Room阈值并入A。否则继续保留FIX3当前只否决“重复压力且<2%”的规则。'
     )
 
+
+def _v3_v2b_selection(d):
+    """Rebuild exactly the A6 V2B research selection, no forced fill."""
+    x = d[d["Hard Filter"].eq("通过")].copy()
+    x["共振数"] = pd.to_numeric(x["共振数"], errors="coerce")
+    macd = x["MACD共振"].eq("是")
+    pv = x["量价共振"].eq("是")
+    x["_v2b_buy"] = ((x["共振数"] >= 4) & macd & pv).astype(int)
+    x = x.sort_values(
+        ["Replay Date", "_v2b_buy", "共振数", "Replay Core Score 85",
+         "Leadership Score", "Accumulation Score"],
+        ascending=[True, False, False, False, False, False]
+    )
+    x = x.groupby("Replay Date", group_keys=False).head(10).copy()
+    return x[x["_v2b_buy"].eq(1)].copy()
+
+
+def _v3_summary(x, label, dates_n):
+    g = pd.to_numeric(x.get("5D Max Gain"), errors="coerce").dropna()
+    return {
+        "分层": label,
+        "样本": len(g),
+        "平均每天": len(g) / max(int(dates_n), 1),
+        "≥3%": (g >= .03).mean() if len(g) else np.nan,
+        "≥5%": (g >= .05).mean() if len(g) else np.nan,
+        "≥8%": (g >= .08).mean() if len(g) else np.nan,
+        "平均5D最大涨幅": g.mean() if len(g) else np.nan,
+        "中位数5D最大涨幅": g.median() if len(g) else np.nan,
+        "弱股<2%": (g < .02).mean() if len(g) else np.nan,
+    }
+
+
+def _render_v3_table(rows):
+    t = pd.DataFrame(rows)
+    st.dataframe(
+        t.style.format({
+            "平均每天": "{:.2f}",
+            "≥3%": "{:.1%}", "≥5%": "{:.1%}", "≥8%": "{:.1%}",
+            "平均5D最大涨幅": "{:+.2%}",
+            "中位数5D最大涨幅": "{:+.2%}",
+            "弱股<2%": "{:.1%}",
+        }, na_rep=""),
+        hide_index=True,
+        use_container_width=True
+    )
+
+
+def render_a6_v3_pivot_room_research(bt):
+    """V2B Core fixed; Pivot/Room fields are stratification only."""
+    if bt is None or bt.empty:
+        return
+
+    req = [
+        "Replay Date", "Hard Filter", "共振数", "MACD共振", "量价共振",
+        "Replay Core Score 85", "Leadership Score", "Accumulation Score",
+        "5D Max Gain", "Pivot Status V3", "First Room Status V3",
+        "Breakout Room Status V3"
+    ]
+    missing = [c for c in req if c not in bt.columns]
+    if missing:
+        st.warning("A6 V3字段尚未生成，请重新运行60日历史回放：" + ", ".join(missing))
+        return
+
+    d = bt.copy()
+    d["5D Max Gain"] = pd.to_numeric(d["5D Max Gain"], errors="coerce")
+    d = d.dropna(subset=["5D Max Gain"])
+    if d.empty:
+        return
+
+    v2b = _v3_v2b_selection(d)
+    dates_n = d["Replay Date"].nunique()
+
+    st.header("🧭 A6 V3 Research — V2B Core + Pivot / Room 分层")
+    st.caption(
+        "V2B Core完全不变：共振≥4/5 + MACD必过 + 量价必过；"
+        "Pivot Status、First Room、Breakout Room 当前只做60日分层研究，不参与正式买/不买。"
+    )
+
+    base = _v3_summary(v2b, "A6 V2B Core Benchmark", dates_n)
+    st.subheader("① V2B Benchmark")
+    _render_v3_table([base])
+
+    st.subheader("② Pivot Status：突破前 / 接近 / 刚突破 / 延伸")
+    pivot_order = ["突破前 >3%", "接近Pivot 0–3%", "刚突破 0–2%", "突破后延伸 >2%", "数据不足"]
+    rows = [_v3_summary(v2b[v2b["Pivot Status V3"].eq(lab)], lab, dates_n)
+            for lab in pivot_order if (v2b["Pivot Status V3"].eq(lab)).any() or lab != "数据不足"]
+    _render_v3_table(rows)
+
+    st.subheader("③ First Room：当前价到第一个上方障碍")
+    room_order = ["开放", "Room ≥8%", "Room 5–8%", "Room 2–5%", "Room <2%", "不确定"]
+    rows = [_v3_summary(v2b[v2b["First Room Status V3"].eq(lab)], lab, dates_n)
+            for lab in room_order if (v2b["First Room Status V3"].eq(lab)).any() or lab != "不确定"]
+    _render_v3_table(rows)
+
+    st.subheader("④ Breakout Room：突破Pivot后到下一重复压力区")
+    rows = [_v3_summary(v2b[v2b["Breakout Room Status V3"].eq(lab)], lab, dates_n)
+            for lab in room_order if (v2b["Breakout Room Status V3"].eq(lab)).any() or lab != "不确定"]
+    _render_v3_table(rows)
+
+    # Candidate gates — still research only.
+    first_good = v2b["First Room Status V3"].isin(["开放", "Room ≥8%", "Room 5–8%"])
+    breakout_good = v2b["Breakout Room Status V3"].isin(["开放", "Room ≥8%", "Room 5–8%"])
+    pivot_pre_or_fresh = v2b["Pivot Status V3"].isin(["接近Pivot 0–3%", "刚突破 0–2%"])
+
+    st.subheader("⑤ 候选组合：看是否值得进入下一版规则（仍不改Core）")
+    variants = [
+        ("V2B Benchmark", v2b),
+        ("V2B + First Room开放/≥5%", v2b[first_good]),
+        ("V2B + Breakout Room开放/≥5%", v2b[breakout_good]),
+        ("V2B + Pivot接近/刚突破", v2b[pivot_pre_or_fresh]),
+        ("V2B + Pivot接近/刚突破 + First Room开放/≥5%",
+         v2b[pivot_pre_or_fresh & first_good]),
+        ("V2B + Pivot接近/刚突破 + 双Room开放/≥5%",
+         v2b[pivot_pre_or_fresh & first_good & breakout_good]),
+    ]
+    _render_v3_table([_v3_summary(x, lab, dates_n) for lab, x in variants])
+
+    st.info(
+        "判断标准：先看 ≥5%、≥8% 是否稳定提高，同时弱股<2%是否下降；"
+        "如果收益提升很小但样本/每天数量大幅下降，就不把该Room条件升级为硬门槛。"
+    )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
         return
 
-    st.header('🎯 A5.2R FINAL v1 — 精简历史验证')
-    st.caption('FINAL 页面只保留核心 Benchmark，不再显示 VP1、Pivot/Room 实验表、旧 Hard Filter A/B 测试和参数研究结果。')
+    st.header('🎯 A6 V3 — 60日核心验证 + Pivot/Room Research')
+    st.caption('先保留 A5.2R vs V2B Benchmark，再对 V2B Core 内部做 Pivot Status / First Room / Breakout Room 分层。')
     render_a4_a5_resonance_comparison(bt)
+    render_a6_v3_pivot_room_research(bt)
 
     d = bt.copy()
     if '5D Max Gain' in d.columns:
@@ -3292,7 +3563,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A5.2R FINAL v1")
+    st.header("A6 V3 Research")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -3303,10 +3574,10 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
-    st.success("A6 V2B 研究版：正式A5.2R买/不买逻辑不改；60日回测额外测试‘量价必须通过’。支撑/压力/Room仍不否决买入。")
+    st.success("A6 V3：V2B Core固定；Pivot Status / First Room / Breakout Room只做研究，不改变正式盘后买/不买。")
 
 st.info(
-    "A6 V2B Research：A4基础筛选 → MACD/KDJ/RSI → 量价 → RS → 核心买/不买；OHLCV支撑/压力继续计算，但只作为位置/风险信息。"
+    "A6 V3 Research：V2B Core = 共振≥4/5 + MACD必过 + 量价必过；然后研究 Pivot Status / First Room / Breakout Room。"
     "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
 )
 
@@ -3520,9 +3791,9 @@ r1, r2 = st.columns([1,2])
 with r1:
     replay_days = st.selectbox("回放多少个历史交易日", [20,30,60], index=2)
 with r2:
-    st.caption("建议跑60日。FINAL 只显示核心 A4 vs A5.2R Benchmark 和精简指标。")
+    st.caption("建议跑60日。V3会显示 V2B Benchmark + Pivot / First Room / Breakout Room 分层。")
 
-if st.button("🧪 运行60日 A5.2R FINAL 核心验证", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A6 V3 Pivot/Room 回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
