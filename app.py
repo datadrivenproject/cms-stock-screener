@@ -17,14 +17,14 @@ except ImportError:
 # PAGE
 # =========================================================
 st.set_page_config(
-    page_title="CMS Stock Screener A6 V3 Research — Pivot / Room 60日分层",
+    page_title="CMS Stock Screener A6 V3.1 Research — Pivot / Room 60日分层",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 CMS Stock Screener A6 V3 Research — Pivot / Room 60日分层")
+st.title("📈 CMS Stock Screener A6 V3.1 Research — Pivot / Room 60日分层")
 st.caption(
-    "A6 V3 Research：正式盘后扫描逻辑不动；历史60日回放固定使用 A6 V2B Core（≥4/5 + MACD必过 + 量价必过），新增 Pivot Status / First Room / Breakout Room 分层研究。"
+    "A6 V3.1 Research：正式盘后扫描逻辑不动；历史60日回放固定使用 A6 V2B Core（≥4/5 + MACD必过 + 量价必过），新增 Pivot Status / First Room / Breakout Room 分层研究。"
     "这些新字段当前只做研究，不参与正式买/不买。"
 
     "新增 Fundamental Confirmation：Quality / FCF / Debt / Valuation / Growth；"
@@ -2166,7 +2166,7 @@ def _get_replay_sector_map(tickers):
 
 
 def calc_v3_pivot_room_fields(df):
-    """A6 V3 Research: as-of-date Pivot / First Room / Breakout Room fields.
+    """A6 V3.1 Research: as-of-date Pivot / First Room / Breakout Room fields.
 
     Research only — never changes LIVE A selection.
 
@@ -3481,7 +3481,7 @@ def render_a6_v3_pivot_room_research(bt):
     v2b = _v3_v2b_selection(d)
     dates_n = d["Replay Date"].nunique()
 
-    st.header("🧭 A6 V3 Research — V2B Core + Pivot / Room 分层")
+    st.header("🧭 A6 V3.1 Research — V2B Core + Pivot / Room 分层")
     st.caption(
         "V2B Core完全不变：共振≥4/5 + MACD必过 + 量价必过；"
         "Pivot Status、First Room、Breakout Room 当前只做60日分层研究，不参与正式买/不买。"
@@ -3508,27 +3508,85 @@ def render_a6_v3_pivot_room_research(bt):
             for lab in room_order if (v2b["Breakout Room Status V3"].eq(lab)).any() or lab != "不确定"]
     _render_v3_table(rows)
 
-    # Candidate gates — still research only.
-    first_good = v2b["First Room Status V3"].isin(["开放", "Room ≥8%", "Room 5–8%"])
-    breakout_good = v2b["Breakout Room Status V3"].isin(["开放", "Room ≥8%", "Room 5–8%"])
-    pivot_pre_or_fresh = v2b["Pivot Status V3"].isin(["接近Pivot 0–3%", "刚突破 0–2%"])
+    # =========================================================
+    # A6 V3.1 precise combination research
+    # "开放" is deliberately excluded from Room-good definitions.
+    # V2B Core remains unchanged; all tests below are research only.
+    # =========================================================
+    first_ge5 = v2b["First Room Status V3"].isin(["Room ≥8%", "Room 5–8%"])
+    first_ge2 = v2b["First Room Status V3"].isin(["Room ≥8%", "Room 5–8%", "Room 2–5%"])
+    breakout_ge8 = v2b["Breakout Room Status V3"].eq("Room ≥8%")
+    breakout_ge5 = v2b["Breakout Room Status V3"].isin(["Room ≥8%", "Room 5–8%"])
+    pivot_pre3 = v2b["Pivot Status V3"].eq("突破前 >3%")
+    pivot_near_fresh = v2b["Pivot Status V3"].isin(["接近Pivot 0–3%", "刚突破 0–2%"])
 
-    st.subheader("⑤ 候选组合：看是否值得进入下一版规则（仍不改Core）")
+    st.subheader("⑤ A6 V3.1 精确组合实验：去掉“开放”后重新验证")
+    st.caption(
+        "上一轮显示Room的“开放”组并不强，因此本轮不再把“开放”与≥5%混合。"
+        "所有组合仍只做研究，不改变V2B Core。"
+    )
+
     variants = [
         ("V2B Benchmark", v2b),
-        ("V2B + First Room开放/≥5%", v2b[first_good]),
-        ("V2B + Breakout Room开放/≥5%", v2b[breakout_good]),
-        ("V2B + Pivot接近/刚突破", v2b[pivot_pre_or_fresh]),
-        ("V2B + Pivot接近/刚突破 + First Room开放/≥5%",
-         v2b[pivot_pre_or_fresh & first_good]),
-        ("V2B + Pivot接近/刚突破 + 双Room开放/≥5%",
-         v2b[pivot_pre_or_fresh & first_good & breakout_good]),
+        ("V2B + First Room ≥5%", v2b[first_ge5]),
+        ("V2B + First Room ≥2%", v2b[first_ge2]),
+        ("V2B + Breakout Room ≥8%", v2b[breakout_ge8]),
+        ("V2B + Breakout Room ≥5%", v2b[breakout_ge5]),
+        ("V2B + First≥5% + Breakout≥8%", v2b[first_ge5 & breakout_ge8]),
+        ("V2B + Pivot突破前 >3%", v2b[pivot_pre3]),
+        ("V2B + Pivot突破前>3% + First≥5%", v2b[pivot_pre3 & first_ge5]),
+        ("V2B + Pivot突破前>3% + Breakout≥8%", v2b[pivot_pre3 & breakout_ge8]),
+        ("V2B + Pivot突破前>3% + First≥5% + Breakout≥8%",
+         v2b[pivot_pre3 & first_ge5 & breakout_ge8]),
+        ("对照：V2B + Pivot接近/刚突破", v2b[pivot_near_fresh]),
     ]
     _render_v3_table([_v3_summary(x, lab, dates_n) for lab, x in variants])
 
+    base_n = len(v2b)
+    base_g = pd.to_numeric(v2b["5D Max Gain"], errors="coerce").dropna()
+    base_5 = (base_g >= .05).mean() if len(base_g) else np.nan
+    base_8 = (base_g >= .08).mean() if len(base_g) else np.nan
+    base_weak = (base_g < .02).mean() if len(base_g) else np.nan
+
+    rank_rows = []
+    for lab, x in variants[1:-1]:
+        g = pd.to_numeric(x["5D Max Gain"], errors="coerce").dropna()
+        n = len(g)
+        daily = n / max(int(dates_n), 1)
+        h5 = (g >= .05).mean() if n else np.nan
+        h8 = (g >= .08).mean() if n else np.nan
+        weak = (g < .02).mean() if n else np.nan
+        rank_rows.append({
+            "组合": lab,
+            "样本": n,
+            "平均每天": daily,
+            "保留样本%": n / base_n if base_n else np.nan,
+            "Δ≥5%": h5 - base_5 if n else np.nan,
+            "Δ≥8%": h8 - base_8 if n else np.nan,
+            "Δ弱股<2%": weak - base_weak if n else np.nan,
+            "研究判断": (
+                "优先级候选"
+                if n >= 60 and daily >= 1.0 and h5 >= base_5 + .04 and weak <= base_weak
+                else "样本偏少"
+                if n < 40
+                else "观察"
+            )
+        })
+
+    st.subheader("⑥ 相对V2B的净改善与样本保留")
+    rdf = pd.DataFrame(rank_rows)
+    st.dataframe(
+        rdf.style.format({
+            "平均每天":"{:.2f}", "保留样本%":"{:.1%}",
+            "Δ≥5%":"{:+.1%}", "Δ≥8%":"{:+.1%}", "Δ弱股<2%":"{:+.1%}"
+        }, na_rep=""),
+        hide_index=True, use_container_width=True
+    )
+
     st.info(
-        "判断标准：先看 ≥5%、≥8% 是否稳定提高，同时弱股<2%是否下降；"
-        "如果收益提升很小但样本/每天数量大幅下降，就不把该Room条件升级为硬门槛。"
+        "V3.1判断原则：不因为小样本命中率很高就设硬门槛。"
+        "重点找≥5%/≥8%提高、弱股下降，同时仍保留足够样本和每天候选的条件。"
+        "若强组合每天不足约1只，更适合做A候选优先级，而不是一票否决。"
     )
 
 
@@ -3569,7 +3627,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A6 V3 Research")
+    st.header("A6 V3.1 Research")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -3583,7 +3641,7 @@ with st.sidebar:
     st.success("A6 V3：V2B Core固定；Pivot Status / First Room / Breakout Room只做研究，不改变正式盘后买/不买。")
 
 st.info(
-    "A6 V3 Research：V2B Core = 共振≥4/5 + MACD必过 + 量价必过；然后研究 Pivot Status / First Room / Breakout Room。"
+    "A6 V3.1 Research：V2B Core = 共振≥4/5 + MACD必过 + 量价必过；然后研究 Pivot Status / First Room / Breakout Room。"
     "空间等级用于给 B/C 提供监控优先级参考，不再作为A的一票否决；盘中真正买卖由 B/C 负责。"
 )
 
@@ -3799,7 +3857,7 @@ with r1:
 with r2:
     st.caption("建议跑60日。V3会显示 V2B Benchmark + Pivot / First Room / Breakout Room 分层。")
 
-if st.button("🧪 运行60日 A6 V3 Pivot/Room 回测", type="primary", use_container_width=True):
+if st.button("🧪 运行60日 A6 V3.1 精确组合回测", type="primary", use_container_width=True):
     try:
         p = st.progress(0)
         s = st.empty()
