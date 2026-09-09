@@ -1,166 +1,359 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CMS A5.2R — adjust 110 stocks + 12 benchmark ETFs from existing Supabase raw OHLC.
-Uses ONE Business Quant corporate-actions request; preserves raw OHLC.
-Writes adj_open, adj_high, adj_low, adj_close, adj_factor.
+
 """
-import os, sys
-import numpy as np
-import pandas as pd
+CMS DATA ENGINE — 122 SYMBOL DAILY INCREMENTAL UPDATE v1.0
+
+Purpose
+-------
+Update the existing Supabase public.stock_daily table for the frozen A5.2R
+production universe:
+  - 110 stocks
+  - 12 benchmark/sector ETFs
+
+Design
+------
+- Business Quant /quotes
+- mode=eod (settled EOD only; never inject live bar)
+- period=1mo (small rolling window instead of re-downloading 1 year)
+- 10 tickers/request => 13 API calls for 122 symbols
+- de-duplicate conflicting same-date rows exactly as the original loader did
+- UPSERT raw OHLCV only
+- DOES NOT overwrite adj_open/adj_high/adj_low/adj_close/adj_factor
+- the existing 122 adjustment job remains responsible for adjusted fields
+
+Required GitHub repository secrets
+----------------------------------
+BUSINESSQUANT_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+"""
+
+import os
+import sys
+import math
+import time
 import requests
+from collections import defaultdict
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-STOCK_UNIVERSE = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AVGO', 'AMD', 'NFLX', 'ORCL', 'IBM', 'DELL', 'HPE', 'SMCI', 'CRM', 'ADBE', 'NOW', 'PLTR', 'PATH', 'CRWD', 'PANW', 'FTNT', 'DDOG', 'NET', 'SNOW', 'MDB', 'ZS', 'OKTA', 'TEAM', 'QCOM', 'MU', 'INTC', 'ARM', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'ON', 'MCHP', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'PYPL', 'COIN', 'HOOD', 'SOFI', 'XYZ', 'NU', 'IBKR', 'LLY', 'UNH', 'ABBV', 'MRK', 'AMGN', 'JNJ', 'PFE', 'GILD', 'ISRG', 'TMO', 'TEM', 'VEEV', 'REGN', 'VRTX', 'DXCM', 'XOM', 'CVX', 'COP', 'CAT', 'GE', 'BA', 'RTX', 'LMT', 'ETN', 'VRT', 'PLUG', 'FCX', 'SLB', 'FSLR', 'CEG', 'WMT', 'COST', 'HD', 'DIS', 'UBER', 'ABNB', 'DASH', 'BKNG', 'SHOP', 'MELI', 'RBLX', 'SPOT', 'ROKU', 'DUOL', 'RDDT', 'CRCL', 'APP', 'RKLB', 'ASTS', 'IONQ', 'RGTI', 'SOUN', 'HIMS', 'CAVA', 'CVNA']
-BENCHMARK_TICKERS = ['SPY', 'XLK', 'XLV', 'XLF', 'XLY', 'XLP', 'XLI', 'XLE', 'XLB', 'XLU', 'XLRE', 'XLC']
-UNIVERSE = STOCK_UNIVERSE + BENCHMARK_TICKERS
-EXPECTED = len(UNIVERSE)
+BQ_URL = "https://data.businessquant.com/quotes"
 
-BQ_BASE = "https://data.businessquant.com"
-S = requests.Session()
+STOCKS_110 = [
+    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AVGO","AMD","NFLX","ORCL","IBM","DELL","HPE","SMCI",
+    "CRM","ADBE","NOW","PLTR","PATH","CRWD","PANW","FTNT","DDOG","NET","SNOW","MDB","ZS","OKTA","TEAM",
+    "QCOM","MU","INTC","ARM","MRVL","AMAT","LRCX","KLAC","ON","MCHP",
+    "JPM","BAC","WFC","GS","MS","V","MA","AXP","PYPL","COIN","HOOD","SOFI","XYZ","NU","IBKR",
+    "LLY","UNH","ABBV","MRK","AMGN","JNJ","PFE","GILD","ISRG","TMO","TEM","VEEV","REGN","VRTX","DXCM",
+    "XOM","CVX","COP","CAT","GE","BA","RTX","LMT","ETN","VRT","PLUG","FCX","SLB","FSLR","CEG",
+    "WMT","COST","HD","DIS","UBER","ABNB","DASH","BKNG","SHOP","MELI","RBLX","SPOT","ROKU","DUOL","RDDT",
+    "CRCL","APP","RKLB","ASTS","IONQ","RGTI","SOUN","HIMS","CAVA","CVNA"
+]
+
+BENCHMARKS_12 = [
+    "SPY","XLK","XLV","XLF","XLY","XLP","XLI","XLE","XLB","XLU","XLRE","XLC"
+]
+
+TICKERS = STOCKS_110 + BENCHMARKS_12
+
+# Business Quant supports multi-ticker requests.
+# 122 / 10 = 13 calls per normal run, comfortably below the account's
+# previously observed 40-request/day limit.
+REQUEST_BATCH = 10
+PERIOD = "1mo"
+BQ_LIMIT = 100
+DB_BATCH = 500
+MAX_RETRIES = 2
+NY = ZoneInfo("America/New_York")
+
+
+def fail(msg):
+    print(f"❌ {msg}", flush=True)
+    sys.exit(1)
+
 
 def env(name):
-    v=os.environ.get(name,"").strip()
-    if not v:
-        print(f"❌ Missing secret: {name}"); sys.exit(2)
-    return v
+    value = os.getenv(name, "").strip()
+    if not value:
+        fail(f"Missing GitHub Secret: {name}")
+    return value
 
-BQ_KEY=env("BUSINESSQUANT_API_KEY")
-SB_URL=env("SUPABASE_URL").rstrip("/")
-SB_KEY=env("SUPABASE_SERVICE_ROLE_KEY")
 
-def sb_headers(count=False):
-    h={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"}
-    if count: h["Prefer"]="count=exact"
-    return h
+def chunks(seq, n):
+    for i in range(0, len(seq), n):
+        yield seq[i:i+n]
 
-def fetch_raw():
-    url=f"{SB_URL}/rest/v1/stock_daily"
-    ticker_filter="in.("+",".join(UNIVERSE)+")"
-    rows=[]; start=0; size=1000
-    while True:
-        h=sb_headers(); h["Range"]=f"{start}-{start+size-1}"
-        p={"select":"ticker,trade_date,open,high,low,close",
-           "ticker":ticker_filter,"order":"ticker.asc,trade_date.asc"}
-        r=S.get(url,headers=h,params=p,timeout=60)
-        if r.status_code not in (200,206):
-            raise RuntimeError(f"Supabase read HTTP {r.status_code}: {r.text[:500]}")
-        b=r.json()
-        if not b: break
-        rows.extend(b); print(f"Supabase raw read: +{len(b)} | total={len(rows)}")
-        if len(b)<size: break
-        start+=size
-    d=pd.DataFrame(rows)
-    if d.empty: raise RuntimeError("No raw rows in Supabase")
-    d["ticker"]=d["ticker"].astype(str).str.upper()
-    d["trade_date"]=pd.to_datetime(d["trade_date"],errors="coerce").dt.normalize()
-    for c in ["open","high","low","close"]: d[c]=pd.to_numeric(d[c],errors="coerce")
-    return d.dropna(subset=["ticker","trade_date","close"]).drop_duplicates(
-        ["ticker","trade_date"],keep="last").sort_values(["ticker","trade_date"])
 
-def fetch_actions():
-    p={"ticker":",".join(UNIVERSE),"action":"dividend,split","period":"1y",
-       "limit":10000,"page":1,"api_key":BQ_KEY}
-    r=S.get(f"{BQ_BASE}/corporate_actions",params=p,timeout=60)
-    if r.status_code==404:
-        return pd.DataFrame(columns=["date","ticker","action","value","notes"])
-    if r.status_code!=200:
-        raise RuntimeError(f"BQ corporate-actions HTTP {r.status_code}: {r.text[:500]}")
-    payload=r.json()
-    data=payload.get("data",[]) if isinstance(payload,dict) else payload if isinstance(payload,list) else []
-    if not data and isinstance(payload,dict):
-        for v in payload.values():
-            if isinstance(v,dict) and isinstance(v.get("data"),list): data.extend(v["data"])
-    if not data: return pd.DataFrame(columns=["date","ticker","action","value","notes"])
-    d=pd.DataFrame(data)
-    for c in ["date","ticker","action","value","notes"]:
-        if c not in d.columns: d[c]=np.nan
-    d["ticker"]=d["ticker"].astype(str).str.upper()
-    d["date"]=pd.to_datetime(d["date"],errors="coerce").dt.normalize()
-    d["action"]=d["action"].astype(str).str.lower().str.strip()
-    d["value"]=pd.to_numeric(d["value"],errors="coerce")
-    d=d[d["ticker"].isin(UNIVERSE)&d["action"].isin(["dividend","split"])].dropna(subset=["date","ticker"])
-    print(f"Business Quant corporate actions: {len(d)} rows in ONE request")
-    return d.sort_values(["ticker","date"])
+def fnum(v):
+    if v is None or v == "":
+        return None
+    x = float(v)
+    return x if math.isfinite(x) else None
 
-def adjust(raw, acts):
-    o=raw.copy().sort_values("trade_date").reset_index(drop=True)
-    o["adj_factor"]=1.0
-    for _,a in acts.sort_values("date").iterrows():
-        prior=o["trade_date"]<a["date"]
-        if not prior.any(): continue
-        f=np.nan; v=a["value"]; typ=str(a["action"]).lower()
-        if typ=="split" and pd.notna(v) and float(v)>0:
-            f=1.0/float(v)
-        elif typ=="dividend" and pd.notna(v) and float(v)>=0:
-            prev=o.loc[prior,"close"].dropna()
-            if not prev.empty:
-                pc=float(prev.iloc[-1]); dv=float(v)
-                if pc>0 and dv<pc: f=(pc-dv)/pc
-        if pd.notna(f) and f>0: o.loc[prior,"adj_factor"]*=float(f)
-    for c in ["open","high","low","close"]: o["adj_"+c]=o[c]*o["adj_factor"]
-    return o
 
-def num(x): return None if pd.isna(x) else float(x)
+def inum(v):
+    if v is None or v == "":
+        return None
+    return int(float(v))
 
-def upsert(rows):
-    url=f"{SB_URL}/rest/v1/stock_daily?on_conflict=ticker,trade_date"
-    h={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}","Content-Type":"application/json",
-       "Prefer":"resolution=merge-duplicates,return=minimal"}
-    for i in range(0,len(rows),500):
-        b=rows[i:i+500]; r=S.post(url,headers=h,json=b,timeout=60)
-        if r.status_code not in (200,201,204):
-            raise RuntimeError(f"Supabase upsert HTTP {r.status_code}: {r.text[:500]}")
-        print(f"Supabase write batch {i//500+1}: {len(b)} | HTTP {r.status_code}")
 
-def verify():
-    result=[]
-    url=f"{SB_URL}/rest/v1/stock_daily"
-    for t in UNIVERSE:
-        h=sb_headers(True); h["Range"]="0-0"
-        p={"select":"ticker","ticker":f"eq.{t}","adj_close":"not.is.null"}
-        r=S.get(url,headers=h,params=p,timeout=30)
-        n=-1
-        if r.status_code in (200,206):
-            try: n=int(r.headers.get("Content-Range","").split("/")[-1])
-            except: pass
-        result.append({"ticker":t,"adjusted_rows":n})
-    return pd.DataFrame(result)
+def valid(row):
+    vals = [row[k] for k in ("open", "high", "low", "close", "volume")]
+    if any(v is None for v in vals):
+        return False
+    o, h, l, c, v = vals
+    return (
+        min(o, h, l, c) > 0
+        and v >= 0
+        and h >= max(o, l, c)
+        and l <= min(o, h, c)
+    )
+
+
+def fetch_batch(api_key, batch):
+    params = {
+        "ticker": ",".join(batch),
+        "mode": "eod",
+        "period": PERIOD,
+        "limit": BQ_LIMIT,
+        "page": 1,
+        "api_key": api_key,
+    }
+
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = requests.get(BQ_URL, params=params, timeout=120)
+            print(f"  Business Quant HTTP {r.status_code}", flush=True)
+
+            # Give a clearer message for daily quota exhaustion.
+            if r.status_code == 429:
+                raise RuntimeError(f"Business Quant rate limit: {r.text[:500]}")
+
+            r.raise_for_status()
+            return r.json()
+
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠️ attempt {attempt}/{MAX_RETRIES} failed: {e}", flush=True)
+            if attempt < MAX_RETRIES:
+                time.sleep(4 * attempt)
+
+    raise last_error
+
+
+def normalize_multi_ticker_response(result, batch):
+    """
+    Business Quant:
+    - single ticker may return {"metadata":..., "data":[...]}
+    - multi ticker returns { "AAPL": {...}, "MSFT": {...}, ... }
+    """
+    if isinstance(result, dict) and "metadata" in result and "data" in result:
+        ticker = str(result.get("metadata", {}).get("ticker", batch[0])).upper()
+        return {ticker: result}
+    return result if isinstance(result, dict) else {}
+
+
+def clean_ticker(ticker, block):
+    raw = block.get("data", []) if isinstance(block, dict) else []
+    if not raw:
+        return []
+
+    grouped = defaultdict(list)
+    for x in raw:
+        d = str(x.get("date", ""))[:10]
+        if d:
+            grouped[d].append(x)
+
+    out = []
+    conflicts = 0
+
+    for d in sorted(grouped):
+        normalized = []
+        for x in grouped[d]:
+            try:
+                row = {
+                    "ticker": ticker,
+                    "trade_date": d,
+                    "open": fnum(x.get("open")),
+                    "high": fnum(x.get("high")),
+                    "low": fnum(x.get("low")),
+                    "close": fnum(x.get("close")),
+                    "volume": inum(x.get("volume")),
+                    "source": "businessquant",
+                }
+            except Exception:
+                continue
+
+            if valid(row):
+                normalized.append(row)
+
+        if not normalized:
+            continue
+
+        if len(normalized) > 1:
+            sig = {
+                (x["open"], x["high"], x["low"], x["close"], x["volume"])
+                for x in normalized
+            }
+            if len(sig) > 1:
+                conflicts += 1
+
+        # Match the previously validated loader: keep the API-returned last
+        # valid record for a duplicate trade date.
+        out.append(normalized[-1])
+
+    if out:
+        print(
+            f"    {ticker}: rows={len(out)} "
+            f"latest={out[-1]['trade_date']} "
+            f"duplicate_conflict_dates={conflicts}",
+            flush=True
+        )
+    return out
+
+
+def upsert_supabase(base_url, service_key, rows):
+    """
+    Only raw columns are sent. Existing adjusted columns are intentionally
+    omitted so this job does not replace them. Newly inserted trade dates will
+    have adjusted fields populated by adjust_stock_daily_122.py afterwards.
+    """
+    url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
+
+    for i, batch in enumerate(chunks(rows, DB_BATCH), 1):
+        r = requests.post(
+            url,
+            params={"on_conflict": "ticker,trade_date"},
+            headers=headers,
+            json=batch,
+            timeout=120,
+        )
+        print(
+            f"  Supabase batch {i}: HTTP {r.status_code} ({len(batch)} rows)",
+            flush=True
+        )
+        if not r.ok:
+            print(r.text[:2000], flush=True)
+            r.raise_for_status()
+
 
 def main():
-    print(f"CMS A5.2R adjusted data | {len(STOCK_UNIVERSE)} stocks + {len(BENCHMARK_TICKERS)} ETFs = {EXPECTED}")
-    raw=fetch_raw()
-    present=set(raw["ticker"].unique())
-    missing=[t for t in UNIVERSE if t not in present]
-    if missing:
-        print("❌ Missing raw symbols in Supabase:",", ".join(missing)); sys.exit(1)
+    if len(STOCKS_110) != 110:
+        fail(f"Internal universe error: expected 110 stocks, found {len(STOCKS_110)}")
+    if len(BENCHMARKS_12) != 12:
+        fail(f"Internal universe error: expected 12 benchmarks, found {len(BENCHMARKS_12)}")
+    if len(TICKERS) != 122 or len(set(TICKERS)) != 122:
+        fail("Internal universe error: 122-symbol list is not unique")
 
-    acts=fetch_actions()
-    rows=[]; status=[]
-    for i,t in enumerate(UNIVERSE,1):
-        r=raw[raw["ticker"]==t].copy()
-        a=acts[acts["ticker"]==t].copy()
-        z=adjust(r,a)
-        for _,x in z.iterrows():
-            rows.append({"ticker":t,"trade_date":x["trade_date"].date().isoformat(),
-                         "adj_open":num(x["adj_open"]),"adj_high":num(x["adj_high"]),
-                         "adj_low":num(x["adj_low"]),"adj_close":num(x["adj_close"]),
-                         "adj_factor":num(x["adj_factor"])})
-        status.append({"ticker":t,"raw_rows":len(r),"corporate_actions":len(a),
-                       "min_adj_factor":float(z["adj_factor"].min()),
-                       "max_adj_factor":float(z["adj_factor"].max())})
-        print(f"[{i:03d}/{EXPECTED}] {t}: raw={len(r)} | actions={len(a)}")
+    bq_key = env("BUSINESSQUANT_API_KEY")
+    sb_url = env("SUPABASE_URL")
+    sb_key = env("SUPABASE_SERVICE_ROLE_KEY")
 
-    print(f"Prepared {len(rows)} adjusted rows.")
-    upsert(rows)
-    out=pd.DataFrame(status).merge(verify(),on="ticker",how="left")
-    out["status"]=np.where(out["adjusted_rows"]>=200,"OK","CHECK")
-    out.to_csv("adjust_122_status.csv",index=False,encoding="utf-8-sig")
-    ok=int((out["status"]=="OK").sum())
-    print("\n"+"="*80+"\nFINAL SUMMARY\n"+"="*80)
-    print(f"OK (>=200 adjusted rows): {ok}/{EXPECTED}")
-    print(f"CHECK: {EXPECTED-ok}")
-    if ok!=EXPECTED:
-        print(out[out["status"]!="OK"][["ticker","adjusted_rows"]].to_string(index=False)); sys.exit(1)
-    print(f"✅ {EXPECTED}/{EXPECTED} adjusted OHLC successfully stored in Supabase.")
-    print("✅ Raw OHLC preserved. A5.2R logic unchanged.")
+    if "/rest/v1" in sb_url:
+        fail("SUPABASE_URL must be project base URL, without /rest/v1")
 
-if __name__=="__main__": main()
+    now = datetime.now(NY)
+
+    print("=" * 84, flush=True)
+    print("CMS 122 DAILY INCREMENTAL UPDATE v1.0", flush=True)
+    print(f"Run time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
+    print(f"Universe: 110 stocks + 12 benchmarks = {len(TICKERS)}", flush=True)
+    print(
+        f"Business Quant: mode=eod | period={PERIOD} | "
+        f"batch={REQUEST_BATCH} | planned calls={math.ceil(len(TICKERS)/REQUEST_BATCH)}",
+        flush=True
+    )
+    print("=" * 84, flush=True)
+
+    all_rows = []
+    failed_tickers = []
+
+    batches = list(chunks(TICKERS, REQUEST_BATCH))
+
+    for n, batch in enumerate(batches, 1):
+        print(
+            f"\n📥 BQ request {n}/{len(batches)}: {', '.join(batch)}",
+            flush=True
+        )
+
+        try:
+            result = fetch_batch(bq_key, batch)
+        except Exception as e:
+            print(f"❌ Batch failed: {e}", flush=True)
+            failed_tickers.extend(batch)
+            continue
+
+        result = normalize_multi_ticker_response(result, batch)
+
+        for ticker in batch:
+            block = result.get(ticker)
+            rows = clean_ticker(ticker, block)
+            if not rows:
+                print(f"    ⚠️ {ticker}: no valid EOD rows", flush=True)
+                failed_tickers.append(ticker)
+            else:
+                all_rows.extend(rows)
+
+    # Strong local integrity check before touching Supabase.
+    keys = [(r["ticker"], r["trade_date"]) for r in all_rows]
+    if len(keys) != len(set(keys)):
+        fail("Cleaned payload still contains duplicate ticker + trade_date keys")
+
+    covered = sorted(set(r["ticker"] for r in all_rows))
+    print("\n" + "=" * 84, flush=True)
+    print(
+        f"Fetched valid data for {len(covered)}/122 symbols; "
+        f"{len(all_rows)} rolling-window rows",
+        flush=True
+    )
+
+    if failed_tickers:
+        uniq_fail = sorted(set(failed_tickers))
+        print("⚠️ Missing/failed symbols:", ", ".join(uniq_fail), flush=True)
+
+    # A normal production update should never silently write a partial universe.
+    # This protects A from a half-updated market/benchmark dataset.
+    if len(covered) != 122:
+        fail(
+            f"Partial update blocked: only {len(covered)}/122 symbols returned valid data. "
+            "Supabase was NOT changed."
+        )
+
+    print("\n📤 Upserting raw rolling EOD window to Supabase...", flush=True)
+    upsert_supabase(sb_url, sb_key, all_rows)
+
+    latest_by_ticker = {}
+    for r in all_rows:
+        latest_by_ticker[r["ticker"]] = max(
+            r["trade_date"],
+            latest_by_ticker.get(r["ticker"], "")
+        )
+
+    latest_dates = sorted(set(latest_by_ticker.values()))
+    print("\nLatest fetched trade dates:", ", ".join(latest_dates), flush=True)
+
+    if len(latest_dates) > 1:
+        print(
+            "ℹ️ Different latest dates can occur for a recently halted/listed security; "
+            "review if unexpected.",
+            flush=True
+        )
+
+    print("\n✅ 122/122 raw EOD update completed.", flush=True)
+    print(
+        "✅ Adjusted fields were not overwritten. "
+        "Next step: run Adjust 122 A5 Symbols.",
+        flush=True
+    )
+
+
+if __name__ == "__main__":
+    main()
