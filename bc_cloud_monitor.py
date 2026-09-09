@@ -24,6 +24,7 @@ Required GitHub repository secrets:
 import os
 import sys
 import json
+import tomllib
 import time as time_module
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -112,10 +113,21 @@ def get_book():
     if not sheet_name:
         raise RuntimeError("Missing GitHub secret: TRACKER_SHEET_NAME")
 
+    # Accept either standard JSON or the existing Streamlit TOML block.
     try:
         info = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"GCP_SERVICE_ACCOUNT_JSON is not valid JSON: {e}")
+    except json.JSONDecodeError:
+        try:
+            parsed = tomllib.loads(raw)
+            info = parsed.get("gcp_service_account", parsed)
+            if not isinstance(info, dict) or "client_email" not in info or "private_key" not in info:
+                raise ValueError("gcp_service_account block not found")
+        except Exception as e:
+            raise RuntimeError(
+                "GCP_SERVICE_ACCOUNT_JSON must contain either the full service-account JSON "
+                "or the Streamlit [gcp_service_account] TOML block. "
+                f"Parse error: {e}"
+            )
 
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
