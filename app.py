@@ -131,19 +131,49 @@ NEGATIVE_CATALYST = {
 }
 
 # =========================================================
-# UNIVERSE
+# UNIVERSE — A6 FINAL 500 POOL
 # =========================================================
+# 保留原来的自选成长/热门股，同时自动加入 S&P 500。
+# S&P 500 成分会变化，因此不在程序里硬编码 500 个代码。
+# 若网络临时无法读取成分表，会自动退回原自选池，不影响 App 启动。
+CORE_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "AMD", "NFLX", "ORCL", "IBM", "DELL", "HPE", "SMCI",
+    "CRM", "ADBE", "NOW", "PLTR", "PATH", "CRWD", "PANW", "FTNT", "DDOG", "NET", "SNOW", "MDB", "ZS", "OKTA", "TEAM",
+    "QCOM", "MU", "INTC", "ARM", "MRVL", "AMAT", "LRCX", "KLAC", "ON", "MCHP",
+    "JPM", "BAC", "WFC", "GS", "MS", "V", "MA", "AXP", "PYPL", "COIN", "HOOD", "SOFI", "XYZ", "NU", "IBKR",
+    "LLY", "UNH", "ABBV", "MRK", "AMGN", "JNJ", "PFE", "GILD", "ISRG", "TMO", "TEM", "VEEV", "REGN", "VRTX", "DXCM",
+    "XOM", "CVX", "COP", "CAT", "GE", "BA", "RTX", "LMT", "ETN", "VRT", "PLUG", "FCX", "SLB", "FSLR", "CEG",
+    "WMT", "COST", "HD", "DIS", "UBER", "ABNB", "DASH", "BKNG", "SHOP", "MELI", "RBLX", "SPOT", "ROKU", "DUOL", "RDDT",
+    "CRCL", "APP", "RKLB", "ASTS", "IONQ", "RGTI", "SOUN", "HIMS", "CAVA", "CVNA"
+]
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_sp500_tickers():
+    """读取当前 S&P 500 成分；BRK.B / BF.B 转成 Yahoo/Supabase 常用的 BRK-B / BF-B。"""
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    try:
+        tables = pd.read_html(url)
+        if not tables:
+            return []
+        tab = tables[0]
+        symbol_col = "Symbol" if "Symbol" in tab.columns else tab.columns[0]
+        tickers = (
+            tab[symbol_col]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .str.replace(".", "-", regex=False)
+            .tolist()
+        )
+        return sorted(set(t for t in tickers if t and t != "NAN"))
+    except Exception:
+        return []
+
 def get_universe():
-    return [
-        "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "AMD", "NFLX", "ORCL", "IBM", "DELL", "HPE", "SMCI",
-        "CRM", "ADBE", "NOW", "PLTR", "PATH", "CRWD", "PANW", "FTNT", "DDOG", "NET", "SNOW", "MDB", "ZS", "OKTA", "TEAM",
-        "QCOM", "MU", "INTC", "ARM", "MRVL", "AMAT", "LRCX", "KLAC", "ON", "MCHP",
-        "JPM", "BAC", "WFC", "GS", "MS", "V", "MA", "AXP", "PYPL", "COIN", "HOOD", "SOFI", "XYZ", "NU", "IBKR",
-        "LLY", "UNH", "ABBV", "MRK", "AMGN", "JNJ", "PFE", "GILD", "ISRG", "TMO", "TEM", "VEEV", "REGN", "VRTX", "DXCM",
-        "XOM", "CVX", "COP", "CAT", "GE", "BA", "RTX", "LMT", "ETN", "VRT", "PLUG", "FCX", "SLB", "FSLR", "CEG",
-        "WMT", "COST", "HD", "DIS", "UBER", "ABNB", "DASH", "BKNG", "SHOP", "MELI", "RBLX", "SPOT", "ROKU", "DUOL", "RDDT",
-        "CRCL", "APP", "RKLB", "ASTS", "IONQ", "RGTI", "SOUN", "HIMS", "CAVA", "CVNA"
-    ]
+    sp500 = get_sp500_tickers()
+    # S&P500 + 原自选池，去重。这样不会因为扩池把 PATH/TEM/RKLB 等原来关注股删掉。
+    combined = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
+    return combined if combined else CORE_UNIVERSE.copy()
 
 # =========================================================
 # DOWNLOAD HELPERS
@@ -3689,11 +3719,11 @@ with st.sidebar:
     st.write("Catalyst 15")
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
-    st.caption("A程序是盘后选股，不是盘中买入信号；基本面层只确认 Confidence。")
+    st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
     st.success("A6 FINAL：V2B Core决定正式候选；Pivot/Room只做优先级排序，不做一票否决。")
 
 st.info(
-    "A6 FINAL：Core决定候选资格；Breakout Room、First Room、Pivot只负责排序，不做一票否决。"
+    "A6 FINAL 500池：自动读取当前 S&P 500，并保留原自选股。Core决定候选资格；Pivot/Room只负责排序。"
 )
 
 scan_clicked = st.button("🚀 运行 A6 FINAL 盘后扫描", type="primary", use_container_width=True)
@@ -3719,23 +3749,36 @@ if scan_clicked:
         st.stop()
 
     missing_daily = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
+    available_tickers = [t for t in tickers if t in data and data[t] is not None and not data[t].empty]
+
+    c_pool1, c_pool2, c_pool3 = st.columns(3)
+    c_pool1.metric("目标股票池", len(tickers))
+    c_pool2.metric("Supabase可扫描", len(available_tickers))
+    c_pool3.metric("暂缺日K", len(missing_daily))
+
     if missing_daily:
-        st.error(
-            "Supabase 缺少复权日K：" + ", ".join(missing_daily) +
-            "。为避免混用原始/复权价格，本次扫描已停止。"
+        preview = ", ".join(missing_daily[:30])
+        more = f" ……另有 {len(missing_daily)-30} 只" if len(missing_daily) > 30 else ""
+        st.warning(
+            "股票池已经扩大，但以下股票目前 Supabase 还没有复权日K，因此本次先跳过："
+            + preview + more +
+            "。A6 FINAL 不会改用 Yahoo 日K混跑。"
         )
+
+    if not available_tickers:
+        st.error("Supabase 当前没有可用于 A6 FINAL 的股票日K，扫描停止。")
         st.stop()
 
     results = []
-    for i, ticker in enumerate(tickers, start=1):
-        status.write(f"正在分析 {ticker}（{i}/{len(tickers)}）")
+    for i, ticker in enumerate(available_tickers, start=1):
+        status.write(f"正在分析 {ticker}（{i}/{len(available_tickers)}）")
         # Production scan intentionally does not fall back to Yahoo daily OHLCV.
         # Missing Supabase data is skipped so the daily-price provider stays consistent.
         df = data.get(ticker)
         row = analyze_daily_candidate(ticker, df, benchmarks)
         if row is not None:
             results.append(row)
-        progress.progress(int(i / len(tickers) * 100))
+        progress.progress(int(i / len(available_tickers) * 100))
 
     status.empty()
     if not results:
@@ -3964,4 +4007,3 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
                 st.error(f"Forward Validation失败：{e}")
         if "a_strong_bt" in st.session_state:
             render_strong_stock_backtest(st.session_state["a_strong_bt"])
-
