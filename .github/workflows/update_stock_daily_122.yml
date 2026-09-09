@@ -2,10 +2,6 @@ name: Update 122 Daily EOD
 
 on:
   workflow_dispatch:
-  schedule:
-    # 22:15 UTC = 18:15 EDT / 17:15 EST.
-    # Safely after the US regular session throughout the year.
-    - cron: "15 22 * * 1-5"
 
 concurrency:
   group: cms-update-122-daily-eod
