@@ -1,33 +1,39 @@
-name: Adjust 122 A5 Symbols
+name: Update 122 Daily EOD
 
 on:
   workflow_dispatch:
+  schedule:
+    # 22:15 UTC = 18:15 EDT / 17:15 EST.
+    # Safely after the US regular session throughout the year.
+    - cron: "15 22 * * 1-5"
+
+concurrency:
+  group: cms-update-122-daily-eod
+  cancel-in-progress: false
 
 jobs:
-  adjust-122:
+  update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests
-      - name: Adjust 122 existing Supabase OHLC
+          pip install requests
+
+      - name: Update 122 raw EOD rows
         env:
           BUSINESSQUANT_API_KEY: ${{ secrets.BUSINESSQUANT_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python adjust_stock_daily_122.py
-      - name: Upload status
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: adjust-122-status
-          path: adjust_122_status.csv
-          if-no-files-found: warn
+        run: |
+          python update_stock_daily_122.py
