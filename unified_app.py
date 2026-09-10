@@ -47,14 +47,14 @@ B_LOG_WORKSHEET = "B_Log"
 st.markdown("""
 <style>
 :root {
-    --cms-bg: #061426;
-    --cms-bg2: #081a30;
-    --cms-panel: #0b2039;
-    --cms-panel2: #0d2744;
-    --cms-border: rgba(111, 164, 219, 0.20);
+    --cms-bg: #0b2a4a;
+    --cms-bg2: #0f365d;
+    --cms-panel: #123c65;
+    --cms-panel2: #174a79;
+    --cms-border: rgba(120, 190, 255, 0.28);
     --cms-border-strong: rgba(49, 145, 255, 0.72);
     --cms-text: #e8f2ff;
-    --cms-muted: #91a8c2;
+    --cms-muted: #aac6e4;
     --cms-blue: #1f8fff;
     --cms-green: #26d7a1;
     --cms-yellow: #f6c84c;
@@ -81,16 +81,16 @@ header[data-testid="stHeader"] {
 
 .stApp {
     background:
-      radial-gradient(circle at 15% 0%, rgba(29,103,177,.16), transparent 25%),
-      radial-gradient(circle at 95% 12%, rgba(17,86,150,.10), transparent 24%),
-      linear-gradient(180deg, #07172a 0%, var(--cms-bg) 100%);
+      radial-gradient(circle at 15% 0%, rgba(43,142,232,.22), transparent 25%),
+      radial-gradient(circle at 95% 12%, rgba(43,126,205,.16), transparent 24%),
+      linear-gradient(180deg, #124878 0%, #0c3154 42%, var(--cms-bg) 100%);
     color: var(--cms-text);
 }
 .block-container {padding-top: .30rem; padding-bottom: 1.4rem; max-width: 1680px;}
 
 /* Sidebar */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #071a31 0%, #081f38 60%, #06182d 100%);
+    background: linear-gradient(180deg, #0d3760 0%, #0b2d4f 58%, #082440 100%);
     border-right: 1px solid rgba(88,145,204,.20);
 }
 [data-testid="stSidebar"] * {color: #d8e8fa;}
@@ -108,7 +108,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 
 /* Metrics */
 [data-testid="stMetric"] {
-    background: linear-gradient(145deg, rgba(14,42,73,.96), rgba(10,31,55,.96));
+    background: linear-gradient(145deg, rgba(23,73,119,.96), rgba(15,52,87,.96));
     border: 1px solid var(--cms-border);
     padding: 10px 12px;
     border-radius: 10px;
@@ -121,41 +121,41 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 
 /* General controls */
 [data-baseweb="select"] > div, [data-testid="stSelectbox"] > div > div {
-    background: #0b2038 !important; border-color: rgba(105,158,211,.22) !important;
+    background: #123d68 !important; border-color: rgba(105,158,211,.22) !important;
 }
 .stButton > button {
     border-radius: 9px; border: 1px solid rgba(95,153,213,.25);
-    background: #0a2039; color: #eaf4ff;
+    background: #123e69; color: #eef7ff;
 }
-.stButton > button:hover {border-color: #1f8fff; color: white; background: #0d2b4c;}
+.stButton > button:hover {border-color: #1f8fff; color: white; background: #175486;}
 
 /* Dataframes */
 [data-testid="stDataFrame"] {border: 1px solid var(--cms-border); border-radius: 10px; overflow: hidden;}
 
 /* Summary cards */
 div[class*="st-key-summary_card_"] button {
-    min-height: 82px !important; width: 100% !important; border-radius: 10px !important;
+    min-height: 118px !important; width: 100% !important; border-radius: 10px !important;
     border: 1px solid var(--cms-border) !important;
-    background: linear-gradient(145deg,#0b2038,#0a1b30) !important;
+    background: linear-gradient(145deg,#164a79,#10395f) !important;
     justify-content: flex-start !important; text-align: left !important; padding: 10px 12px !important;
 }
-div[class*="st-key-summary_card_"] button:hover {border-color: var(--cms-border-strong) !important; background:#0d2947 !important;}
+div[class*="st-key-summary_card_"] button:hover {border-color: var(--cms-border-strong) !important; background:#1a5689 !important;}
 div[class*="st-key-summary_card_"] button p {
     white-space: pre-line !important; line-height: 1.22 !important; text-align:left !important; width:100% !important;
-    font-size:.82rem !important; font-weight:650 !important;
+    font-size:.78rem !important; font-weight:650 !important;
 }
 
 /* Opportunity cards */
 div[class*="st-key-opportunity_card_"] button {
     min-height: 116px !important; width:100% !important; border-radius: 12px !important;
     border:1px solid var(--cms-border) !important; border-left:3px solid rgba(111,164,219,.28) !important;
-    background: linear-gradient(145deg,#0d2743 0%,#0a1f37 100%) !important;
+    background: linear-gradient(145deg,#174d7e 0%,#103b64 100%) !important;
     justify-content:flex-start !important; text-align:left !important; padding:11px 13px !important;
     margin-bottom:7px !important; box-shadow:0 6px 18px rgba(0,0,0,.10) !important;
     transition: all .14s ease !important;
 }
 div[class*="st-key-opportunity_card_"] button:hover {
-    border-color:#278fff !important; border-left-color:#27a0ff !important; background:#0f2c4c !important;
+    border-color:#278fff !important; border-left-color:#27a0ff !important; background:#1b5b91 !important;
     transform: translateY(-1px); box-shadow:0 8px 22px rgba(0,0,0,.18) !important;
 }
 div[class*="st-key-opportunity_card_"] button p {
@@ -165,14 +165,14 @@ div[class*="st-key-opportunity_card_"] button p {
 
 .cms-detail-head {
     border: 1px solid var(--cms-border); border-radius: 12px; padding: 14px 16px;
-    background: linear-gradient(145deg,#0c2440,#091c33); margin: 0 0 10px 0;
+    background: linear-gradient(145deg,#174d7d,#10385f); margin: 0 0 10px 0;
     box-shadow: 0 6px 20px rgba(0,0,0,.10);
 }
 .cms-detail-ticker {font-size: 1.36rem; font-weight: 850; letter-spacing:-.02em; color:#f2f7ff;}
 .cms-detail-company {color:#8fa9c5; font-size:.80rem; margin-top:2px;}
 .cms-section-label {font-size:.70rem; color:#6f93b9; text-transform:uppercase; letter-spacing:.11em; margin-bottom:2px;}
 .cms-reason {
-    border-left: 3px solid #1f8fff; padding: 8px 11px; background: rgba(31,143,255,.07);
+    border-left: 3px solid #1f8fff; padding: 8px 11px; background: rgba(42,157,255,.13);
     color:#cfe2f6; border-radius:0 8px 8px 0; margin: 5px 0 8px 0; font-size:.80rem;
 }
 
@@ -181,7 +181,7 @@ div[class*="st-key-opportunity_card_"] button p {
 
 /* Plotly wrapper */
 [data-testid="stPlotlyChart"] {
-    border:1px solid var(--cms-border); border-radius:12px; background:#071b31; padding:4px;
+    border:1px solid var(--cms-border); border-radius:12px; background:#0e355b; padding:4px;
 }
 
 /* Reduce excessive whitespace */
@@ -789,7 +789,7 @@ def make_candlestick_chart(ticker, hist, row, chart_mode="日K", buy_ref=None):
         xaxis_rangeslider_visible=False, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         shapes=shapes, annotations=annotations,
-        plot_bgcolor="#071b31", paper_bgcolor="#071b31", font=dict(color="#bdd0e5", size=10),
+        plot_bgcolor="#0e355b", paper_bgcolor="#0e355b", font=dict(color="#d5e8fb", size=10),
     )
 
     for rr in [1, 2]:
@@ -858,7 +858,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.1 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.2 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -938,7 +938,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.9.1：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.2：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -955,7 +955,7 @@ if page == "🏠 首页":
     with m1:
         with st.container(key="summary_card_a"):
             if st.button(
-                f"今日 A 正式候选\n\n{len(a_buy)}",
+                f"🔎 今日 A 正式候选\n{len(a_buy)}\n通过 A 主程序完整筛选，进入 B 监控",
                 key="card_a_click",
                 use_container_width=True
             ):
@@ -964,7 +964,7 @@ if page == "🏠 首页":
     with m2:
         with st.container(key="summary_card_buy"):
             if st.button(
-                f"B BUY\n\n{counts.get('BUY', 0)}",
+                f"📈 B 确认买入（BUY）\n{counts.get('BUY', 0)}\nB 买点监控已确认符合当前买入条件",
                 key="card_buy_click",
                 use_container_width=True
             ):
@@ -973,7 +973,7 @@ if page == "🏠 首页":
     with m3:
         with st.container(key="summary_card_early"):
             if st.button(
-                f"B EARLY\n\n{counts.get('EARLY', 0)}",
+                f"🕒 B 早期机会（EARLY）\n{counts.get('EARLY', 0)}\n接近买入条件，等待突破或回踩确认",
                 key="card_early_click",
                 use_container_width=True
             ):
@@ -982,7 +982,7 @@ if page == "🏠 首页":
     with m4:
         with st.container(key="summary_card_hold"):
             if st.button(
-                f"真实持仓\n\n{len(pos_df)}",
+                f"💼 当前持仓\n{len(pos_df)}\n已经买入并仍在 C 持仓管理中的股票",
                 key="card_hold_click",
                 use_container_width=True
             ):
@@ -991,7 +991,7 @@ if page == "🏠 首页":
     with m5:
         with st.container(key="summary_card_alert"):
             if st.button(
-                f"今日检查/提醒\n\n{alert_today_count(log_df)}",
+                f"🔔 今日检查 / 提醒\n{alert_today_count(log_df)}\n来自 B_Log 的今日监控、检查与提醒记录",
                 key="card_alert_click",
                 use_container_width=True
             ):
@@ -1448,6 +1448,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.1 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.2 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
