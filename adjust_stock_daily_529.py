@@ -46,7 +46,7 @@ SP500_SOURCES = [
 ]
 
 BQ_CORP_URL = "https://data.businessquant.com/corporate_actions"
-CORP_ACTION_BATCH = 50
+CORP_ACTION_BATCH = 200
 DB_PAGE_SIZE = 1000
 DB_WRITE_BATCH = 500
 MIN_ADJUSTED_ROWS = 200
@@ -312,7 +312,9 @@ def fetch_actions_batch(api_key, batch):
 
             if r.status_code == 429:
                 raise RuntimeError(
-                    f"Business Quant rate limit: {r.text[:800]}"
+                    "Business Quant 今日请求额度已用完（40 req/day）。"
+                    "请等额度重置后再运行；本程序已把 corporate-actions "
+                    "批次扩大到 200，只需约 3 次请求完成 500+ 股票池。"
                 )
 
             if not r.ok:
@@ -325,6 +327,8 @@ def fetch_actions_batch(api_key, batch):
         except Exception as e:
             last = e
             print(f"  ⚠️ 第 {attempt} 次 corporate actions 请求失败: {e}")
+            if "40 req/day" in str(e) or "请求额度已用完" in str(e):
+                raise
             if attempt < MAX_RETRIES:
                 time.sleep(5 * attempt)
 
