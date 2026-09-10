@@ -125,7 +125,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     border-color: rgba(105,158,211,.30) !important;
 }
 
-/* V1.9.3: fix selectbox text being too dark on blue background */
+/* V1.9.4: fix selectbox text being too dark on blue background */
 [data-testid="stSelectbox"] [data-baseweb="select"],
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
 [data-baseweb="select"] *,
@@ -164,6 +164,18 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 [aria-selected="true"][role="option"] {
     background: #176ca8 !important;
     color: #ffffff !important;
+}
+
+
+/* V1.9.4: selected value must remain clearly visible */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
+[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+[data-testid="stSelectbox"] div[data-baseweb="select"] input {
+    color: #f4f8ff !important;
+    -webkit-text-fill-color: #f4f8ff !important;
+    opacity: 1 !important;
+    font-weight: 700 !important;
 }
 
 .stButton > button {
@@ -709,6 +721,22 @@ def latest_row_for_ticker(ticker, master, a):
 
     return pd.Series(dtype=object)
 
+
+def ticker_company_label(ticker, master, a):
+    """
+    下拉框显示：TICKER - Company Name
+    若公司名缺失，则只显示 TICKER。
+    """
+    tk = str(ticker).strip().upper()
+    if not tk:
+        return ""
+    row = latest_row_for_ticker(tk, master, a)
+    company = str(row.get("Company", "")).strip() if row is not None else ""
+    if company and company.lower() not in {"nan", "none", "n/a", "na", "—"}:
+        return f"{tk} - {company}"
+    return tk
+
+
 def make_candlestick_chart(ticker, hist, row, chart_mode="日K", buy_ref=None):
     if hist is None or hist.empty:
         return None
@@ -901,7 +929,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.3 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.4 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -981,7 +1009,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.9.3：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.4：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -1088,7 +1116,8 @@ if page == "🏠 首页":
                 selected_from_summary = st.selectbox(
                     "快速查看该组中的股票",
                     tickers_detail,
-                    key=f"summary_ticker_{active_summary}"
+                    key=f"summary_ticker_{active_summary}",
+                    format_func=lambda tk: ticker_company_label(tk, master_latest, a_df)
                 )
                 if selected_from_summary:
                     row_s = latest_row_for_ticker(selected_from_summary, master_latest, a_df)
@@ -1164,7 +1193,12 @@ if page == "🏠 首页":
         if current_home not in home_options:
             st.session_state["home_ticker"] = home_options[0]
 
-        selected_home = st.selectbox("快速切换股票", home_options, key="home_ticker")
+        selected_home = st.selectbox(
+            "快速切换股票",
+            home_options,
+            key="home_ticker",
+            format_func=lambda tk: ticker_company_label(tk, master_latest, a_df)
+        )
         if selected_home:
             row = latest_row_for_ticker(selected_home, master_latest, a_df)
             company = str(row.get("Company", "")).strip()
@@ -1375,7 +1409,12 @@ elif page == "📊 股票详情":
     else:
         d1, d2 = st.columns([1, 3])
         with d1:
-            tk = st.selectbox("股票", tickers, key="detail_ticker")
+            tk = st.selectbox(
+                "股票",
+                tickers,
+                key="detail_ticker",
+                format_func=lambda t: ticker_company_label(t, master_latest, a_df)
+            )
             period = st.selectbox("图表区间", ["1mo","3mo","6mo","1y"], index=1, format_func=lambda x: {"1mo":"1个月","3mo":"3个月","6mo":"6个月","1y":"1年"}[x])
         with d2:
             row = latest_row_for_ticker(tk, master_latest, a_df)
@@ -1491,6 +1530,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.3 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.4 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
