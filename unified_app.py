@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.8 PRO
+# CMS UNIFIED APP V1.9 DARK TERMINAL
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -46,96 +46,128 @@ B_LOG_WORKSHEET = "B_Log"
 # ---------- UI ----------
 st.markdown("""
 <style>
-.block-container {padding-top: 1.1rem; padding-bottom: 2rem; max-width: 1550px;}
+:root {
+    --cms-bg: #061426;
+    --cms-bg2: #081a30;
+    --cms-panel: #0b2039;
+    --cms-panel2: #0d2744;
+    --cms-border: rgba(111, 164, 219, 0.20);
+    --cms-border-strong: rgba(49, 145, 255, 0.72);
+    --cms-text: #e8f2ff;
+    --cms-muted: #91a8c2;
+    --cms-blue: #1f8fff;
+    --cms-green: #26d7a1;
+    --cms-yellow: #f6c84c;
+    --cms-red: #ff5d6c;
+    --cms-purple: #9c86ff;
+}
+
+html, body, [class*="css"] {font-size: 14px;}
+.stApp {
+    background:
+      radial-gradient(circle at 15% 0%, rgba(29,103,177,.16), transparent 25%),
+      radial-gradient(circle at 95% 12%, rgba(17,86,150,.10), transparent 24%),
+      linear-gradient(180deg, #07172a 0%, var(--cms-bg) 100%);
+    color: var(--cms-text);
+}
+.block-container {padding-top: .75rem; padding-bottom: 1.4rem; max-width: 1680px;}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #071a31 0%, #081f38 60%, #06182d 100%);
+    border-right: 1px solid rgba(88,145,204,.20);
+}
+[data-testid="stSidebar"] * {color: #d8e8fa;}
+[data-testid="stSidebar"] hr {border-color: rgba(122,167,214,.18);}
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    padding: .35rem .5rem; border-radius: 9px; margin-bottom: .05rem;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover {background: rgba(31,143,255,.10);}
+
+/* Main text */
+h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
+[data-testid="stCaptionContainer"] {color: var(--cms-muted);}
+.cms-title {font-weight: 850; font-size: 1.65rem; line-height: 1.1; margin-bottom: 0;}
+.cms-subtitle {color: var(--cms-muted); font-size: .88rem; margin-top: .2rem; margin-bottom: .55rem;}
+
+/* Metrics */
 [data-testid="stMetric"] {
-    background: rgba(120,120,120,0.08);
-    border: 1px solid rgba(130,130,130,0.18);
-    padding: 14px 16px;
-    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(14,42,73,.96), rgba(10,31,55,.96));
+    border: 1px solid var(--cms-border);
+    padding: 10px 12px;
+    border-radius: 10px;
+    min-height: 80px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.02);
 }
-.cms-card {
-    border: 1px solid rgba(130,130,130,0.18);
-    border-radius: 16px;
-    padding: 16px 18px;
-    background: rgba(120,120,120,0.05);
-    margin-bottom: 10px;
-}
-.cms-buy {font-size: 1.05rem; font-weight: 700;}
-.cms-small {opacity: 0.75; font-size: 0.90rem;}
-.cms-title {font-weight: 800; font-size: 2.0rem; margin-bottom: -2px;}
-.cms-subtitle {opacity: .70; margin-bottom: 12px;}
+[data-testid="stMetricLabel"] {font-size: .76rem !important; color: #a9bed5 !important;}
+[data-testid="stMetricValue"] {font-size: 1.30rem !important; line-height: 1.15 !important; color: #eef6ff !important;}
+[data-testid="stMetricDelta"] {font-size: .74rem !important;}
 
-/* V1.4: clickable summary cards */
+/* General controls */
+[data-baseweb="select"] > div, [data-testid="stSelectbox"] > div > div {
+    background: #0b2038 !important; border-color: rgba(105,158,211,.22) !important;
+}
+.stButton > button {
+    border-radius: 9px; border: 1px solid rgba(95,153,213,.25);
+    background: #0a2039; color: #eaf4ff;
+}
+.stButton > button:hover {border-color: #1f8fff; color: white; background: #0d2b4c;}
+
+/* Dataframes */
+[data-testid="stDataFrame"] {border: 1px solid var(--cms-border); border-radius: 10px; overflow: hidden;}
+
+/* Summary cards */
 div[class*="st-key-summary_card_"] button {
-    min-height: 106px !important;
-    width: 100% !important;
-    border-radius: 14px !important;
-    border: 1px solid rgba(130,130,130,0.20) !important;
-    background: rgba(120,120,120,0.06) !important;
-    justify-content: flex-start !important;
-    text-align: left !important;
-    padding: 14px 18px !important;
+    min-height: 82px !important; width: 100% !important; border-radius: 10px !important;
+    border: 1px solid var(--cms-border) !important;
+    background: linear-gradient(145deg,#0b2038,#0a1b30) !important;
+    justify-content: flex-start !important; text-align: left !important; padding: 10px 12px !important;
 }
-div[class*="st-key-summary_card_"] button:hover {
-    border-color: var(--primary-color) !important;
-    background: rgba(120,120,120,0.10) !important;
-}
-div[class*="st-key-summary_card_"] button p {
-    white-space: pre-line !important;
-    line-height: 1.35 !important;
-    text-align: left !important;
-    width: 100% !important;
-}
+div[class*="st-key-summary_card_"] button:hover {border-color: var(--cms-border-strong) !important; background:#0d2947 !important;}
+div[class*="st-key-summary_card_"] button p {white-space: pre-line !important; line-height: 1.25 !important; text-align:left !important; width:100% !important; font-size:.82rem !important;}
 
-/* V1.8 PRO: clickable opportunity cards */
+/* Opportunity cards */
 div[class*="st-key-opportunity_card_"] button {
-    min-height: 146px !important;
-    width: 100% !important;
-    border-radius: 16px !important;
-    border: 1px solid rgba(130,130,130,0.20) !important;
-    border-left: 4px solid rgba(130,130,130,0.42) !important;
-    background: linear-gradient(135deg, rgba(120,120,120,0.055), rgba(120,120,120,0.025)) !important;
-    justify-content: flex-start !important;
-    text-align: left !important;
-    padding: 15px 17px !important;
-    margin-bottom: 9px !important;
-    box-shadow: 0 3px 14px rgba(0,0,0,0.035) !important;
-    transition: all 0.16s ease !important;
+    min-height: 116px !important; width:100% !important; border-radius: 12px !important;
+    border:1px solid var(--cms-border) !important; border-left:3px solid rgba(111,164,219,.28) !important;
+    background: linear-gradient(145deg,#0d2743 0%,#0a1f37 100%) !important;
+    justify-content:flex-start !important; text-align:left !important; padding:11px 13px !important;
+    margin-bottom:7px !important; box-shadow:0 6px 18px rgba(0,0,0,.10) !important;
+    transition: all .14s ease !important;
 }
-
 div[class*="st-key-opportunity_card_"] button:hover {
-    border-color: var(--primary-color) !important;
-    border-left-color: var(--primary-color) !important;
-    background: rgba(120,120,120,0.095) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 7px 20px rgba(0,0,0,0.07) !important;
+    border-color:#278fff !important; border-left-color:#27a0ff !important; background:#0f2c4c !important;
+    transform: translateY(-1px); box-shadow:0 8px 22px rgba(0,0,0,.18) !important;
 }
-
 div[class*="st-key-opportunity_card_"] button p {
-    white-space: pre-line !important;
-    line-height: 1.42 !important;
-    text-align: left !important;
-    width: 100% !important;
-    font-size: 0.92rem !important;
+    white-space:pre-line !important; line-height:1.34 !important; text-align:left !important; width:100% !important;
+    font-size:.82rem !important; color:#e4effb !important;
 }
 
 .cms-detail-head {
-    border: 1px solid rgba(130,130,130,0.18);
-    border-radius: 18px;
-    padding: 18px 20px;
-    background: linear-gradient(135deg, rgba(120,120,120,0.06), rgba(120,120,120,0.02));
-    margin: 2px 0 14px 0;
+    border: 1px solid var(--cms-border); border-radius: 12px; padding: 14px 16px;
+    background: linear-gradient(145deg,#0c2440,#091c33); margin: 0 0 10px 0;
+    box-shadow: 0 6px 20px rgba(0,0,0,.10);
 }
-.cms-detail-ticker {font-size: 1.55rem; font-weight: 850; letter-spacing: -0.02em;}
-.cms-detail-company {opacity: 0.66; font-size: 0.94rem; margin-top: 2px;}
-.cms-section-label {font-size: 0.82rem; opacity: 0.62; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px;}
+.cms-detail-ticker {font-size: 1.36rem; font-weight: 850; letter-spacing:-.02em; color:#f2f7ff;}
+.cms-detail-company {color:#8fa9c5; font-size:.80rem; margin-top:2px;}
+.cms-section-label {font-size:.70rem; color:#6f93b9; text-transform:uppercase; letter-spacing:.11em; margin-bottom:2px;}
 .cms-reason {
-    border-left: 3px solid var(--primary-color);
-    padding: 10px 13px;
-    background: rgba(120,120,120,0.045);
-    border-radius: 0 10px 10px 0;
-    margin: 6px 0 12px 0;
+    border-left: 3px solid #1f8fff; padding: 8px 11px; background: rgba(31,143,255,.07);
+    color:#cfe2f6; border-radius:0 8px 8px 0; margin: 5px 0 8px 0; font-size:.80rem;
 }
+
+/* Radio pills */
+[data-testid="stRadio"] label {font-size:.80rem !important;}
+
+/* Plotly wrapper */
+[data-testid="stPlotlyChart"] {
+    border:1px solid var(--cms-border); border-radius:12px; background:#071b31; padding:4px;
+}
+
+/* Reduce excessive whitespace */
+hr {margin:.6rem 0 !important; border-color:rgba(110,160,210,.16) !important;}
+.element-container {margin-bottom:.22rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -734,16 +766,16 @@ def make_candlestick_chart(ticker, hist, row, chart_mode="日K", buy_ref=None):
         )
 
     fig.update_layout(
-        height=610, margin=dict(l=10, r=95, t=25, b=10),
+        height=500, margin=dict(l=8, r=72, t=20, b=8),
         xaxis_rangeslider_visible=False, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         shapes=shapes, annotations=annotations,
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#071b31", paper_bgcolor="#071b31", font=dict(color="#bdd0e5", size=10),
     )
 
     for rr in [1, 2]:
-        fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.12)", row=rr, col=1)
-        fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.12)", row=rr, col=1)
+        fig.update_xaxes(showgrid=True, gridcolor="rgba(137,173,210,0.10)", row=rr, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(137,173,210,0.10)", row=rr, col=1)
 
     return fig
 
@@ -1011,11 +1043,11 @@ if page == "🏠 首页":
         st.divider()
 
     st.divider()
-    lcol, rcol = st.columns([0.98, 1.62], gap="large")
+    lcol, rcol = st.columns([0.93, 1.67], gap="medium")
 
     with lcol:
-        st.subheader("🔥 Today's Opportunities")
-        st.caption("按 B 当前决策优先级排列。点击卡片后，右侧立即切换到完整交易详情。")
+        st.markdown("### 🔥 Today's Opportunities")
+        st.caption("精选机会 · 点击股票查看右侧交易计划、入场条件与图表")
         opp = compact_opportunity_table(master_active)
         if opp.empty:
             st.info("目前没有活跃的 B 候选。")
@@ -1094,7 +1126,7 @@ if page == "🏠 首页":
                 unsafe_allow_html=True
             )
 
-            st.markdown("#### Trade Plan")
+            st.markdown("### 🎯 Trade Plan 交易计划")
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("当前价", money_text(row.get("最后价格", row.get("价格", np.nan))))
             k2.metric("参考入场", money_text(row.get("参考入场", np.nan)))
@@ -1105,7 +1137,7 @@ if page == "🏠 首页":
             h15 = load_price_history(selected_home, "10d", "15m")
             buy_ref = calc_buy_reference(h15)
 
-            st.markdown("#### Entry Setup")
+            st.markdown("### 📊 Entry Setup 入场条件")
             q1, q2, q3, q4 = st.columns(4)
             q1.metric("15m回踩区", buy_reference_text(buy_ref))
             q2.metric("突破触发价", money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—")
@@ -1113,7 +1145,7 @@ if page == "🏠 首页":
             q4.metric("当前结构", buy_ref.get("setup_type", "—"))
             st.caption("Entry Setup 只解释 B v1.8 的位置条件；正式入场仍以 B 的 BUY / EARLY / WAIT / AVOID 为准。")
 
-            st.markdown("#### Decision Context")
+            st.markdown("### 📊 Decision Context 决策依据")
             z1, z2, z3, z4, z5 = st.columns(5)
             z1.metric("1H", str(row.get("1H状态", "—")))
             rv = sfloat(row.get("15m RSI", np.nan)); vv = sfloat(row.get("15m量比", np.nan))
