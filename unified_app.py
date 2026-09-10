@@ -125,7 +125,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     border-color: rgba(105,158,211,.30) !important;
 }
 
-/* V1.9.5: fix selectbox text being too dark on blue background */
+/* V1.9.6: fix selectbox text being too dark on blue background */
 [data-testid="stSelectbox"] [data-baseweb="select"],
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
 [data-baseweb="select"] *,
@@ -167,7 +167,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V1.9.5: selected value must remain clearly visible */
+/* V1.9.6: selected value must remain clearly visible */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
 [data-testid="stSelectbox"] div[data-baseweb="select"] span,
@@ -179,7 +179,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V1.9.5: force visible selected stock text in Streamlit/BaseWeb selectbox */
+/* V1.9.6: force visible selected stock text in Streamlit/BaseWeb selectbox */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
     background-color: #174b7d !important;
 }
@@ -263,6 +263,39 @@ div[class*="st-key-opportunity_card_"] button p {
 /* Reduce excessive whitespace */
 hr {margin:.6rem 0 !important; border-color:rgba(110,160,210,.16) !important;}
 .element-container {margin-bottom:.22rem;}
+
+/* V1.9.6 — brighter selectbox text */
+[data-testid="stSelectbox"] label,
+[data-testid="stSelectbox"] label p {
+    color: #f2f7ff !important;
+    -webkit-text-fill-color: #f2f7ff !important;
+    opacity: 1 !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
+[data-testid="stSelectbox"] div[data-baseweb="select"] p,
+[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+[data-testid="stSelectbox"] div[data-baseweb="select"] input {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    font-weight: 700 !important;
+    text-shadow: 0 0 1px rgba(255,255,255,.25) !important;
+}
+
+/* Dropdown menu options */
+div[data-baseweb="popover"] li,
+div[data-baseweb="popover"] li *,
+div[role="listbox"] div[role="option"],
+div[role="listbox"] div[role="option"] * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    font-weight: 650 !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -978,7 +1011,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.5 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.6 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -1058,7 +1091,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.9.5：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.6：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -1602,6 +1635,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.5 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.6 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
