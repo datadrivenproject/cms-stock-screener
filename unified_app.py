@@ -125,7 +125,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     border-color: rgba(105,158,211,.30) !important;
 }
 
-/* V1.9.4: fix selectbox text being too dark on blue background */
+/* V1.9.5: fix selectbox text being too dark on blue background */
 [data-testid="stSelectbox"] [data-baseweb="select"],
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
 [data-baseweb="select"] *,
@@ -167,7 +167,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V1.9.4: selected value must remain clearly visible */
+/* V1.9.5: selected value must remain clearly visible */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
 [data-testid="stSelectbox"] div[data-baseweb="select"] span,
@@ -176,6 +176,27 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     -webkit-text-fill-color: #f4f8ff !important;
     opacity: 1 !important;
     font-weight: 700 !important;
+}
+
+
+/* V1.9.5: force visible selected stock text in Streamlit/BaseWeb selectbox */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    background-color: #174b7d !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div > div,
+[data-testid="stSelectbox"] div[data-baseweb="select"] p,
+[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    font-weight: 700 !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] input {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    caret-color: #ffffff !important;
 }
 
 .stButton > button {
@@ -737,6 +758,34 @@ def ticker_company_label(ticker, master, a):
     return tk
 
 
+
+def build_ticker_display_map(tickers, master, a):
+    """
+    返回:
+      display_options: ["ABBV - AbbVie Inc.", ...]
+      display_to_ticker: {"ABBV - AbbVie Inc.": "ABBV", ...}
+    直接把“代码 - 公司名”作为 selectbox 的真实 option，
+    避免某些 Streamlit 版本 format_func 当前值显示异常。
+    """
+    display_options = []
+    display_to_ticker = {}
+
+    for ticker in tickers:
+        tk = str(ticker).strip().upper()
+        if not tk:
+            continue
+
+        label = ticker_company_label(tk, master, a)
+        # 防止公司名重复导致 option 重名
+        if label in display_to_ticker and display_to_ticker[label] != tk:
+            label = f"{label} ({tk})"
+
+        display_options.append(label)
+        display_to_ticker[label] = tk
+
+    return display_options, display_to_ticker
+
+
 def make_candlestick_chart(ticker, hist, row, chart_mode="日K", buy_ref=None):
     if hist is None or hist.empty:
         return None
@@ -929,7 +978,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.4 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.5 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -1009,7 +1058,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.9.4：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.5：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -1113,11 +1162,17 @@ if page == "🏠 首页":
         if active_summary in {"A", "BUY", "EARLY", "HOLD"} and detail_df is not None and not detail_df.empty and "Ticker" in detail_df.columns:
             tickers_detail = detail_df["Ticker"].dropna().astype(str).str.upper().drop_duplicates().tolist()
             if tickers_detail:
-                selected_from_summary = st.selectbox(
+                _summary_display_options, _summary_display_to_ticker = build_ticker_display_map(
+                    tickers_detail, master_latest, a_df
+                )
+                _summary_display = st.selectbox(
                     "快速查看该组中的股票",
-                    tickers_detail,
-                    key=f"summary_ticker_{active_summary}",
-                    format_func=lambda tk: ticker_company_label(tk, master_latest, a_df)
+                    _summary_display_options,
+                    key=f"summary_ticker_display_{active_summary}"
+                )
+                selected_from_summary = _summary_display_to_ticker.get(
+                    _summary_display,
+                    str(_summary_display).split(" - ", 1)[0].strip().upper()
                 )
                 if selected_from_summary:
                     row_s = latest_row_for_ticker(selected_from_summary, master_latest, a_df)
@@ -1188,17 +1243,28 @@ if page == "🏠 首页":
 
     with rcol:
         tickers = union_tickers(master_active, a_buy)
-        home_options = tickers if tickers else [""]
-        current_home = st.session_state.get("home_ticker")
-        if current_home not in home_options:
-            st.session_state["home_ticker"] = home_options[0]
-
-        selected_home = st.selectbox(
-            "快速切换股票",
-            home_options,
-            key="home_ticker",
-            format_func=lambda tk: ticker_company_label(tk, master_latest, a_df)
+        _tickers_for_select = tickers if tickers else [""]
+        home_display_options, home_display_to_ticker = build_ticker_display_map(
+            _tickers_for_select, master_latest, a_df
         )
+
+        # Session state 保存“显示文本”，框内直接显示 股票代码 - 公司名称
+        current_display = st.session_state.get("home_ticker_display")
+        if current_display not in home_display_options:
+            st.session_state["home_ticker_display"] = (
+                home_display_options[0] if home_display_options else ""
+            )
+
+        selected_home_display = st.selectbox(
+            "快速切换股票",
+            home_display_options if home_display_options else [""],
+            key="home_ticker_display"
+        )
+        selected_home = home_display_to_ticker.get(
+            selected_home_display,
+            str(selected_home_display).split(" - ", 1)[0].strip().upper()
+        )
+
         if selected_home:
             row = latest_row_for_ticker(selected_home, master_latest, a_df)
             company = str(row.get("Company", "")).strip()
@@ -1409,11 +1475,17 @@ elif page == "📊 股票详情":
     else:
         d1, d2 = st.columns([1, 3])
         with d1:
-            tk = st.selectbox(
+            detail_display_options, detail_display_to_ticker = build_ticker_display_map(
+                tickers, master_latest, a_df
+            )
+            _detail_display = st.selectbox(
                 "股票",
-                tickers,
-                key="detail_ticker",
-                format_func=lambda t: ticker_company_label(t, master_latest, a_df)
+                detail_display_options,
+                key="detail_ticker_display"
+            )
+            tk = detail_display_to_ticker.get(
+                _detail_display,
+                str(_detail_display).split(" - ", 1)[0].strip().upper()
             )
             period = st.selectbox("图表区间", ["1mo","3mo","6mo","1y"], index=1, format_func=lambda x: {"1mo":"1个月","3mo":"3个月","6mo":"6个月","1y":"1年"}[x])
         with d2:
@@ -1530,6 +1602,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.4 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.5 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
