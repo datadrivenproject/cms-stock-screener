@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.9 DARK TERMINAL
+# CMS STOCK SCREENER V2.0 REFERENCE UI
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -32,7 +32,7 @@ except ImportError:
 # ============================================================
 
 st.set_page_config(
-    page_title="CMS Unified App",
+    page_title="CMS Stock Screener",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -125,7 +125,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     border-color: rgba(105,158,211,.30) !important;
 }
 
-/* V1.9.6: fix selectbox text being too dark on blue background */
+/* V2.0: fix selectbox text being too dark on blue background */
 [data-testid="stSelectbox"] [data-baseweb="select"],
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
 [data-baseweb="select"] *,
@@ -167,7 +167,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V1.9.6: selected value must remain clearly visible */
+/* V2.0: selected value must remain clearly visible */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
 [data-testid="stSelectbox"] div[data-baseweb="select"] span,
@@ -179,7 +179,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V1.9.6: force visible selected stock text in Streamlit/BaseWeb selectbox */
+/* V2.0: force visible selected stock text in Streamlit/BaseWeb selectbox */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
     background-color: #174b7d !important;
 }
@@ -264,7 +264,7 @@ div[class*="st-key-opportunity_card_"] button p {
 hr {margin:.6rem 0 !important; border-color:rgba(110,160,210,.16) !important;}
 .element-container {margin-bottom:.22rem;}
 
-/* V1.9.6 — brighter selectbox text */
+/* V2.0 — brighter selectbox text */
 [data-testid="stSelectbox"] label,
 [data-testid="stSelectbox"] label p {
     color: #f2f7ff !important;
@@ -294,6 +294,182 @@ div[role="listbox"] div[role="option"] * {
     -webkit-text-fill-color: #ffffff !important;
     opacity: 1 !important;
     font-weight: 650 !important;
+}
+
+
+/* V2.0 — background matched to reference screenshot */
+.stApp {
+    background: #1c3b61 !important;
+    color: var(--cms-text) !important;
+}
+
+/* Keep the page clean and flat: remove bright radial glow */
+[data-testid="stAppViewContainer"] {
+    background: #1c3b61 !important;
+}
+
+/* Cards / panels use the lighter blue seen in the reference */
+[data-testid="stMetric"],
+.cms-card,
+.cms-opportunity,
+.cms-active-card,
+div[class*="st-key-summary_card_"] button {
+    background: #2a527f !important;
+    border-color: rgba(117, 172, 226, .34) !important;
+}
+
+/* Stock selector: same family, slightly darker for contrast */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    background: #294f7d !important;
+    border-color: rgba(117, 172, 226, .34) !important;
+}
+
+/* Sidebar remains a little darker than the main canvas */
+[data-testid="stSidebar"] {
+    background: #173453 !important;
+}
+
+/* Dividers stay subtle */
+hr {
+    border-color: rgba(122, 167, 214, .20) !important;
+}
+
+
+/* ============================================================
+   V2.0 approved reference UI
+   ============================================================ */
+:root {
+    --cms-bg: #15385d;
+    --cms-bg-deep: #103153;
+    --cms-panel: #1d4a77;
+    --cms-panel-hover: #245b91;
+    --cms-border: rgba(93, 157, 222, .38);
+    --cms-text: #f4f8ff;
+    --cms-muted: #a9c1dc;
+}
+.stApp,
+[data-testid="stAppViewContainer"] {
+    background: linear-gradient(180deg, #173c63 0%, #123456 100%) !important;
+}
+.block-container {
+    max-width: 1680px !important;
+    padding-top: .50rem !important;
+}
+.cms-brand-row {
+    display:flex;
+    align-items:center;
+    gap:.65rem;
+    margin:.2rem 0 .75rem 0;
+}
+.cms-brand-icon {font-size:2.25rem;line-height:1;}
+.cms-title {
+    font-size:1.78rem !important;
+    font-weight:900 !important;
+    color:#ffffff !important;
+    letter-spacing:-.02em;
+}
+.cms-subtitle {
+    font-size:.92rem !important;
+    color:#a9c4df !important;
+    margin-top:.12rem !important;
+}
+.cms-market-panel {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:1.15rem;
+    min-height:62px;
+    color:#eaf4ff;
+}
+.cms-market-label {font-size:.73rem;color:#a9c1dc;}
+.cms-market-value {font-size:.92rem;font-weight:800;color:#38e6ae;margin-top:.12rem;}
+.cms-market-divider {width:1px;height:46px;background:rgba(116,170,224,.25);}
+.cms-market-time {text-align:right;font-weight:800;color:#bcd7f1;}
+.cms-market-day {font-size:.72rem;font-weight:500;color:#93b2d0;margin-top:.16rem;}
+
+div[class*="st-key-summary_card_"] button {
+    min-height:142px !important;
+    border-radius:11px !important;
+    background:linear-gradient(145deg,#1c4b79 0%,#173f68 100%) !important;
+    border:1px solid rgba(90,157,224,.42) !important;
+    box-shadow:none !important;
+    padding:13px 15px !important;
+}
+div[class*="st-key-summary_card_"] button p {
+    font-size:.82rem !important;
+    line-height:1.35 !important;
+    color:#f3f8ff !important;
+}
+div[class*="st-key-opportunity_card_"] button,
+.cms-detail-head,
+[data-testid="stMetric"] {
+    background:linear-gradient(145deg,#245482 0%,#1d466f 100%) !important;
+    border-color:rgba(103,166,228,.38) !important;
+    box-shadow:none !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    min-height:49px !important;
+    background:#28527f !important;
+    border:1px solid rgba(111,171,229,.40) !important;
+    border-radius:10px !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] *,
+[data-testid="stSelectbox"] label,
+[data-testid="stSelectbox"] label * {
+    color:#ffffff !important;
+    -webkit-text-fill-color:#ffffff !important;
+    opacity:1 !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div {
+    font-weight:800 !important;
+}
+div[class*="st-key-home_nav_"] button {
+    min-height:50px !important;
+    background:#214e7c !important;
+    border:1px solid rgba(88,151,216,.38) !important;
+    color:#eef7ff !important;
+    font-weight:800 !important;
+}
+div[class*="st-key-home_nav_"] button:hover {
+    background:#1d78e8 !important;
+    border-color:#43a3ff !important;
+}
+div[class*="st-key-home_nav_a"] button {
+    background:#1678f2 !important;
+    border-color:#3c9aff !important;
+}
+.cms-list-heading {
+    display:flex;
+    align-items:center;
+    gap:.55rem;
+    font-size:1.16rem;
+    font-weight:900;
+    color:#f5f9ff;
+    margin:.25rem 0 0 0;
+}
+.cms-list-sub {
+    color:#9db9d5;
+    font-size:.82rem;
+    margin:.18rem 0 .55rem 0;
+}
+.cms-bottom-stat {
+    border:1px solid rgba(95,158,221,.35);
+    border-radius:12px;
+    background:linear-gradient(145deg,#204d79,#183f67);
+    padding:14px 16px;
+    min-height:105px;
+}
+.cms-bottom-num {font-size:1.55rem;font-weight:900;color:#fff;}
+.cms-bottom-label {font-size:.82rem;font-weight:800;color:#dcecff;}
+.cms-bottom-sub {color:#9db9d5;font-size:.72rem;margin-top:.2rem;}
+[data-testid="stDataFrame"] {
+    background:#153d65 !important;
+    border:1px solid rgba(88,151,216,.40) !important;
+    border-radius:11px !important;
+}
+hr {
+    margin:.9rem 0 !important;
+    border-color:rgba(113,165,216,.18) !important;
 }
 
 </style>
@@ -1011,7 +1187,10 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.6 · 一个网址看完整 A + B + C")
+    st.caption("CMS Stock Screener V2.0 · 一个网址看完整 A + B + C")
+    if "cms_page_nav" not in st.session_state:
+        st.session_state["cms_page_nav"] = "🏠 首页"
+
     page = st.radio(
         "功能",
         [
@@ -1023,6 +1202,7 @@ with st.sidebar:
             "📊 股票详情",
             "🧾 交易记录 / 收益",
         ],
+        key="cms_page_nav",
         label_visibility="collapsed"
     )
 
@@ -1072,28 +1252,39 @@ else:
 
 
 # ---------- global header ----------
-hl, hr = st.columns([4, 1])
+hl, hr = st.columns([4.6, 1.7], gap="large")
 with hl:
-    st.markdown('<div class="cms-title">CMS TRADING DESK</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="cms-subtitle">A 选什么 · B 什么时候买 · C 买后怎么管</div>',
+        '<div class="cms-brand-row">'
+        '<div class="cms-brand-icon">📈</div>'
+        '<div><div class="cms-title">CMS Stock Screener</div>'
+        '<div class="cms-subtitle">智能选股 · 实时监控 · 把握机会</div></div>'
+        '</div>',
         unsafe_allow_html=True
     )
+
 with hr:
-    if market_open(now):
-        st.success(f"● MARKET OPEN\n\n{now.strftime('%H:%M ET')}")
-    else:
-        st.info(f"○ MARKET CLOSED\n\n{now.strftime('%H:%M ET')}")
+    market_txt = "市场开盘中" if market_open(now) else "市场已收盘"
+    market_dot = "🟢" if market_open(now) else "⚪"
+    st.markdown(
+        f'''<div class="cms-market-panel">
+            <div>
+                <div class="cms-market-label">Market Status</div>
+                <div class="cms-market-value">{market_dot} {market_txt}</div>
+            </div>
+            <div class="cms-market-divider"></div>
+            <div class="cms-market-time">
+                <div>{now.strftime("%Y-%m-%d | %H:%M")}</div>
+                <div class="cms-market-day">{now.strftime("%A")} (ET)</div>
+            </div>
+        </div>''',
+        unsafe_allow_html=True
+    )
 
 sync_txt = (
     latest_bc_sync.strftime("%Y-%m-%d %H:%M:%S")
     if pd.notna(latest_bc_sync)
     else "暂无"
-)
-st.caption(
-    "Unified App V1.9.6：一个网址统一查看 A、B、C；"
-    f"B/C 最新同步：{sync_txt}。"
-    "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
 
 # ============================================================
@@ -1263,6 +1454,7 @@ if page == "🏠 首页":
                 with st.container(key=f"opportunity_card_{tk}"):
                     if st.button(card_text, key=f"opportunity_click_{tk}", use_container_width=True):
                         st.session_state["home_ticker"] = tk
+                        st.session_state["home_ticker_display"] = ticker_company_label(tk, master_latest, a_df)
                         st.session_state["home_selected_from_opportunity"] = tk
                         st.rerun()
 
@@ -1371,6 +1563,115 @@ if page == "🏠 首页":
                 tmp = pd.DataFrame([row]).T.reset_index()
                 tmp.columns = ["字段", "值"]
                 st.dataframe(tmp, hide_index=True, use_container_width=True, height=420)
+
+
+    st.divider()
+
+    nav_cols = st.columns(6, gap="small")
+    nav_items = [
+        ("home_nav_a", "☷  A 候选列表", "🔍 A 选股"),
+        ("home_nav_b", "◎  B 监控列表", "⚡ B 买点监控"),
+        ("home_nav_c", "▣  C 持仓管理", "💼 C 持仓管理"),
+        ("home_nav_detail", "▥  股票详情", "📊 股票详情"),
+        ("home_nav_history", "◷  历史记录", "🧾 交易记录 / 收益"),
+        ("home_nav_setting", "⚙  提醒中心", "🔔 Alert Center"),
+    ]
+    for col, (key, label, target) in zip(nav_cols, nav_items):
+        with col:
+            with st.container(key=key):
+                if st.button(label, key=f"{key}_btn", use_container_width=True):
+                    st.session_state["cms_page_nav"] = target
+                    st.rerun()
+
+    st.divider()
+
+    th1, th2 = st.columns([5, 1])
+    with th1:
+        st.markdown('<div class="cms-list-heading">▣ A 候选股票列表</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="cms-list-sub">基于 A 主程序筛选的潜在机会（每日盘后更新）</div>',
+            unsafe_allow_html=True
+        )
+    with th2:
+        if st.button("↻  刷新数据", key="home_refresh_data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    home_a = a_buy.copy() if a_buy is not None and not a_buy.empty else a_df.copy()
+    if home_a is None or home_a.empty:
+        st.info("当前没有 A 候选数据。")
+    else:
+        if "Ticker" in home_a.columns:
+            home_a["Ticker"] = home_a["Ticker"].astype(str).str.strip().str.upper()
+            home_a = home_a.drop_duplicates("Ticker", keep="last")
+
+        if "Ticker" in master_latest.columns and not master_latest.empty:
+            mcols = [c for c in [
+                "Ticker","Company","最后价格","最后决策","空间等级","上方空间",
+                "Rank","最后检查时间"
+            ] if c in master_latest.columns]
+            mhome = master_latest[mcols].copy()
+            if "Ticker" in mhome.columns:
+                mhome["Ticker"] = mhome["Ticker"].astype(str).str.strip().str.upper()
+                mhome = mhome.drop_duplicates("Ticker", keep="last")
+                merge_cols = ["Ticker"] + [c for c in mhome.columns if c != "Ticker" and c not in home_a.columns]
+                home_a = home_a.merge(mhome[merge_cols], on="Ticker", how="left")
+
+        wanted_home = [
+            "Ticker","Company","最后价格","A5决策","最后决策","Rank",
+            "共振数","上方空间","空间等级","Confidence"
+        ]
+        home_cols = [c for c in wanted_home if c in home_a.columns]
+        home_show = home_a[home_cols].head(20).copy()
+
+        rename_home = {
+            "Ticker":"股票代码",
+            "Company":"公司名称",
+            "最后价格":"当前价格",
+            "A5决策":"A 决策",
+            "最后决策":"B 买入信号",
+            "Rank":"排名",
+            "共振数":"共振",
+            "上方空间":"上方空间",
+            "空间等级":"空间等级",
+            "Confidence":"信心"
+        }
+        home_show = home_show.rename(columns=rename_home)
+
+        st.dataframe(
+            home_show,
+            hide_index=True,
+            use_container_width=True,
+            height=min(500, 78 + 38 * max(1, len(home_show)))
+        )
+
+    total_candidates = len(home_a) if home_a is not None else 0
+    buy_n = counts.get("BUY", 0)
+    watch_n = counts.get("EARLY", 0) + counts.get("WAIT", 0)
+    avoid_n = counts.get("AVOID", 0)
+
+    bs1, bs2, bs3, bs4 = st.columns(4)
+    bottom_cards = [
+        (bs1, "↗", total_candidates, "总候选股票", "今日筛选结果"),
+        (bs2, "✓", buy_n, "建议买入", "BUY 信号"),
+        (bs3, "◷", watch_n, "观望机会", "EARLY / WAIT"),
+        (bs4, "✕", avoid_n, "建议避免", "AVOID 信号"),
+    ]
+    for col, icon, num, label, sub in bottom_cards:
+        with col:
+            st.markdown(
+                f'''<div class="cms-bottom-stat">
+                    <div style="display:flex;align-items:center;gap:.8rem;">
+                        <div style="font-size:1.7rem;">{icon}</div>
+                        <div>
+                            <div class="cms-bottom-num">{num}</div>
+                            <div class="cms-bottom-label">{label}</div>
+                            <div class="cms-bottom-sub">{sub}</div>
+                        </div>
+                    </div>
+                </div>''',
+                unsafe_allow_html=True
+            )
 
 
 # ============================================================
@@ -1635,6 +1936,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.6 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS CMS Stock Screener V2.0 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
