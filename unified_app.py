@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS STOCK SCREENER V2.1 REFERENCE UI
+# CMS STOCK SCREENER V2.2 REFERENCE UI
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -125,7 +125,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
     border-color: rgba(105,158,211,.30) !important;
 }
 
-/* V2.1: fix selectbox text being too dark on blue background */
+/* V2.2: fix selectbox text being too dark on blue background */
 [data-testid="stSelectbox"] [data-baseweb="select"],
 [data-testid="stSelectbox"] [data-baseweb="select"] *,
 [data-baseweb="select"] *,
@@ -167,7 +167,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V2.1: selected value must remain clearly visible */
+/* V2.2: selected value must remain clearly visible */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
 [data-testid="stSelectbox"] div[data-baseweb="select"] span,
@@ -179,7 +179,7 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 }
 
 
-/* V2.1: force visible selected stock text in Streamlit/BaseWeb selectbox */
+/* V2.2: force visible selected stock text in Streamlit/BaseWeb selectbox */
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
     background-color: #174b7d !important;
 }
@@ -264,7 +264,7 @@ div[class*="st-key-opportunity_card_"] button p {
 hr {margin:.6rem 0 !important; border-color:rgba(110,160,210,.16) !important;}
 .element-container {margin-bottom:.22rem;}
 
-/* V2.1 — brighter selectbox text */
+/* V2.2 — brighter selectbox text */
 [data-testid="stSelectbox"] label,
 [data-testid="stSelectbox"] label p {
     color: #f2f7ff !important;
@@ -297,7 +297,7 @@ div[role="listbox"] div[role="option"] * {
 }
 
 
-/* V2.1 — background matched to reference screenshot */
+/* V2.2 — background matched to reference screenshot */
 .stApp {
     background: #1c3b61 !important;
     color: var(--cms-text) !important;
@@ -336,7 +336,7 @@ hr {
 
 
 /* ============================================================
-   V2.1 approved reference UI
+   V2.2 approved reference UI
    ============================================================ */
 :root {
     --cms-bg: #15385d;
@@ -473,7 +473,7 @@ hr {
 }
 
 
-/* V2.1 — restore and preserve the original left navigation */
+/* V2.2 — restore and preserve the original left navigation */
 [data-testid="stSidebar"] {
     display: block !important;
     visibility: visible !important;
@@ -493,6 +493,41 @@ hr {
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {
     background: rgba(50,112,174,.25) !important;
     border-radius: 8px !important;
+}
+
+
+/* V2.2 — force left sidebar visible and expanded */
+section[data-testid="stSidebar"] {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    transform: none !important;
+    position: relative !important;
+    left: 0 !important;
+    min-width: 260px !important;
+    width: 260px !important;
+    max-width: 260px !important;
+    background: #143454 !important;
+    border-right: 1px solid rgba(103,166,228,.22) !important;
+    flex-shrink: 0 !important;
+}
+section[data-testid="stSidebar"] > div {
+    width: 260px !important;
+    min-width: 260px !important;
+    transform: none !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
+}
+
+/* Ensure main content starts to the right of the sidebar */
+[data-testid="stAppViewContainer"] > .main {
+    margin-left: 0 !important;
 }
 
 </style>
@@ -1209,8 +1244,9 @@ def summary_detail_table(df, mode):
 
 # ---------- sidebar ----------
 with st.sidebar:
+    st.markdown("### 📊 CMS 导航")
     st.markdown("## 📈 CMS")
-    st.caption("CMS Stock Screener V2.1 · 一个网址看完整 A + B + C")
+    st.caption("CMS Stock Screener V2.2 · 一个网址看完整 A + B + C")
     if "cms_page_nav" not in st.session_state:
         st.session_state["cms_page_nav"] = "🏠 首页"
 
@@ -1941,6 +1977,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS CMS Stock Screener V2.1 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS CMS Stock Screener V2.2 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
