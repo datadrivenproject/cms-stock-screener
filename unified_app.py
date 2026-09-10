@@ -63,6 +63,22 @@ st.markdown("""
 }
 
 html, body, [class*="css"] {font-size: 14px;}
+
+/* Remove Streamlit top chrome / white frame */
+header[data-testid="stHeader"] {
+    height: 0 !important;
+    min-height: 0 !important;
+    background: transparent !important;
+    border: none !important;
+}
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+#MainMenu {
+    display: none !important;
+}
+.stApp > header {background: transparent !important;}
+
 .stApp {
     background:
       radial-gradient(circle at 15% 0%, rgba(29,103,177,.16), transparent 25%),
@@ -70,7 +86,7 @@ html, body, [class*="css"] {font-size: 14px;}
       linear-gradient(180deg, #07172a 0%, var(--cms-bg) 100%);
     color: var(--cms-text);
 }
-.block-container {padding-top: .75rem; padding-bottom: 1.4rem; max-width: 1680px;}
+.block-container {padding-top: .30rem; padding-bottom: 1.4rem; max-width: 1680px;}
 
 /* Sidebar */
 [data-testid="stSidebar"] {
@@ -124,7 +140,10 @@ div[class*="st-key-summary_card_"] button {
     justify-content: flex-start !important; text-align: left !important; padding: 10px 12px !important;
 }
 div[class*="st-key-summary_card_"] button:hover {border-color: var(--cms-border-strong) !important; background:#0d2947 !important;}
-div[class*="st-key-summary_card_"] button p {white-space: pre-line !important; line-height: 1.25 !important; text-align:left !important; width:100% !important; font-size:.82rem !important;}
+div[class*="st-key-summary_card_"] button p {
+    white-space: pre-line !important; line-height: 1.22 !important; text-align:left !important; width:100% !important;
+    font-size:.82rem !important; font-weight:650 !important;
+}
 
 /* Opportunity cards */
 div[class*="st-key-opportunity_card_"] button {
@@ -839,7 +858,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.7 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.1 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -919,7 +938,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.7：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.1：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -936,7 +955,7 @@ if page == "🏠 首页":
     with m1:
         with st.container(key="summary_card_a"):
             if st.button(
-                f"今日 A 正式候选\n\n### {len(a_buy)}",
+                f"今日 A 正式候选\n\n{len(a_buy)}",
                 key="card_a_click",
                 use_container_width=True
             ):
@@ -945,7 +964,7 @@ if page == "🏠 首页":
     with m2:
         with st.container(key="summary_card_buy"):
             if st.button(
-                f"B BUY\n\n### {counts.get('BUY', 0)}",
+                f"B BUY\n\n{counts.get('BUY', 0)}",
                 key="card_buy_click",
                 use_container_width=True
             ):
@@ -954,7 +973,7 @@ if page == "🏠 首页":
     with m3:
         with st.container(key="summary_card_early"):
             if st.button(
-                f"B EARLY\n\n### {counts.get('EARLY', 0)}",
+                f"B EARLY\n\n{counts.get('EARLY', 0)}",
                 key="card_early_click",
                 use_container_width=True
             ):
@@ -963,7 +982,7 @@ if page == "🏠 首页":
     with m4:
         with st.container(key="summary_card_hold"):
             if st.button(
-                f"真实持仓\n\n### {len(pos_df)}",
+                f"真实持仓\n\n{len(pos_df)}",
                 key="card_hold_click",
                 use_container_width=True
             ):
@@ -972,7 +991,7 @@ if page == "🏠 首页":
     with m5:
         with st.container(key="summary_card_alert"):
             if st.button(
-                f"今日检查/提醒\n\n### {alert_today_count(log_df)}",
+                f"今日检查/提醒\n\n{alert_today_count(log_df)}",
                 key="card_alert_click",
                 use_container_width=True
             ):
@@ -1046,7 +1065,7 @@ if page == "🏠 首页":
     lcol, rcol = st.columns([0.93, 1.67], gap="medium")
 
     with lcol:
-        st.markdown("### 🔥 Today's Opportunities")
+        st.markdown('<div style="font-size:1.18rem;font-weight:800;color:#eef6ff;margin:0 0 .15rem 0;">🔥 Today\'s Opportunities</div>', unsafe_allow_html=True)
         st.caption("精选机会 · 点击股票查看右侧交易计划、入场条件与图表")
         opp = compact_opportunity_table(master_active)
         if opp.empty:
@@ -1087,7 +1106,7 @@ if page == "🏠 首页":
                         st.session_state["home_selected_from_opportunity"] = tk
                         st.rerun()
 
-        st.markdown("### 💼 Positions")
+        st.markdown('<div style="font-size:1.05rem;font-weight:780;color:#eef6ff;margin:.7rem 0 .25rem 0;">💼 Positions</div>', unsafe_allow_html=True)
         psmall = compact_position_table(pos_df)
         if psmall.empty:
             st.caption("目前没有标记为真实持仓的股票。")
@@ -1126,7 +1145,7 @@ if page == "🏠 首页":
                 unsafe_allow_html=True
             )
 
-            st.markdown("### 🎯 Trade Plan 交易计划")
+            st.markdown('<div style="font-size:1.08rem;font-weight:800;color:#eef6ff;margin:.25rem 0 .35rem 0;">🎯 Trade Plan 交易计划</div>', unsafe_allow_html=True)
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("当前价", money_text(row.get("最后价格", row.get("价格", np.nan))))
             k2.metric("参考入场", money_text(row.get("参考入场", np.nan)))
@@ -1137,7 +1156,7 @@ if page == "🏠 首页":
             h15 = load_price_history(selected_home, "10d", "15m")
             buy_ref = calc_buy_reference(h15)
 
-            st.markdown("### 📊 Entry Setup 入场条件")
+            st.markdown('<div style="font-size:1.08rem;font-weight:800;color:#eef6ff;margin:.65rem 0 .35rem 0;">📊 Entry Setup 入场条件</div>', unsafe_allow_html=True)
             q1, q2, q3, q4 = st.columns(4)
             q1.metric("15m回踩区", buy_reference_text(buy_ref))
             q2.metric("突破触发价", money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—")
@@ -1145,7 +1164,7 @@ if page == "🏠 首页":
             q4.metric("当前结构", buy_ref.get("setup_type", "—"))
             st.caption("Entry Setup 只解释 B v1.8 的位置条件；正式入场仍以 B 的 BUY / EARLY / WAIT / AVOID 为准。")
 
-            st.markdown("### 📊 Decision Context 决策依据")
+            st.markdown('<div style="font-size:1.08rem;font-weight:800;color:#eef6ff;margin:.65rem 0 .35rem 0;">📊 Decision Context 决策依据</div>', unsafe_allow_html=True)
             z1, z2, z3, z4, z5 = st.columns(5)
             z1.metric("1H", str(row.get("1H状态", "—")))
             rv = sfloat(row.get("15m RSI", np.nan)); vv = sfloat(row.get("15m量比", np.nan))
@@ -1429,6 +1448,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.7 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.1 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
