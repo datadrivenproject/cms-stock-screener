@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.6
+# CMS UNIFIED APP V1.7
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -83,6 +83,32 @@ div[class*="st-key-summary_card_"] button:hover {
 div[class*="st-key-summary_card_"] button p {
     white-space: pre-line !important;
     line-height: 1.35 !important;
+    text-align: left !important;
+    width: 100% !important;
+}
+
+/* V1.7: clickable Today's Opportunities cards */
+div[class*="st-key-opportunity_card_"] button {
+    min-height: 122px !important;
+    width: 100% !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(130,130,130,0.18) !important;
+    background: rgba(120,120,120,0.05) !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    padding: 16px 18px !important;
+    margin-bottom: 10px !important;
+}
+
+div[class*="st-key-opportunity_card_"] button:hover {
+    border-color: var(--primary-color) !important;
+    background: rgba(120,120,120,0.10) !important;
+    transform: translateY(-1px);
+}
+
+div[class*="st-key-opportunity_card_"] button p {
+    white-space: pre-line !important;
+    line-height: 1.45 !important;
     text-align: left !important;
     width: 100% !important;
 }
@@ -757,7 +783,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.6 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.7 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -837,7 +863,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.6：一个网址统一查看 A、B、C；"
+    "Unified App V1.7：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -965,6 +991,7 @@ if page == "🏠 首页":
 
     with lcol:
         st.subheader("🔥 Today's Opportunities")
+        st.caption("点击任意股票卡片，右侧会自动切换到该股票，并显示买点、K线、Stop、TP1/TP2 与 CMS 决策细节。")
         opp = compact_opportunity_table(master_active)
         if opp.empty:
             st.info("目前没有活跃的 B 候选。")
@@ -975,17 +1002,25 @@ if page == "🏠 首页":
                 dec = status_badge(row.get("最后决策", ""))
                 px = money_text(row.get("最后价格", np.nan))
                 room = str(row.get("空间等级", "—"))
-                reason = str(row.get("最后决策依据", ""))
-                st.markdown(
-                    f"""
-                    <div class="cms-card">
-                      <div class="cms-buy">{dec} &nbsp; {tk} &nbsp; <span class="cms-small">{company}</span></div>
-                      <div>{px} &nbsp;&nbsp; | &nbsp;&nbsp; {room}</div>
-                      <div class="cms-small">{reason[:150]}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                reason = str(row.get("最后决策依据", "")).strip()
+
+                card_text = f"{dec}   {tk}"
+                if company and company.lower() not in {"nan", "none"}:
+                    card_text += f"   {company}"
+                card_text += f"\n{px}   |   {room}"
+                if reason:
+                    card_text += f"\n{reason[:150]}"
+
+                with st.container(key=f"opportunity_card_{tk}"):
+                    if st.button(
+                        card_text,
+                        key=f"opportunity_click_{tk}",
+                        use_container_width=True
+                    ):
+                        # 直接把右侧“快速查看股票”切换到当前卡片对应股票
+                        st.session_state["home_ticker"] = tk
+                        # 记录一次来源，便于未来扩展成详情弹层/返回逻辑
+                        st.session_state["home_selected_from_opportunity"] = tk
 
         st.subheader("💼 Positions")
         psmall = compact_position_table(pos_df)
@@ -998,10 +1033,17 @@ if page == "🏠 首页":
     with rcol:
         tickers = union_tickers(master_active, a_buy)
         st.caption("选择哪只股票，右侧日K、B决策、1H/15m、Stop、TP1/TP2就读取该股票最新 B_MasterList 记录。")
+        home_options = tickers if tickers else [""]
+
+        # V1.7：Today's Opportunities 卡片点击后，会把 home_ticker 写入 session_state。
+        # 如果数据刷新后该股票已不在当前列表中，则安全回退到第一只。
+        current_home = st.session_state.get("home_ticker")
+        if current_home not in home_options:
+            st.session_state["home_ticker"] = home_options[0]
+
         selected_home = st.selectbox(
             "快速查看股票",
-            tickers if tickers else [""],
-            index=0,
+            home_options,
             key="home_ticker"
         )
         if selected_home:
@@ -1330,6 +1372,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.6 · B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.7 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
