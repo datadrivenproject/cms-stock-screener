@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 #      current S&P 500 + original CMS core/watchlist
 #   2) Add 12 benchmark ETFs
 #   3) Read raw OHLC already stored in Supabase
-#   4) Fetch corporate actions from Business Quant in batches
+#   4) Fetch corporate actions from Business Quant in ONE request
 #   5) Rebuild adj_open / adj_high / adj_low / adj_close / adj_factor
 #   6) Upsert only adjusted fields back to stock_daily
 # =========================================================
@@ -46,7 +46,7 @@ SP500_SOURCES = [
 ]
 
 BQ_CORP_URL = "https://data.businessquant.com/corporate_actions"
-CORP_ACTION_BATCH = 200
+CORP_ACTION_LIMIT = 10000
 DB_PAGE_SIZE = 1000
 DB_WRITE_BATCH = 500
 MIN_ADJUSTED_ROWS = 200
@@ -284,104 +284,83 @@ def normalize_actions(payload, allowed_tickers):
     return dict(out)
 
 
-def fetch_actions_batch(api_key, batch):
+def fetch_actions_once(api_key, tickers):
+    """
+    Fetch corporate actions for the ENTIRE A6 universe in ONE Business Quant request.
+
+    Why:
+      - Business Quant free tier is limited by request count.
+      - 500+ ticker symbols still fit comfortably in one query string.
+      - Corporate-actions response is expected to remain below limit=10000
+        for this universe / period.
+    """
     params = {
-        "ticker": ",".join(batch),
+        "ticker": ",".join(tickers),
         "period": "10y",
+        "limit": CORP_ACTION_LIMIT,
         "api_key": api_key
     }
 
-    last = None
+    print(
+        f"📥 Corporate actions: ONE request for {len(tickers)} symbols "
+        f"(limit={CORP_ACTION_LIMIT})",
+        flush=True
+    )
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            r = requests.get(
-                BQ_CORP_URL,
-                params=params,
-                timeout=180
+    try:
+        r = requests.get(
+            BQ_CORP_URL,
+            params=params,
+            timeout=240
+        )
+
+        print(
+            f"Corporate actions HTTP {r.status_code} "
+            f"for {len(tickers)} symbols",
+            flush=True
+        )
+
+        if r.status_code == 404:
+            print("⚠️ Corporate-actions endpoint returned 404; treating as no actions.")
+            return {}
+
+        if r.status_code == 429:
+            raise RuntimeError(
+                "Business Quant 今日请求额度已用完（40 req/day）。"
+                "请等额度重置后再运行。这个版本只需要 1 次 corporate-actions 请求。"
             )
 
-            print(
-                f"  Corporate actions HTTP {r.status_code} "
-                f"for {len(batch)} symbols",
-                flush=True
+        if not r.ok:
+            raise RuntimeError(
+                f"Business Quant HTTP {r.status_code}: {r.text[:1500]}"
             )
 
-            if r.status_code == 404:
-                return {}
+        payload = r.json()
+        amap = normalize_actions(payload, tickers)
 
-            if r.status_code == 429:
-                raise RuntimeError(
-                    "Business Quant 今日请求额度已用完（40 req/day）。"
-                    "请等额度重置后再运行；本程序已把 corporate-actions "
-                    "批次扩大到 200，只需约 3 次请求完成 500+ 股票池。"
-                )
+        action_count = sum(len(v) for v in amap.values())
+        ticker_count = sum(1 for v in amap.values() if v)
 
-            if not r.ok:
-                raise RuntimeError(
-                    f"Business Quant HTTP {r.status_code}: {r.text[:1200]}"
-                )
+        print(
+            f"✅ Corporate actions received: "
+            f"{action_count} actions across {ticker_count} tickers",
+            flush=True
+        )
 
-            return normalize_actions(r.json(), batch)
+        return amap
 
-        except Exception as e:
-            last = e
-            print(f"  ⚠️ 第 {attempt} 次 corporate actions 请求失败: {e}")
-            if "40 req/day" in str(e) or "请求额度已用完" in str(e):
-                raise
-            if attempt < MAX_RETRIES:
-                time.sleep(5 * attempt)
-
-    raise last
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(
+            f"Business Quant corporate-actions request failed: {e}"
+        ) from e
 
 
 def fetch_actions(api_key, tickers):
     """
-    Old 122 version sent every symbol in ONE URL.
-    For 500+ symbols that is unnecessarily fragile, so this version batches.
+    FINAL low-request version:
+    all A6 stocks + benchmark ETFs are queried in ONE request.
     """
-    merged = defaultdict(list)
-    batches = list(chunks(tickers, CORP_ACTION_BATCH))
-
-    print(
-        f"📥 Corporate actions: {len(tickers)} symbols "
-        f"in {len(batches)} batches"
-    )
-
-    for i, batch in enumerate(batches, 1):
-        print(
-            f"\nCorporate-actions batch {i}/{len(batches)} "
-            f"({len(batch)} symbols)"
-        )
-
-        try:
-            amap = fetch_actions_batch(api_key, batch)
-        except Exception as e:
-            print(f"❌ Batch failed: {e}")
-            # Important: do not silently assume "no actions" when a request failed.
-            raise
-
-        for t, acts in amap.items():
-            merged[t].extend(acts)
-
-        time.sleep(0.5)
-
-    # final de-dup
-    final = {}
-    for t, acts in merged.items():
-        seen = set()
-        cleaned = []
-        for x in sorted(
-            acts,
-            key=lambda z: (z["date"], z["action"], z["value"])
-        ):
-            sig = (x["date"], x["action"], x["value"])
-            if sig not in seen:
-                cleaned.append(x)
-                seen.add(sig)
-        final[t] = cleaned
-
-    return final
+    return fetch_actions_once(api_key, tickers)
 
 
 def build_adjusted(raw, actions):
@@ -539,8 +518,8 @@ def main():
     else:
         print(
             "⚠️ 部分 ticker 未达到调整数据要求。"
-            "通常先重新运行 load_stock_daily_529.py 补 raw 数据，"
-            "然后再运行本程序即可。"
+            "请先检查上面列出的 no-raw ticker；只补缺失 raw 数据后，"
+            "再重新运行本程序。不要无条件重跑整个 Load 529。"
         )
         fail(
             f"Adjustment validation incomplete: "
