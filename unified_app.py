@@ -23,7 +23,7 @@ except ImportError:
 
 
 # ============================================================
-# CMS UNIFIED APP V1.7
+# CMS UNIFIED APP V1.8 PRO
 # 统一产品化界面：不修改 A / B / C 核心交易逻辑，不写入 Google Sheet。
 # 数据来源：
 #   A_Candidates
@@ -87,30 +87,54 @@ div[class*="st-key-summary_card_"] button p {
     width: 100% !important;
 }
 
-/* V1.7: clickable Today's Opportunities cards */
+/* V1.8 PRO: clickable opportunity cards */
 div[class*="st-key-opportunity_card_"] button {
-    min-height: 122px !important;
+    min-height: 146px !important;
     width: 100% !important;
     border-radius: 16px !important;
-    border: 1px solid rgba(130,130,130,0.18) !important;
-    background: rgba(120,120,120,0.05) !important;
+    border: 1px solid rgba(130,130,130,0.20) !important;
+    border-left: 4px solid rgba(130,130,130,0.42) !important;
+    background: linear-gradient(135deg, rgba(120,120,120,0.055), rgba(120,120,120,0.025)) !important;
     justify-content: flex-start !important;
     text-align: left !important;
-    padding: 16px 18px !important;
-    margin-bottom: 10px !important;
+    padding: 15px 17px !important;
+    margin-bottom: 9px !important;
+    box-shadow: 0 3px 14px rgba(0,0,0,0.035) !important;
+    transition: all 0.16s ease !important;
 }
 
 div[class*="st-key-opportunity_card_"] button:hover {
     border-color: var(--primary-color) !important;
-    background: rgba(120,120,120,0.10) !important;
-    transform: translateY(-1px);
+    border-left-color: var(--primary-color) !important;
+    background: rgba(120,120,120,0.095) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 7px 20px rgba(0,0,0,0.07) !important;
 }
 
 div[class*="st-key-opportunity_card_"] button p {
     white-space: pre-line !important;
-    line-height: 1.45 !important;
+    line-height: 1.42 !important;
     text-align: left !important;
     width: 100% !important;
+    font-size: 0.92rem !important;
+}
+
+.cms-detail-head {
+    border: 1px solid rgba(130,130,130,0.18);
+    border-radius: 18px;
+    padding: 18px 20px;
+    background: linear-gradient(135deg, rgba(120,120,120,0.06), rgba(120,120,120,0.02));
+    margin: 2px 0 14px 0;
+}
+.cms-detail-ticker {font-size: 1.55rem; font-weight: 850; letter-spacing: -0.02em;}
+.cms-detail-company {opacity: 0.66; font-size: 0.94rem; margin-top: 2px;}
+.cms-section-label {font-size: 0.82rem; opacity: 0.62; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px;}
+.cms-reason {
+    border-left: 3px solid var(--primary-color);
+    padding: 10px 13px;
+    background: rgba(120,120,120,0.045);
+    border-radius: 0 10px 10px 0;
+    margin: 6px 0 12px 0;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -987,42 +1011,51 @@ if page == "🏠 首页":
         st.divider()
 
     st.divider()
-    lcol, rcol = st.columns([1.05, 1.55], gap="large")
+    lcol, rcol = st.columns([0.98, 1.62], gap="large")
 
     with lcol:
         st.subheader("🔥 Today's Opportunities")
-        st.caption("点击任意股票卡片，右侧会自动切换到该股票，并显示买点、K线、Stop、TP1/TP2 与 CMS 决策细节。")
+        st.caption("按 B 当前决策优先级排列。点击卡片后，右侧立即切换到完整交易详情。")
         opp = compact_opportunity_table(master_active)
         if opp.empty:
             st.info("目前没有活跃的 B 候选。")
         else:
             for _, row in opp.head(6).iterrows():
-                tk = str(row.get("Ticker", ""))
-                company = str(row.get("Company", ""))
+                tk = str(row.get("Ticker", "")).strip().upper()
+                company = str(row.get("Company", "")).strip()
                 dec = status_badge(row.get("最后决策", ""))
                 px = money_text(row.get("最后价格", np.nan))
                 room = str(row.get("空间等级", "—"))
                 reason = str(row.get("最后决策依据", "")).strip()
+                one_h = str(row.get("1H状态", "—"))
+                rsi = sfloat(row.get("15m RSI", np.nan))
+                vol_ratio = sfloat(row.get("15m量比", np.nan))
+                rank = row.get("Rank", "—")
 
-                card_text = f"{dec}   {tk}"
+                selected_now = st.session_state.get("home_ticker", "") == tk
+                selected_mark = "▶ " if selected_now else ""
+                company_txt = ""
                 if company and company.lower() not in {"nan", "none"}:
-                    card_text += f"   {company}"
-                card_text += f"\n{px}   |   {room}"
+                    company_txt = f"  ·  {company}"
+
+                tech_bits = [f"1H {one_h}"]
+                if not pd.isna(rsi): tech_bits.append(f"RSI {rsi:.1f}")
+                if not pd.isna(vol_ratio): tech_bits.append(f"量比 {vol_ratio:.2f}")
+                if str(rank).strip().lower() not in {"", "nan", "none", "—"}: tech_bits.append(f"Rank {rank}")
+
+                card_text = f"{selected_mark}{dec}   {tk}{company_txt}"
+                card_text += f"\n{px}   ·   {room}"
+                card_text += "\n" + "   |   ".join(tech_bits)
                 if reason:
-                    card_text += f"\n{reason[:150]}"
+                    card_text += f"\n{reason[:125]}"
 
                 with st.container(key=f"opportunity_card_{tk}"):
-                    if st.button(
-                        card_text,
-                        key=f"opportunity_click_{tk}",
-                        use_container_width=True
-                    ):
-                        # 直接把右侧“快速查看股票”切换到当前卡片对应股票
+                    if st.button(card_text, key=f"opportunity_click_{tk}", use_container_width=True):
                         st.session_state["home_ticker"] = tk
-                        # 记录一次来源，便于未来扩展成详情弹层/返回逻辑
                         st.session_state["home_selected_from_opportunity"] = tk
+                        st.rerun()
 
-        st.subheader("💼 Positions")
+        st.markdown("### 💼 Positions")
         psmall = compact_position_table(pos_df)
         if psmall.empty:
             st.caption("目前没有标记为真实持仓的股票。")
@@ -1032,93 +1065,85 @@ if page == "🏠 首页":
 
     with rcol:
         tickers = union_tickers(master_active, a_buy)
-        st.caption("选择哪只股票，右侧日K、B决策、1H/15m、Stop、TP1/TP2就读取该股票最新 B_MasterList 记录。")
         home_options = tickers if tickers else [""]
-
-        # V1.7：Today's Opportunities 卡片点击后，会把 home_ticker 写入 session_state。
-        # 如果数据刷新后该股票已不在当前列表中，则安全回退到第一只。
         current_home = st.session_state.get("home_ticker")
         if current_home not in home_options:
             st.session_state["home_ticker"] = home_options[0]
 
-        selected_home = st.selectbox(
-            "快速查看股票",
-            home_options,
-            key="home_ticker"
-        )
+        selected_home = st.selectbox("快速切换股票", home_options, key="home_ticker")
         if selected_home:
             row = latest_row_for_ticker(selected_home, master_latest, a_df)
+            company = str(row.get("Company", "")).strip()
+            decision = status_badge(row.get("最后决策", "—"))
+            reason = str(row.get("最后决策依据", "")).strip()
+            update_txt = "—"
+            for _uc in ["最后检查时间", "检查时间", "更新时间", "Timestamp", "时间"]:
+                if _uc in row.index:
+                    _dtv = pd.to_datetime(row.get(_uc), errors="coerce")
+                    if pd.notna(_dtv):
+                        update_txt = _dtv.strftime("%m-%d %H:%M")
+                        break
+            company_show = "" if company.lower() in {"nan", "none"} else company
+
+            st.markdown(
+                f'''<div class="cms-detail-head">
+                  <div class="cms-section-label">ACTIVE OPPORTUNITY</div>
+                  <div class="cms-detail-ticker">{decision} &nbsp; {selected_home}</div>
+                  <div class="cms-detail-company">{company_show} &nbsp;&nbsp; · &nbsp;&nbsp; Last sync {update_txt}</div>
+                </div>''',
+                unsafe_allow_html=True
+            )
+
+            st.markdown("#### Trade Plan")
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("当前价", money_text(row.get("最后价格", row.get("价格", np.nan))))
+            k2.metric("参考入场", money_text(row.get("参考入场", np.nan)))
+            k3.metric("Stop", money_text(row.get("参考止损", row.get("持仓止损", np.nan))))
+            k4.metric("TP1", money_text(row.get("TP1", np.nan)))
+            k5.metric("TP2", money_text(row.get("TP2", np.nan)))
 
             h15 = load_price_history(selected_home, "10d", "15m")
             buy_ref = calc_buy_reference(h15)
 
-            st.markdown("#### 🎯 买点参考")
+            st.markdown("#### Entry Setup")
             q1, q2, q3, q4 = st.columns(4)
-            q1.metric("15m回踩关注区", buy_reference_text(buy_ref))
-            q2.metric(
-                "突破触发价",
-                money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—"
-            )
+            q1.metric("15m回踩区", buy_reference_text(buy_ref))
+            q2.metric("突破触发价", money_text(buy_ref.get("breakout", np.nan)) if buy_ref.get("valid") else "—")
             q3.metric("距回踩区", distance_text(buy_ref.get("dist_pullback_pct", np.nan)))
-            q4.metric("买点类型", buy_ref.get("setup_type", "—"))
+            q4.metric("当前结构", buy_ref.get("setup_type", "—"))
+            st.caption("Entry Setup 只解释 B v1.8 的位置条件；正式入场仍以 B 的 BUY / EARLY / WAIT / AVOID 为准。")
 
-            st.caption(
-                "回踩区/突破价是 B v1.8 条件的可视化参考，不等于 BUY；"
-                "真正入场仍以 B 的 BUY / EARLY / WAIT / AVOID 为准。"
-            )
-
-            chart_mode = st.radio(
-                "图表周期",
-                ["15m", "1H", "日K"],
-                horizontal=True,
-                key="home_chart_mode"
-            )
-
-            if chart_mode == "15m":
-                h = h15
-                chart_title = f"{selected_home} · 15分钟"
-            elif chart_mode == "1H":
-                h = load_price_history(selected_home, "3mo", "60m")
-                chart_title = f"{selected_home} · 1小时"
-            else:
-                h = load_price_history(selected_home, "3mo", "1d")
-                chart_title = f"{selected_home} · 3个月日K"
-
-            if not h.empty:
-                st.subheader(chart_title)
-                fig = make_candlestick_chart(
-                    selected_home, h, row,
-                    chart_mode=chart_mode,
-                    buy_ref=buy_ref
-                )
-                if fig is not None:
-                    st.plotly_chart(
-                        fig,
-                        use_container_width=True,
-                        config={"displaylogo": False}
-                    )
-            else:
-                st.warning("暂时无法取得该周期行情数据。")
-
-            x1, x2, x3, x4 = st.columns(4)
-            x1.metric("当前/最后价", money_text(row.get("最后价格", row.get("价格", np.nan))))
-            x2.metric("参考止损", money_text(row.get("参考止损", row.get("持仓止损", np.nan))))
-            x3.metric("TP1", money_text(row.get("TP1", np.nan)))
-            x4.metric("TP2", money_text(row.get("TP2", np.nan)))
-
-            st.markdown("#### 🧠 CMS Decision")
-            st.write(status_badge(row.get("最后决策", "—")))
-            reason = row.get("最后决策依据", "")
-            if str(reason).strip():
-                st.caption(str(reason))
-
-            z1, z2, z3, z4 = st.columns(4)
+            st.markdown("#### Decision Context")
+            z1, z2, z3, z4, z5 = st.columns(5)
             z1.metric("1H", str(row.get("1H状态", "—")))
-            rv = sfloat(row.get("15m RSI", np.nan))
-            vv = sfloat(row.get("15m量比", np.nan))
+            rv = sfloat(row.get("15m RSI", np.nan)); vv = sfloat(row.get("15m量比", np.nan))
             z2.metric("15m RSI", f"{rv:.1f}" if not pd.isna(rv) else "—")
             z3.metric("15m量比", f"{vv:.2f}" if not pd.isna(vv) else "—")
             z4.metric("空间", str(row.get("空间等级", "—")))
+            z5.metric("共振", str(row.get("共振数", "—")))
+            if reason:
+                st.markdown(f'<div class="cms-reason"><b>CMS 判断：</b> {reason}</div>', unsafe_allow_html=True)
+
+            chart_mode = st.radio("图表周期", ["15m", "1H", "日K"], horizontal=True, key="home_chart_mode")
+            if chart_mode == "15m":
+                h = h15; chart_title = f"{selected_home} · 15分钟"
+            elif chart_mode == "1H":
+                h = load_price_history(selected_home, "3mo", "60m"); chart_title = f"{selected_home} · 1小时"
+            else:
+                h = load_price_history(selected_home, "3mo", "1d"); chart_title = f"{selected_home} · 3个月日K"
+
+            if not h.empty:
+                st.markdown(f"#### {chart_title}")
+                fig = make_candlestick_chart(selected_home, h, row, chart_mode=chart_mode, buy_ref=buy_ref)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+            else:
+                st.warning("暂时无法取得该周期行情数据。")
+
+            with st.expander("查看 A / B 完整字段"):
+                tmp = pd.DataFrame([row]).T.reset_index()
+                tmp.columns = ["字段", "值"]
+                st.dataframe(tmp, hide_index=True, use_container_width=True, height=420)
 
 
 # ============================================================
