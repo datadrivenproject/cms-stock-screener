@@ -121,8 +121,51 @@ h1,h2,h3,h4,h5,h6, p, label {color: var(--cms-text);}
 
 /* General controls */
 [data-baseweb="select"] > div, [data-testid="stSelectbox"] > div > div {
-    background: #123d68 !important; border-color: rgba(105,158,211,.22) !important;
+    background: #123d68 !important;
+    border-color: rgba(105,158,211,.30) !important;
 }
+
+/* V1.9.3: fix selectbox text being too dark on blue background */
+[data-testid="stSelectbox"] [data-baseweb="select"],
+[data-testid="stSelectbox"] [data-baseweb="select"] *,
+[data-baseweb="select"] *,
+[data-baseweb="select"] span,
+[data-baseweb="select"] div {
+    color: #eef6ff !important;
+    -webkit-text-fill-color: #eef6ff !important;
+}
+[data-baseweb="select"] input {
+    color: #eef6ff !important;
+    -webkit-text-fill-color: #eef6ff !important;
+    caret-color: #7cc7ff !important;
+}
+[data-baseweb="select"] svg {
+    fill: #9fc8ec !important;
+    color: #9fc8ec !important;
+}
+/* Dropdown menu opened from Streamlit/BaseWeb select */
+[data-baseweb="popover"] ul,
+[data-baseweb="menu"] {
+    background: #123d68 !important;
+    border: 1px solid rgba(105,158,211,.35) !important;
+}
+[data-baseweb="popover"] li,
+[data-baseweb="menu"] li,
+[role="option"] {
+    color: #eef6ff !important;
+    -webkit-text-fill-color: #eef6ff !important;
+    background: #123d68 !important;
+}
+[data-baseweb="popover"] li:hover,
+[data-baseweb="menu"] li:hover,
+[role="option"]:hover {
+    background: #1b5b91 !important;
+}
+[aria-selected="true"][role="option"] {
+    background: #176ca8 !important;
+    color: #ffffff !important;
+}
+
 .stButton > button {
     border-radius: 9px; border: 1px solid rgba(95,153,213,.25);
     background: #123e69; color: #eef7ff;
@@ -858,7 +901,7 @@ def summary_detail_table(df, mode):
 # ---------- sidebar ----------
 with st.sidebar:
     st.markdown("## 📈 CMS")
-    st.caption("Unified App V1.9.2 · 一个网址看完整 A + B + C")
+    st.caption("Unified App V1.9.3 · 一个网址看完整 A + B + C")
     page = st.radio(
         "功能",
         [
@@ -938,7 +981,7 @@ sync_txt = (
     else "暂无"
 )
 st.caption(
-    "Unified App V1.9.2：一个网址统一查看 A、B、C；"
+    "Unified App V1.9.3：一个网址统一查看 A、B、C；"
     f"B/C 最新同步：{sync_txt}。"
     "买入区域/突破价仅做参考解释，不改变已经冻结的 B/C 决策逻辑。"
 )
@@ -1448,6 +1491,6 @@ elif page == "🧾 交易记录 / 收益":
 
 st.divider()
 st.caption(
-    "CMS Unified App V1.9.2 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
+    "CMS Unified App V1.9.3 · 首页机会卡片可点击 + B/C最新状态同步 + 15m回踩关注区 + 突破触发位 + 15m/1H/日K切换。"
     "策略核心保持冻结。后续再把“运行 A、真实 B 后台监控、持仓操作、收益统计”逐步搬进同一个 App。"
 )
