@@ -1007,21 +1007,101 @@ def calc_a5_resonance(df, row=None):
     core_flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok]
     resonance_n = int(sum(core_flags))
 
-    # A6 FINAL / Early Setup V1
-    # Goal: find strong stocks near the start of a move, not simply stocks whose
-    # indicators are all rising after the move is already mature.
+    # A6 FINAL / Startup Transition V2
+    # Goal: identify the transition from accumulation/base -> ignition,
+    # rather than simply requiring every indicator to be rising today.
     #
-    # Core strength remains V2B-like: >=4/5 + MACD + Volume/Price.
-    # Then apply a lightweight "not already extended" gate using only data that
-    # already exists in A. This is deliberately NOT a MA200 rule.
+    # This layer is designed around the type of entry we want to study:
+    # ORCL around Sep-01, LITE around Jul-30, and the current PSX setup.
+    # It uses only as-of-date OHLCV and does NOT use MA200.
+
     ret5_now = safe_num((row or {}).get("5D Return", np.nan))
-    not_extended_5d = bool(pd.isna(ret5_now) or ret5_now <= 0.08)
+
+    # 1) Fresh MACD ignition: histogram crossed above zero recently OR
+    #    is clearly accelerating versus 3 sessions ago.
+    hist_prev = hist.shift(1)
+    macd_cross_recent = bool(
+        ((hist.tail(5) > 0) & (hist_prev.tail(5) <= 0)).fillna(False).any()
+    )
+    hist_3ago = safe_num(hist.iloc[-4]) if len(hist) >= 4 else np.nan
+    macd_accel = bool(
+        (not pd.isna(hist_3ago))
+        and (hist.iloc[-1] > 0)
+        and (hist.iloc[-1] > hist_3ago)
+    )
+    fresh_macd = bool(macd_cross_recent or macd_accel)
+
+    # 2) Fresh KDJ turn: K crossed above D within the last 5 sessions,
+    #    or K is rising from a non-overheated zone.
+    kd_diff = k - d
+    kd_prev = kd_diff.shift(1)
+    kdj_cross_recent = bool(
+        ((kd_diff.tail(5) > 0) & (kd_prev.tail(5) <= 0)).fillna(False).any()
+    )
+    k_3ago = safe_num(k.iloc[-4]) if len(k) >= 4 else np.nan
+    kdj_turn = bool(
+        (k0 > d0)
+        and (not pd.isna(k_3ago))
+        and (k0 > k_3ago)
+        and (k0 < 85)
+    )
+    fresh_kdj = bool(kdj_cross_recent or kdj_turn)
+
+    # 3) Volume ignition: either one of the last 3 sessions showed >=1.10 RVOL
+    #    on an up day, or recent average volume is building above the 20D base.
+    avg20_series = volume.rolling(20).mean()
+    rvol_series = volume / avg20_series.replace(0, np.nan)
+    up_day = close.pct_change() > 0
+    recent_volume_ignition = bool(
+        ((rvol_series.tail(3) >= 1.10) & up_day.tail(3)).fillna(False).any()
+        or (not pd.isna(vbuild) and vbuild >= 1.05)
+    )
+
+    # 4) Pre-launch contraction/base: compare the range BEFORE the last 3 bars
+    #    with the preceding 20-session range.  We want some evidence that price
+    #    had compressed before the current ignition.
+    prior = df.iloc[:-3].copy() if len(df) > 23 else df.iloc[:-1].copy()
+    prior_high10 = safe_num(pd.to_numeric(prior["High"], errors="coerce").tail(10).max())
+    prior_low10 = safe_num(pd.to_numeric(prior["Low"], errors="coerce").tail(10).min())
+    prior_high20 = safe_num(pd.to_numeric(prior["High"], errors="coerce").tail(20).max())
+    prior_low20 = safe_num(pd.to_numeric(prior["Low"], errors="coerce").tail(20).min())
+    range10 = ((prior_high10 - prior_low10) / prior_low10) if prior_low10 > 0 else np.nan
+    range20 = ((prior_high20 - prior_low20) / prior_low20) if prior_low20 > 0 else np.nan
+    compression_ratio = (range10 / range20) if (not pd.isna(range20) and range20 > 0) else np.nan
+    base_compression = bool(not pd.isna(compression_ratio) and compression_ratio <= 0.75)
+
+    # 5) Position around a 20D pivot: early entries are preferred before the
+    #    stock is already far above its prior 20-session high.
+    pivot20 = safe_num(high.shift(1).rolling(20).max().iloc[-1])
+    pivot_ext = ((px - pivot20) / pivot20) if (not pd.isna(pivot20) and pivot20 > 0) else np.nan
+    pivot_early = bool(
+        pd.isna(pivot_ext)
+        or (-0.05 <= pivot_ext <= 0.04)
+    )
+
+    # 6) Avoid clearly mature 5D moves, but keep the band wide enough that a
+    #    genuine breakout is not rejected simply because it has already started.
+    not_mature_5d = bool(pd.isna(ret5_now) or ret5_now <= 0.12)
+
+    startup_flags = [
+        fresh_macd,
+        fresh_kdj,
+        recent_volume_ignition,
+        base_compression,
+        pivot_early,
+        not_mature_5d,
+    ]
+    startup_score = int(sum(startup_flags))
+
+    # Require a real fresh trigger plus enough evidence of the launch phase.
+    fresh_trigger = bool(fresh_macd or fresh_kdj or recent_volume_ignition)
 
     base_buy = bool(
         resonance_n >= 4
         and macd_ok
         and pv_ok
-        and not_extended_5d
+        and fresh_trigger
+        and startup_score >= 4
     )
     decision = "买" if base_buy else "不买"
 
@@ -1035,7 +1115,20 @@ def calc_a5_resonance(df, row=None):
     return {
         "A5决策": decision,
         "共振数": resonance_n,
-        "启动阶段": "早期/可跟踪" if not_extended_5d else "已延伸/不追",
+        "启动阶段": (
+            "启动转换" if base_buy else
+            "接近启动" if (fresh_trigger and startup_score >= 3) else
+            "非启动阶段"
+        ),
+        "启动分": startup_score,
+        "新鲜触发": "是" if fresh_trigger else "否",
+        "MACD启动": "是" if fresh_macd else "否",
+        "KDJ启动": "是" if fresh_kdj else "否",
+        "量能启动": "是" if recent_volume_ignition else "否",
+        "前期压缩": "是" if base_compression else "否",
+        "Pivot早期": "是" if pivot_early else "否",
+        "压缩比_启动": compression_ratio,
+        "Pivot延伸_启动": pivot_ext,
         "5日涨幅_启动判断": ret5_now,
         "MACD共振": "是" if macd_ok else "否",
         "KDJ共振": "是" if kdj_ok else "否",
@@ -3915,7 +4008,7 @@ def render_results(top_df, all_df):
         "A5决策", "Rank", "Ticker", "Company", "Price",
         "A6优先级", "A6优先分", "A6优先原因",
         "Pivot Status V3", "First Room Status V3", "Breakout Room Status V3",
-        "共振数", "启动阶段", "5日涨幅_启动判断",
+        "共振数", "启动阶段", "启动分", "新鲜触发", "MACD启动", "KDJ启动", "量能启动", "前期压缩", "Pivot早期", "5日涨幅_启动判断",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
         "空间等级", "空间优先级",
@@ -3933,6 +4026,8 @@ def render_results(top_df, all_df):
     fmt = {
         "Price": "{:.2f}",
         "5日涨幅_启动判断": "{:+.1%}",
+        "压缩比_启动": "{:.2f}",
+        "Pivot延伸_启动": "{:+.1%}",
         "Short-term Breakout": "{:.2f}",
         "MA20 Slope 5D": "{:.2%}",
         "RSI14": "{:.1f}",
