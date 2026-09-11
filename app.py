@@ -21,7 +21,7 @@ st.set_page_config(page_title="CMS Stock Screener A6 FINAL", page_icon="📈", l
 
 st.title("📈 CMS Stock Screener A6 FINAL")
 st.caption(
-    "盘后正式候选：V2B Core（共振≥4/5 + MACD必过 + 量价必过）。"
+    "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
 )
 
@@ -1093,15 +1093,25 @@ def calc_a5_resonance(df, row=None):
     ]
     startup_score = int(sum(startup_flags))
 
-    # Require a real fresh trigger plus enough evidence of the launch phase.
-    fresh_trigger = bool(fresh_macd or fresh_kdj or recent_volume_ignition)
+    # Startup Transition V3:
+    # A genuine launch should not be supported by only one isolated trigger.
+    # Require at least TWO of MACD / KDJ / volume to show fresh ignition,
+    # plus at least one location/context confirmation (compression or early pivot).
+    fresh_trigger_count = int(sum([
+        fresh_macd,
+        fresh_kdj,
+        recent_volume_ignition,
+    ]))
+    fresh_trigger = bool(fresh_trigger_count >= 2)
+    location_context = bool(base_compression or pivot_early)
 
     base_buy = bool(
         resonance_n >= 4
         and macd_ok
         and pv_ok
         and fresh_trigger
-        and startup_score >= 4
+        and location_context
+        and startup_score >= 5
     )
     decision = "买" if base_buy else "不买"
 
@@ -1122,6 +1132,8 @@ def calc_a5_resonance(df, row=None):
         ),
         "启动分": startup_score,
         "新鲜触发": "是" if fresh_trigger else "否",
+        "新鲜触发数": fresh_trigger_count,
+        "位置确认": "是" if location_context else "否",
         "MACD启动": "是" if fresh_macd else "否",
         "KDJ启动": "是" if fresh_kdj else "否",
         "量能启动": "是" if recent_volume_ignition else "否",
@@ -3884,7 +3896,7 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("A6 FINAL：V2B Core决定正式候选；Pivot/Room只做优先级排序，不做一票否决。")
+    st.success("A6 FINAL：强势资格 + Startup Transition V3共同决定正式候选；Pivot/Room继续只做优先级排序。")
 
 st.info(
     "A6 FINAL 500池：从 GitHub Raw 读取当前 S&P 500，并保留原自选股；若读取失败会明确停止，不再偷偷退回110只。Core决定候选资格；Pivot/Room只负责排序。"
@@ -3955,11 +3967,17 @@ if scan_clicked:
         st.stop()
 
     all_df = pd.DataFrame(results)
-    # A6 FINAL formal candidate pool:
-    # Hard Filter pass + V2B Core BUY. Never force-fill to top_n.
+    # A6 FINAL formal candidate pool — Startup Transition V3:
+    # Formal candidates must pass BOTH:
+    #   1) original strength qualification, and
+    #   2) the stricter launch-stage transition gate.
+    # Never force-fill to top_n.
     eligible = all_df[
         (all_df["Hard Filter"] == "通过")
         & (all_df["A5决策"] == "买")
+        & (pd.to_numeric(all_df["启动分"], errors="coerce") >= 5)
+        & (pd.to_numeric(all_df["新鲜触发数"], errors="coerce") >= 2)
+        & (all_df["位置确认"] == "是")
     ].copy()
 
     quality_order = {"✅ 通过": 0, "⚠️ 观察": 1, "❌ 不适合Early": 2}
@@ -4008,7 +4026,7 @@ def render_results(top_df, all_df):
         "A5决策", "Rank", "Ticker", "Company", "Price",
         "A6优先级", "A6优先分", "A6优先原因",
         "Pivot Status V3", "First Room Status V3", "Breakout Room Status V3",
-        "共振数", "启动阶段", "启动分", "新鲜触发", "MACD启动", "KDJ启动", "量能启动", "前期压缩", "Pivot早期", "5日涨幅_启动判断",
+        "共振数", "启动阶段", "启动分", "新鲜触发", "新鲜触发数", "位置确认", "MACD启动", "KDJ启动", "量能启动", "前期压缩", "Pivot早期", "5日涨幅_启动判断",
         # 一个指标一个col
         "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
         "空间等级", "空间优先级",
