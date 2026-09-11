@@ -879,10 +879,12 @@ def calc_a5_resonance(df, row=None):
     macd = ema12 - ema26
     sig = macd.ewm(span=9, adjust=False).mean()
     hist = macd - sig
+    # Positive MACD resonance must be strong NOW, not merely have strengthened yesterday.
+    # Require current positive histogram to be non-shrinking vs the prior bar.
     macd_ok = bool(
         (macd.iloc[-1] > sig.iloc[-1]) and
         (hist.iloc[-1] > 0) and
-        ((hist.iloc[-1] > hist.iloc[-2]) or (hist.iloc[-2] > hist.iloc[-3]))
+        (hist.iloc[-1] >= hist.iloc[-2])
     )
 
     # ---------- 势：KDJ (9,3,3) ----------
@@ -893,12 +895,22 @@ def calc_a5_resonance(df, row=None):
     d = k.ewm(alpha=1/3, adjust=False).mean()
     j = 3 * k - 2 * d
     k0, d0, j0 = safe_num(k.iloc[-1]), safe_num(d.iloc[-1]), safe_num(j.iloc[-1])
-    kdj_ok = bool((k0 > d0) and (k0 >= 45) and (j0 <= 110))
+    k1, d1 = safe_num(k.iloc[-2]), safe_num(d.iloc[-2])
+    # Positive KDJ resonance requires K>D and both K/D to be non-declining today.
+    # This prevents a high-level bearish turn from still being counted as positive resonance.
+    kdj_ok = bool(
+        (k0 > d0) and
+        (k0 >= 45) and
+        (j0 <= 110) and
+        (k0 >= k1) and
+        (d0 >= d1)
+    )
 
     # ---------- 势：RSI ----------
     rsi_series = calc_rsi(close, 14)
     rsi = safe_num(rsi_series.iloc[-1])
-    rsi_prev = safe_num(rsi_series.iloc[-3])
+    rsi_prev = safe_num(rsi_series.iloc[-2])
+    # Positive RSI resonance requires RSI to be non-declining on the current bar.
     rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
 
     # ---------- 量：Price / Volume ----------
