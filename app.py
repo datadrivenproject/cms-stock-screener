@@ -21,7 +21,7 @@ st.set_page_config(page_title="CMS Stock Screener A6 FINAL", page_icon="📈", l
 
 st.title("📈 CMS Stock Screener A6 FINAL")
 st.caption(
-    "盘后正式候选：V2B Core（共振≥4/5 + MACD必过 + 量价必过）。"
+    "盘后正式候选：True Resonance Core（MACD + KDJ + RSI + 量价全部必须通过；RS用于强弱确认/排序）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
 )
 
@@ -1007,13 +1007,16 @@ def calc_a5_resonance(df, row=None):
     core_flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok]
     resonance_n = int(sum(core_flags))
 
-    # A6 FINAL / V2B Core:
-    # ≥4 of 5 confirmations + MACD mandatory + Volume-Price mandatory.
-    # RS remains one of the five confirmations, but can no longer substitute for Volume-Price.
-    # Pivot/Room NEVER vetoes a V2B-qualified candidate.
+    # A6 FINAL / True Resonance Core:
+    # Directional momentum must agree NOW:
+    # MACD + KDJ + RSI + Volume/Price are ALL mandatory.
+    # RS remains a strength/leadership confirmation and ranking input,
+    # but it can no longer compensate for a weakening momentum indicator.
+    # Pivot/Room still NEVER vetoes a core-qualified candidate.
     base_buy = bool(
-        resonance_n >= 4
-        and macd_ok
+        macd_ok
+        and kdj_ok
+        and rsi_ok
         and pv_ok
     )
     decision = "买" if base_buy else "不买"
@@ -1951,7 +1954,7 @@ def calc_a6_final_priority(row):
     else:
         level = "C 普通跟踪"
 
-    return level, score, "；".join(reasons) if reasons else "V2B通过；无额外Pivot/Room加分"
+    return level, score, "；".join(reasons) if reasons else "核心共振通过；无额外Pivot/Room加分"
 
 
 # =========================================================
@@ -2968,7 +2971,7 @@ def render_3way_hardfilter_comparison(bt):
 
 
 def render_a4_a5_resonance_comparison(bt):
-    """Same-window comparison: A4 vs current A5.2R vs A6 V2B (Volume mandatory)."""
+    """Same-window comparison: A4 vs current A5.2R vs A6 True Resonance."""
     if bt is None or bt.empty:
         return
     d = bt.copy()
@@ -3000,13 +3003,15 @@ def render_a4_a5_resonance_comparison(bt):
     a5 = pool.groupby('Replay Date', group_keys=False).head(10).copy()
     a5 = a5[a5['A5决策'] == '买'].copy()
 
-    # A6 V2B EXPERIMENT: only one change from A5.2R.
+    # A6 True Resonance: directional momentum agreement is mandatory.
     # >=4/5 + MACD mandatory + Volume mandatory. RS remains one of the 5 resonance items,
     # but RS can no longer substitute for failed Volume resonance.
     exp = d[d['Hard Filter'].eq('通过')].copy()
     macd = exp['MACD共振'].eq('是')
     pv = exp['量价共振'].eq('是')
-    exp['_v2b_buy'] = ((exp['共振数'] >= 4) & macd & pv).astype(int)
+    kdj = exp['KDJ共振'].eq('是')
+    rsi = exp['RSI共振'].eq('是')
+    exp['_v2b_buy'] = (macd & kdj & rsi & pv).astype(int)
     exp = exp.sort_values(
         ['Replay Date','_v2b_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
         ascending=[True,False,False,False,False,False]
@@ -3031,12 +3036,12 @@ def render_a4_a5_resonance_comparison(bt):
     comp = pd.DataFrame([
         summary(a4,'当前A4 Top10'),
         summary(a5,'A5.2R 当前规则'),
-        summary(v2b,'A6 V2B：量价必须通过')
+        summary(v2b,'A6 True Resonance：MACD/KDJ/RSI/量价全通过')
     ])
-    st.header("🧪 60日 A/B：A5.2R 当前规则 vs A6 V2B 量价必过")
+    st.header("🧪 60日 A/B：A5.2R 当前规则 vs A6 True Resonance")
     st.caption(
         "唯一实验改动：当前规则 = 共振≥4/5 + MACD必过 +（量价或RS至少一个）；"
-        "A6 V2B = 共振≥4/5 + MACD必过 + 量价必过。RS仍保留为5项共振之一。"
+        "A6 True Resonance = MACD + KDJ + RSI + 量价全部必须通过；RS保留为相对强弱确认/排序信息。"
         "支撑/压力/Room仍只做位置与风险信息，不参与一票否决。"
     )
     st.dataframe(
@@ -3555,12 +3560,14 @@ def render_pivot_room_backtest(bt):
 
 
 def _v3_v2b_selection(d):
-    """Rebuild exactly the A6 V2B research selection, no forced fill."""
+    """Rebuild the A6 True Resonance selection, no forced fill."""
     x = d[d["Hard Filter"].eq("通过")].copy()
     x["共振数"] = pd.to_numeric(x["共振数"], errors="coerce")
     macd = x["MACD共振"].eq("是")
     pv = x["量价共振"].eq("是")
-    x["_v2b_buy"] = ((x["共振数"] >= 4) & macd & pv).astype(int)
+    kdj = x["KDJ共振"].eq("是")
+    rsi = x["RSI共振"].eq("是")
+    x["_v2b_buy"] = (macd & kdj & rsi & pv).astype(int)
     x = x.sort_values(
         ["Replay Date", "_v2b_buy", "共振数", "Replay Core Score 85",
          "Leadership Score", "Accumulation Score"],
@@ -3627,11 +3634,11 @@ def render_a6_v3_pivot_room_research(bt):
 
     st.header("🧭 Pivot / Room 优先级验证")
     st.caption(
-        "V2B Core完全不变：共振≥4/5 + MACD必过 + 量价必过；"
+        "True Resonance Core：MACD + KDJ + RSI + 量价全部必须通过；RS只用于强弱确认/排序；"
         "Pivot Status、First Room、Breakout Room 当前只做60日分层研究，不参与正式买/不买。"
     )
 
-    base = _v3_summary(v2b, "A6 V2B Core Benchmark", dates_n)
+    base = _v3_summary(v2b, "A6 True Resonance Core Benchmark", dates_n)
     st.subheader("① V2B Benchmark")
     _render_v3_table([base])
 
