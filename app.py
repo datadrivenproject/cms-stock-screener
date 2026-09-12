@@ -17,9 +17,9 @@ except ImportError:
 # =========================================================
 # PAGE
 # =========================================================
-st.set_page_config(page_title="CMS KD 20/80 — Core", page_icon="📈", layout="wide")
+st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS KD 20/80 — 低位金叉 / 高位死叉")
+st.title("📈 CMS KD + RSI 超卖回升 — A/B 测试")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -910,8 +910,33 @@ def calc_a5_resonance(df, row=None):
     rsi_series = calc_rsi(close, 14)
     rsi = safe_num(rsi_series.iloc[-1])
     rsi_prev = safe_num(rsi_series.iloc[-2])
-    # Positive RSI resonance requires RSI to be non-declining on the current bar.
+    rsi_prev2 = safe_num(rsi_series.iloc[-3]) if len(rsi_series) >= 3 else np.nan
+
+    # 旧 RSI 共振字段仅为兼容历史代码，不再决定正式候选。
     rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
+
+    # ---------- RSI 超卖回升（新研究层） ----------
+    # B1：过去3个交易日（含今天）至少一次 RSI<=30，并且今天 RSI 比昨天上升。
+    #     这是较早的“超卖后开始回升”信号。
+    recent_rsi3 = pd.to_numeric(rsi_series.tail(3), errors="coerce")
+    rsi_was_oversold = bool(
+        recent_rsi3.notna().any()
+        and (recent_rsi3.min() <= 30)
+    )
+    rsi_turn_up = bool(
+        (not pd.isna(rsi))
+        and (not pd.isna(rsi_prev))
+        and (rsi > rsi_prev)
+    )
+    rsi_oversold_rebound = bool(rsi_was_oversold and rsi_turn_up)
+
+    # B2：更严格确认——昨天 RSI<=30，今天重新站上30。
+    rsi_cross_30 = bool(
+        (not pd.isna(rsi))
+        and (not pd.isna(rsi_prev))
+        and (rsi_prev <= 30)
+        and (rsi > 30)
+    )
 
     # ---------- CMS 新核心：KD 20/80 ----------
     # 只用 K、D 的交叉和当前位置做交易触发。
@@ -937,6 +962,23 @@ def calc_a5_resonance(df, row=None):
 
     kd_buy = bool(kd_cross_up_today and kd_low_20)
     kd_sell = bool(kd_cross_down_today and kd_high_80)
+
+    # 三套买入研究信号：
+    # A  = 纯 KD20 低位金叉（当前基准）
+    # B1 = KD20 金叉 + RSI 曾超卖且今天回升
+    # B2 = KD20 金叉 + RSI 昨日<=30、今日重新站上30
+    kd_rsi_rebound_buy = bool(kd_buy and rsi_oversold_rebound)
+    kd_rsi_cross30_buy = bool(kd_buy and rsi_cross_30)
+
+    if kd_rsi_cross30_buy:
+        signal_group = "B2 KD+RSI上穿30"
+    elif kd_rsi_rebound_buy:
+        signal_group = "B1 KD+RSI超卖回升"
+    elif kd_buy:
+        signal_group = "A 纯KD20金叉"
+    else:
+        signal_group = "无买入信号"
+
     kd_action = "买" if kd_buy else ("卖" if kd_sell else "观察")
 
     # 仅用于排序/展示，不参与是否触发。
@@ -1182,6 +1224,16 @@ def calc_a5_resonance(df, row=None):
         "支撑测试次数_A52R": support_touches,
         "压力强度_A52R": resistance_strength,
         "KDJ_K": k0, "KDJ_D": d0, "KDJ_J": j0,
+        "RSI14_新": rsi,
+        "RSI昨日": rsi_prev,
+        "RSI前日": rsi_prev2,
+        "RSI近3日曾超卖": "是" if rsi_was_oversold else "否",
+        "RSI今日回升": "是" if rsi_turn_up else "否",
+        "RSI超卖回升": "是" if rsi_oversold_rebound else "否",
+        "RSI上穿30": "是" if rsi_cross_30 else "否",
+        "KD+RSI超卖回升": "是" if kd_rsi_rebound_buy else "否",
+        "KD+RSI上穿30": "是" if kd_rsi_cross30_buy else "否",
+        "信号分组": signal_group,
         "KD交易动作": kd_action,
         "KD低位金叉20": "是" if kd_buy else "否",
         "KD高位死叉80": "是" if kd_sell else "否",
@@ -2815,105 +2867,149 @@ def _independent_signals(x, cooldown_sessions=5, all_dates=None):
 
 
 def render_kd_strategy_validation(bt):
-    """Validate the new KD 20/80 core without comparing it with retired strategies."""
+    """A/B test: pure KD20 vs KD20 + RSI oversold rebound confirmations."""
     if bt is None or bt.empty:
-        st.warning('历史回放没有得到有效样本。')
+        st.warning("历史回放没有得到有效样本。")
         return
 
     d = bt.copy()
     req = [
-        'Replay Date','Ticker','Price','Dollar Volume',
-        'KD低位金叉20','KD高位死叉80','KDJ_K','KDJ_D','KDJ_J',
-        '1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown'
+        "Replay Date","Ticker","Price","Dollar Volume",
+        "KD低位金叉20","KD+RSI超卖回升","KD+RSI上穿30",
+        "KDJ_K","KDJ_D","KDJ_J","RSI14_新","RSI昨日",
+        "1D Max Gain","3D Max Gain","5D Max Gain",
+        "5D Close Return","5D Max Drawdown"
     ]
     missing = [c for c in req if c not in d.columns]
     if missing:
-        st.warning('KD 20/80 回测字段不完整，请重新运行历史验证。缺少：' + '、'.join(missing))
+        st.warning("A/B 回测字段不完整，请重新运行历史验证。缺少：" + "、".join(missing))
         return
 
-    for c in ['Price','Dollar Volume','KDJ_K','KDJ_D','KDJ_J','1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown']:
-        d[c] = pd.to_numeric(d[c], errors='coerce')
-    d = d.dropna(subset=['Replay Date','Ticker','Price'])
-    if d.empty:
+    numeric_cols = [
+        "Price","Dollar Volume","KDJ_K","KDJ_D","KDJ_J","RSI14_新","RSI昨日",
+        "1D Max Gain","3D Max Gain","5D Max Gain","5D Close Return","5D Max Drawdown"
+    ]
+    for c in numeric_cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+
+    d = d.dropna(subset=["Replay Date","Ticker","Price"])
+    pool = d[(d["Price"] >= 5) & (d["Dollar Volume"] >= 20_000_000)].copy()
+    if pool.empty:
+        st.warning("历史回放没有满足基础流动性条件的样本。")
         return
 
-    # 仅保留最基础的可交易性条件；不再用旧 MA/MACD/RSI/共振硬门槛。
-    pool = d[(d['Price'] >= 5) & (d['Dollar Volume'] >= 20_000_000)].copy()
-    buys = pool[pool['KD低位金叉20'].eq('是')].copy()
-    buys = _independent_signals(buys, 5, pool['Replay Date'])
+    dates_n = max(pool["Replay Date"].nunique(), 1)
 
-    g1 = pd.to_numeric(buys['1D Max Gain'], errors='coerce').dropna()
-    g3 = pd.to_numeric(buys['3D Max Gain'], errors='coerce').dropna()
-    g5 = pd.to_numeric(buys['5D Max Gain'], errors='coerce').dropna()
-    c5 = pd.to_numeric(buys['5D Close Return'], errors='coerce').dropna()
-    dd = pd.to_numeric(buys['5D Max Drawdown'], errors='coerce').dropna()
-    dates_n = max(pool['Replay Date'].nunique(), 1)
+    strategies = [
+        ("A 纯KD20金叉", "KD低位金叉20"),
+        ("B1 KD+RSI超卖回升", "KD+RSI超卖回升"),
+        ("B2 KD+RSI上穿30", "KD+RSI上穿30"),
+    ]
 
-    st.header('🎯 KD 20/80 历史验证')
-    st.caption('正式核心：当天 K、D 均≤20 且 K 上穿 D 才买；当天 K、D 均≥80 且 K 下穿 D 才卖。历史区只验证这一套新核心。')
+    rows = []
+    strategy_samples = {}
 
-    c1,c2,c3,c4,c5m,c6 = st.columns(6)
-    c1.metric('独立买入信号', int(len(buys)))
-    c2.metric('平均每天', f'{len(buys)/dates_n:.2f}')
-    c3.metric('1D ≥3%', f'{(g1>=.03).mean():.1%}' if len(g1) else '—')
-    c4.metric('3D ≥3%', f'{(g3>=.03).mean():.1%}' if len(g3) else '—')
-    c5m.metric('5D ≥5%', f'{(g5>=.05).mean():.1%}' if len(g5) else '—')
-    c6.metric('5D ≥8%', f'{(g5>=.08).mean():.1%}' if len(g5) else '—')
+    for label, signal_col in strategies:
+        x = pool[pool[signal_col].eq("是")].copy()
+        x = _independent_signals(x, 5, pool["Replay Date"])
+        strategy_samples[label] = x
 
-    s1,s2,s3,s4 = st.columns(4)
-    s1.metric('平均5D最大涨幅', f'{g5.mean():+.2%}' if len(g5) else '—')
-    s2.metric('中位数5D最大涨幅', f'{g5.median():+.2%}' if len(g5) else '—')
-    s3.metric('平均5D收盘收益', f'{c5.mean():+.2%}' if len(c5) else '—')
-    s4.metric('平均5D最大回撤', f'{dd.mean():+.2%}' if len(dd) else '—')
+        g1 = pd.to_numeric(x["1D Max Gain"], errors="coerce").dropna()
+        g3 = pd.to_numeric(x["3D Max Gain"], errors="coerce").dropna()
+        g5 = pd.to_numeric(x["5D Max Gain"], errors="coerce").dropna()
+        c5 = pd.to_numeric(x["5D Close Return"], errors="coerce").dropna()
+        dd = pd.to_numeric(x["5D Max Drawdown"], errors="coerce").dropna()
 
-    # 在回放日期内配对：低位金叉买入 -> 之后首个高位死叉卖出。
-    trades = []
-    z = pool.sort_values(['Ticker','Replay Date']).copy()
-    z['Replay Date'] = pd.to_datetime(z['Replay Date'])
-    for ticker, g in z.groupby('Ticker'):
-        g = g.sort_values('Replay Date').reset_index(drop=True)
-        in_pos = False
-        entry_date = entry_px = None
-        entry_i = None
-        for i, r in g.iterrows():
-            if (not in_pos) and r['KD低位金叉20'] == '是':
-                in_pos = True
-                entry_date = r['Replay Date']
-                entry_px = float(r['Price'])
-                entry_i = i
-            elif in_pos and r['KD高位死叉80'] == '是':
-                exit_px = float(r['Price'])
-                ret = exit_px / entry_px - 1 if entry_px and entry_px > 0 else np.nan
-                trades.append({
-                    '股票代码': ticker, '买入日期': entry_date, '买入价': entry_px,
-                    '卖出日期': r['Replay Date'], '卖出价': exit_px,
-                    '持有交易日': int(i-entry_i), '收益率': ret
-                })
-                in_pos = False
-                entry_date = entry_px = entry_i = None
+        rows.append({
+            "策略": label,
+            "独立信号": len(x),
+            "平均每天": len(x) / dates_n,
+            "1D≥3%": (g1 >= .03).mean() if len(g1) else np.nan,
+            "3D≥3%": (g3 >= .03).mean() if len(g3) else np.nan,
+            "5D≥3%": (g5 >= .03).mean() if len(g5) else np.nan,
+            "5D≥5%": (g5 >= .05).mean() if len(g5) else np.nan,
+            "5D≥8%": (g5 >= .08).mean() if len(g5) else np.nan,
+            "5D≥10%": (g5 >= .10).mean() if len(g5) else np.nan,
+            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
+            "中位数5D最大涨幅": g5.median() if len(g5) else np.nan,
+            "平均5D收盘收益": c5.mean() if len(c5) else np.nan,
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+        })
 
-    tdf = pd.DataFrame(trades)
-    if not tdf.empty:
-        rr = pd.to_numeric(tdf['收益率'], errors='coerce').dropna()
-        st.subheader('🔁 20买 → 80卖 完整闭环（仅统计回放窗口内已完成交易）')
-        q1,q2,q3,q4 = st.columns(4)
-        q1.metric('完成交易', len(rr))
-        q2.metric('胜率', f'{(rr>0).mean():.1%}' if len(rr) else '—')
-        q3.metric('平均每笔收益', f'{rr.mean():+.2%}' if len(rr) else '—')
-        q4.metric('中位数收益', f'{rr.median():+.2%}' if len(rr) else '—')
-        with st.expander('查看已完成交易明细', expanded=False):
-            st.dataframe(tdf.style.format({'买入价':'{:.2f}','卖出价':'{:.2f}','收益率':'{:+.2%}'}, na_rep='—'), hide_index=True, use_container_width=True)
-    else:
-        st.info('当前回放窗口内没有形成完整的“20低位金叉买入 → 80高位死叉卖出”闭环；可把回放天数加长后继续验证。')
+    cmp = pd.DataFrame(rows)
 
-    detail_cols = ['Replay Date','Ticker','KDJ_K','KDJ_D','KDJ_J','1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown']
-    detail = buys[[c for c in detail_cols if c in buys.columns]].sort_values('Replay Date', ascending=False)
-    with st.expander('查看 KD 低位金叉买入明细', expanded=False):
-        st.dataframe(detail.style.format({
-            'KDJ_K':'{:.1f}','KDJ_D':'{:.1f}','KDJ_J':'{:.1f}',
-            '1D Max Gain':'{:+.2%}','3D Max Gain':'{:+.2%}','5D Max Gain':'{:+.2%}',
-            '5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'
-        }, na_rep='—'), hide_index=True, use_container_width=True)
+    st.header("🧪 KD + RSI 超卖回升 A/B 测试")
+    st.caption(
+        "A = 当天 K、D≤20 且 K 上穿D；"
+        "B1 = A + 近3日曾 RSI≤30 且今天 RSI 上升；"
+        "B2 = A + 昨日 RSI≤30 且今天 RSI>30。"
+        "RSI 现在先作为研究确认层，不先决定最终买入。"
+    )
+
+    st.dataframe(
+        cmp.style.format({
+            "平均每天":"{:.2f}",
+            "1D≥3%":"{:.1%}","3D≥3%":"{:.1%}",
+            "5D≥3%":"{:.1%}","5D≥5%":"{:.1%}",
+            "5D≥8%":"{:.1%}","5D≥10%":"{:.1%}",
+            "平均5D最大涨幅":"{:+.2%}",
+            "中位数5D最大涨幅":"{:+.2%}",
+            "平均5D收盘收益":"{:+.2%}",
+            "平均5D最大回撤":"{:+.2%}",
+        }, na_rep="—"),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # 直接突出我们最关心的 5D 10% 爆发率，但不自动宣布赢家。
+    valid10 = cmp.dropna(subset=["5D≥10%"]).copy()
+    if not valid10.empty:
+        best = valid10.sort_values(["5D≥10%","独立信号"], ascending=[False,False]).iloc[0]
+        st.info(
+            f"当前样本中 5D≥10% 比例最高：{best['策略']}，"
+            f"{best['5D≥10%']:.1%}（独立信号 {int(best['独立信号'])} 个）。"
+            "样本过少时不要仅凭百分比定最终规则。"
+        )
+
+    # 三组明细，方便核对具体股票
+    with st.expander("查看三种策略的历史信号明细", expanded=False):
+        strategy_name = st.selectbox(
+            "选择策略",
+            [x[0] for x in strategies],
+            key="kd_rsi_detail_strategy"
+        )
+        x = strategy_samples.get(strategy_name, pd.DataFrame()).copy()
+        detail_cols = [
+            "Replay Date","Ticker","Price","KDJ_K","KDJ_D","KDJ_J",
+            "RSI14_新","RSI昨日",
+            "1D Max Gain","3D Max Gain","5D Max Gain",
+            "5D Close Return","5D Max Drawdown"
+        ]
+        if x.empty:
+            st.write("该策略在当前回放窗口没有独立信号。")
+        else:
+            detail = x[[c for c in detail_cols if c in x.columns]].sort_values(
+                "Replay Date", ascending=False
+            )
+            st.dataframe(
+                detail.style.format({
+                    "Price":"{:.2f}",
+                    "KDJ_K":"{:.1f}","KDJ_D":"{:.1f}","KDJ_J":"{:.1f}",
+                    "RSI14_新":"{:.1f}","RSI昨日":"{:.1f}",
+                    "1D Max Gain":"{:+.2%}","3D Max Gain":"{:+.2%}",
+                    "5D Max Gain":"{:+.2%}","5D Close Return":"{:+.2%}",
+                    "5D Max Drawdown":"{:+.2%}",
+                }, na_rep="—"),
+                hide_index=True,
+                use_container_width=True
+            )
+
+    # 卖出规则保持不变：严格 KD 80 高位死叉。
+    sells = pool[pool["KD高位死叉80"].eq("是")].copy()
+    st.caption(
+        f"卖出规则暂不变：当天 K、D≥80 且 K 下穿D。"
+        f"当前回放窗口共识别 {len(sells)} 个高位死叉记录。"
+    )
 
 
 def render_historical_a_replay(bt):
@@ -2924,8 +3020,8 @@ def render_historical_a_replay(bt):
     dates_n = bt['Replay Date'].nunique() if 'Replay Date' in bt.columns else 0
     csv = bt.to_csv(index=False).encode('utf-8-sig')
     st.download_button(
-        '💾 下载 KD 20/80 历史回放明细', csv,
-        file_name=f"KD_20_80_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
+        '💾 下载 KD+RSI A/B 历史回放明细', csv,
+        file_name=f"KD_RSI_AB_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
         mime='text/csv', use_container_width=True
     )
 
@@ -2933,7 +3029,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("CMS KD 20/80")
+    st.header("CMS KD + RSI")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -2944,13 +3040,13 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("正式核心：当天 K、D 均≤20 的金叉买入；当天 K、D 均≥80 的死叉卖出。")
+    st.success("基准A：KD20金叉；研究B1/B2：再加 RSI 超卖回升确认。卖出仍用KD80死叉。")
 
 st.info(
-    "股票池继续使用当前 S&P 500 + 原自选股；交易触发只看 KD 20/80，旧 MACD/RSI/共振不再决定候选资格。"
+    "当前不急着把RSI变成硬门槛：先同时保留 A纯KD、B1超卖回升、B2上穿30，直接比较未来1/3/5日表现。"
 )
 
-scan_clicked = st.button("🚀 运行 KD 20/80 盘后扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行 KD + RSI 盘后扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
@@ -3023,12 +3119,23 @@ if scan_clicked:
         & (all_df["KD低位金叉20"] == "是")
     ].copy()
 
+    # RSI 当前只做研究分层，不先把股票过滤掉。
+    # 排序顺序：B2确认 > B1回升 > A纯KD，然后再看KD位置和成交额。
+    signal_priority = {
+        "B2 KD+RSI上穿30": 0,
+        "B1 KD+RSI超卖回升": 1,
+        "A 纯KD20金叉": 2,
+    }
+    eligible["_信号排序"] = eligible.get("信号分组", "").map(signal_priority).fillna(9)
     eligible["_KD排序"] = pd.to_numeric(eligible.get("KD买入区值"), errors="coerce")
     eligible["_成交额排序"] = pd.to_numeric(eligible.get("Dollar Volume"), errors="coerce")
     eligible = eligible.sort_values(
-        ["_KD排序", "_成交额排序"],
-        ascending=[True, False],
-    ).drop(columns=["_KD排序", "_成交额排序"], errors="ignore").reset_index(drop=True)
+        ["_信号排序", "_KD排序", "_成交额排序"],
+        ascending=[True, True, False],
+    ).drop(
+        columns=["_信号排序", "_KD排序", "_成交额排序"],
+        errors="ignore"
+    ).reset_index(drop=True)
 
     eligible["Rank"] = eligible.index + 1
     # KD 信号有几只就显示几只，不强制凑数，也不因 top_n 截断。
@@ -3059,23 +3166,28 @@ def render_results(top_df, all_df):
                 st.dataframe(show.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
         return
 
-    st.success(f"✅ KD 20/80 扫描完成：{len(top_df)}只低位金叉买入候选")
-    st.caption('核心规则：K 上穿 D 且交叉位于20低位区 → 买；K 下穿 D 且交叉位于80高位区 → 卖。MACD、RSI和旧共振不再决定买卖。')
+    st.success(f"✅ 扫描完成：{len(top_df)}只 KD20 低位金叉候选，已标记 RSI 确认层")
+    st.caption('A=纯KD20低位金叉；B1=A+RSI超卖后回升；B2=A+RSI重新上穿30。先比较，不让RSI提前成为硬过滤。卖出仍为严格KD80高位死叉。')
 
     display_cols = [c for c in [
-        'Rank','Ticker','Company','Price','KD交易动作',
-        'KDJ_K','KDJ_D','KDJ_J','KD低位20','KD当日金叉','KD买入区值',
+        'Rank','Ticker','Company','Price','信号分组','KD交易动作',
+        'KDJ_K','KDJ_D','KDJ_J','RSI14_新','RSI昨日',
+        'RSI超卖回升','RSI上穿30',
+        'KD低位20','KD当日金叉','KD买入区值',
         'Dollar Volume','ATR14','5D Return','20D Return'
     ] if c in top_df.columns]
     rename = {
-        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格','KD交易动作':'动作',
-        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD低位20':'低位≤20','KD当日金叉':'今日金叉',
+        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格','信号分组':'信号类型','KD交易动作':'动作',
+        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','RSI14_新':'RSI14','RSI昨日':'昨日RSI',
+        'RSI超卖回升':'RSI超卖回升','RSI上穿30':'RSI上穿30',
+        'KD低位20':'低位≤20','KD当日金叉':'今日金叉',
         'KD买入区值':'交叉区值','Dollar Volume':'成交额','ATR14':'ATR14','5D Return':'5日涨跌幅','20D Return':'20日涨跌幅'
     }
     show = top_df[display_cols].rename(columns=rename)
-    st.subheader('🟢 KD 低位20金叉 — 买入候选')
+    st.subheader('🟢 KD20 金叉候选 — RSI确认层已标记')
     st.dataframe(show.style.format({
-        '当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}','交叉区值':'{:.1f}',
+        '当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
+        'RSI14':'{:.1f}','昨日RSI':'{:.1f}','交叉区值':'{:.1f}',
         '成交额':'{:,.0f}','ATR14':'{:.2f}','5日涨跌幅':'{:+.1%}','20日涨跌幅':'{:+.1%}'
     }, na_rep=''), hide_index=True, use_container_width=True)
 
@@ -3097,7 +3209,7 @@ else:
 st.divider()
 with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
     st.caption(
-        "这里仅用于验证 KD 20/80 核心，不参与每天正式盘后扫描。"
+        "这里用于比较 A纯KD、B1 KD+RSI超卖回升、B2 KD+RSI上穿30，不参与盘中执行。"
         "历史 Replay 暂使用 Yahoo 约2年日K；正式盘后扫描继续使用 Supabase 复权日线。"
     )
 
@@ -3108,7 +3220,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
         key="a6_final_replay_days"
     )
 
-    if st.button("运行历史验证：KD 20买 / 80卖", use_container_width=True):
+    if st.button("运行历史A/B：KD vs KD+RSI", use_container_width=True):
         try:
             p = st.progress(0)
             s = st.empty()
