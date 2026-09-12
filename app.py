@@ -914,32 +914,34 @@ def calc_a5_resonance(df, row=None):
     rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
 
     # ---------- CMS 新核心：KD 20/80 ----------
-    # 只用 K、D 的交叉和位置做交易触发，不再让 MACD / RSI / 量价 / RS 决定买卖。
+    # 只用 K、D 的交叉和当前位置做交易触发。
+    # MACD / RSI / 量价 / RS 不再决定买卖。
     #
-    # 严格低位金叉：
-    #   昨日 K <= 20 且 D <= 20，
-    #   今日 K 上穿 D，
-    #   才触发 BUY。
+    # BUY（真正的20低位金叉）：
+    #   1) 昨日 K <= D
+    #   2) 今日 K > D   -> 今日发生金叉
+    #   3) 今日 K <= 20 且今日 D <= 20
     #
-    # 高位死叉仍按原逻辑：
-    #   今日 K 下穿 D，且当前/前一交易日 K/D 至少一个 >= 80。
+    # SELL（真正的80高位死叉）：
+    #   1) 昨日 K >= D
+    #   2) 今日 K < D   -> 今日发生死叉
+    #   3) 今日 K >= 80 且今日 D >= 80
     kd_diff = k - d
     kd_cross_up_today = bool((kd_diff.iloc[-1] > 0) and (kd_diff.iloc[-2] <= 0))
     kd_cross_down_today = bool((kd_diff.iloc[-1] < 0) and (kd_diff.iloc[-2] >= 0))
 
-    # BUY 必须是真正从 20 以下低位区发生的交叉，避免 AMAT 这类已离开低位的股票误入。
-    kd_low_20 = bool((k1 <= 20) and (d1 <= 20))
-
-    # SELL 暂时保留较宽的 80 高位定义。
-    kd_high_80 = bool(max(k0, d0, k1, d1) >= 80)
+    # 位置判断只看“交叉当天”，不再回看昨天是否碰过20/80。
+    # 因此 AMAT 这类当前 K > 20 的股票不会再被算作20低位金叉。
+    kd_low_20 = bool((k0 <= 20) and (d0 <= 20))
+    kd_high_80 = bool((k0 >= 80) and (d0 >= 80))
 
     kd_buy = bool(kd_cross_up_today and kd_low_20)
     kd_sell = bool(kd_cross_down_today and kd_high_80)
     kd_action = "买" if kd_buy else ("卖" if kd_sell else "观察")
 
     # 仅用于排序/展示，不参与是否触发。
-    kd_buy_zone = max(k1, d1) if kd_buy else np.nan
-    kd_sell_zone = max(k0, d0) if kd_sell else np.nan
+    kd_buy_zone = max(k0, d0) if kd_buy else np.nan
+    kd_sell_zone = min(k0, d0) if kd_sell else np.nan
 
     # ---------- 量：Price / Volume ----------
     avg20v = safe_num(volume.rolling(20).mean().iloc[-1])
@@ -2848,7 +2850,7 @@ def render_kd_strategy_validation(bt):
     dates_n = max(pool['Replay Date'].nunique(), 1)
 
     st.header('🎯 KD 20/80 历史验证')
-    st.caption('正式核心：低位20金叉买入；高位80死叉卖出。历史区只验证这一套新核心。')
+    st.caption('正式核心：当天 K、D 均≤20 且 K 上穿 D 才买；当天 K、D 均≥80 且 K 下穿 D 才卖。历史区只验证这一套新核心。')
 
     c1,c2,c3,c4,c5m,c6 = st.columns(6)
     c1.metric('独立买入信号', int(len(buys)))
@@ -2942,7 +2944,7 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("正式核心已切换：KD低位20金叉买入，高位80死叉卖出。")
+    st.success("正式核心：当天 K、D 均≤20 的金叉买入；当天 K、D 均≥80 的死叉卖出。")
 
 st.info(
     "股票池继续使用当前 S&P 500 + 原自选股；交易触发只看 KD 20/80，旧 MACD/RSI/共振不再决定候选资格。"
