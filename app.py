@@ -17,9 +17,9 @@ except ImportError:
 # =========================================================
 # PAGE
 # =========================================================
-st.set_page_config(page_title="CMS Stock Screener A6 FINAL", page_icon="📈", layout="wide")
+st.set_page_config(page_title="CMS A6 FINAL — KDJ+RSI A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS Stock Screener A6 FINAL")
+st.title("📈 CMS A6 FINAL — KDJ+RSI A/B实验版")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -913,6 +913,50 @@ def calc_a5_resonance(df, row=None):
     # Positive RSI resonance requires RSI to be non-declining on the current bar.
     rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
 
+    # ---------- KDJ + RSI 独立实验（不改变正式 A6 决策） ----------
+    # 对应“20附近金叉买入”的原始思路：KDJ负责触发，RSI只确认动能回升。
+    # 允许 <=25 作为“20附近”的日线容差，避免必须精确触及20而漏掉信号。
+    kd_diff = k - d
+    kdj_cross_today = bool(
+        (kd_diff.iloc[-1] > 0) and (kd_diff.iloc[-2] <= 0)
+    )
+    kdj_low_recent = bool(
+        min(
+            safe_num(k.tail(3).min()),
+            safe_num(d.tail(3).min()),
+        ) <= 25
+    )
+    rsi_2ago = safe_num(rsi_series.iloc[-3])
+    rsi_turn_up = bool(
+        (30 <= rsi <= 65)
+        and (rsi > rsi_prev)
+        and (rsi > rsi_2ago)
+    )
+    kdj_rsi_buy = bool(kdj_cross_today and kdj_low_recent and rsi_turn_up)
+
+    # PRE-BUY只用于观察：K尚未上穿D，但低位回升、差距正在收窄、RSI同步回升。
+    kd_gap_now = safe_num(kd_diff.iloc[-1])
+    kd_gap_prev = safe_num(kd_diff.iloc[-2])
+    kdj_rsi_prebuy = bool(
+        (not kdj_rsi_buy)
+        and kdj_low_recent
+        and (k0 <= d0)
+        and (k0 > k1)
+        and (kd_gap_now > kd_gap_prev)
+        and rsi_turn_up
+    )
+    kdj_rsi_stage = (
+        "买入信号" if kdj_rsi_buy else
+        "提前关注" if kdj_rsi_prebuy else
+        "无信号"
+    )
+    kdj_rsi_score = int(
+        40 * kdj_cross_today
+        + 25 * kdj_low_recent
+        + 25 * rsi_turn_up
+        + 10 * (35 <= rsi <= 55)
+    )
+
     # ---------- 量：Price / Volume ----------
     avg20v = safe_num(volume.rolling(20).mean().iloc[-1])
     rvol = safe_num(volume.iloc[-1] / avg20v) if avg20v > 0 else np.nan
@@ -1157,6 +1201,12 @@ def calc_a5_resonance(df, row=None):
         "支撑测试次数_A52R": support_touches,
         "压力强度_A52R": resistance_strength,
         "KDJ_K": k0, "KDJ_D": d0, "KDJ_J": j0,
+        "KDJRSI决策": "买" if kdj_rsi_buy else "不买",
+        "KDJRSI阶段": kdj_rsi_stage,
+        "KDJRSI评分": kdj_rsi_score,
+        "KDJ当日金叉": "是" if kdj_cross_today else "否",
+        "KDJ低位近3日": "是" if kdj_low_recent else "否",
+        "RSI连续回升": "是" if rsi_turn_up else "否",
         "当日RVOL_A5": rvol,
     }
 
@@ -3081,6 +3131,161 @@ def render_3way_hardfilter_comparison(bt):
 
 
 
+def _independent_signals(x, cooldown_sessions=5, all_dates=None):
+    """Keep the first signal per ticker within each non-overlapping forward window."""
+    if x is None or x.empty:
+        return x.copy() if isinstance(x, pd.DataFrame) else pd.DataFrame()
+    out = x.copy()
+    source_dates = all_dates if all_dates is not None else out['Replay Date']
+    dates = sorted(pd.Series(source_dates).dropna().astype(str).unique())
+    date_order = {d: i for i, d in enumerate(dates)}
+    out['_date_order_ab'] = out['Replay Date'].astype(str).map(date_order)
+    out = out.sort_values(['Ticker', '_date_order_ab'])
+    keep = []
+    last_kept = {}
+    for idx, r in out.iterrows():
+        ticker = str(r['Ticker'])
+        pos = int(r['_date_order_ab'])
+        if ticker not in last_kept or pos - last_kept[ticker] >= int(cooldown_sessions):
+            keep.append(idx)
+            last_kept[ticker] = pos
+    return out.loc[keep].drop(columns=['_date_order_ab'], errors='ignore')
+
+
+def render_kdj_rsi_ab_test(bt):
+    """Same-date, no-look-ahead A/B: current resonance vs KDJ+RSI low-zone cross."""
+    if bt is None or bt.empty:
+        return
+
+    d = bt.copy()
+    req = [
+        'Replay Date', 'Ticker', 'Price', 'Dollar Volume', 'A5决策',
+        '共振数', '启动分', 'Replay Core Score 85',
+        'KDJRSI决策', 'KDJRSI阶段', 'KDJRSI评分',
+        'KDJ当日金叉', 'KDJ低位近3日', 'RSI连续回升',
+        'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
+        '1D Max Gain', '3D Max Gain', '5D Max Gain',
+        '5D Close Return', '5D Max Drawdown'
+    ]
+    missing = [c for c in req if c not in d.columns]
+    if missing:
+        st.warning(
+            'KDJ+RSI对照字段尚未生成，请重新运行历史验证。缺少：'
+            + '、'.join(missing)
+        )
+        return
+
+    numeric_cols = [
+        'Price', 'Dollar Volume', '共振数', '启动分', 'Replay Core Score 85',
+        'KDJRSI评分', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
+        '1D Max Gain', '3D Max Gain', '5D Max Gain',
+        '5D Close Return', '5D Max Drawdown'
+    ]
+    for c in numeric_cols:
+        d[c] = pd.to_numeric(d[c], errors='coerce')
+    d = d.dropna(subset=['Replay Date', 'Ticker', '5D Max Gain'])
+    if d.empty:
+        return
+
+    # Both methods start from the same minimal tradability pool.  Trend, MA20,
+    # MA50, MA200, structure, volume-price and RS are deliberately NOT gates
+    # for the KDJ+RSI experiment.
+    pool = d[(d['Price'] >= 5) & (d['Dollar Volume'] >= 20_000_000)].copy()
+
+    current = pool[pool['A5决策'].eq('买')].copy()
+    current = current.sort_values(
+        ['Replay Date', '共振数', '启动分', 'Replay Core Score 85'],
+        ascending=[True, False, False, False]
+    ).groupby('Replay Date', group_keys=False).head(10)
+
+    kdj_rsi = pool[pool['KDJRSI决策'].eq('买')].copy()
+    kdj_rsi = kdj_rsi.sort_values(
+        ['Replay Date', 'KDJRSI评分', 'RSI14'],
+        ascending=[True, False, True]
+    ).groupby('Replay Date', group_keys=False).head(10)
+
+    prebuy = pool[pool['KDJRSI阶段'].eq('提前关注')].copy()
+    prebuy = prebuy.sort_values(
+        ['Replay Date', 'KDJRSI评分', 'RSI14'],
+        ascending=[True, False, True]
+    ).groupby('Replay Date', group_keys=False).head(10)
+
+    # Five-session cooldown prevents the same ticker's overlapping forward
+    # windows from being counted as independent evidence.
+    replay_calendar = pool['Replay Date']
+    current_ind = _independent_signals(current, 5, replay_calendar)
+    kdj_rsi_ind = _independent_signals(kdj_rsi, 5, replay_calendar)
+    prebuy_ind = _independent_signals(prebuy, 5, replay_calendar)
+    dates_n = max(pool['Replay Date'].nunique(), 1)
+
+    def summary(x, label, raw_n):
+        g1 = pd.to_numeric(x['1D Max Gain'], errors='coerce').dropna()
+        g3 = pd.to_numeric(x['3D Max Gain'], errors='coerce').dropna()
+        g5 = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
+        c5 = pd.to_numeric(x['5D Close Return'], errors='coerce').dropna()
+        dd = pd.to_numeric(x['5D Max Drawdown'], errors='coerce').dropna()
+        return {
+            '方法': label,
+            '原始触发': int(raw_n),
+            '独立信号': len(g5),
+            '平均每天': len(g5) / dates_n,
+            '1D≥3%': (g1 >= .03).mean() if len(g1) else np.nan,
+            '3D≥3%': (g3 >= .03).mean() if len(g3) else np.nan,
+            '5D≥3%': (g5 >= .03).mean() if len(g5) else np.nan,
+            '5D≥5%': (g5 >= .05).mean() if len(g5) else np.nan,
+            '5D≥8%': (g5 >= .08).mean() if len(g5) else np.nan,
+            '平均5D最大涨幅': g5.mean() if len(g5) else np.nan,
+            '中位数5D最大涨幅': g5.median() if len(g5) else np.nan,
+            '平均5D收盘收益': c5.mean() if len(c5) else np.nan,
+            '平均5D最大回撤': dd.mean() if len(dd) else np.nan,
+            '弱股<2%': (g5 < .02).mean() if len(g5) else np.nan,
+        }
+
+    rows = [
+        summary(current_ind, '当前共振核心（不含外层硬筛）', len(current)),
+        summary(kdj_rsi_ind, 'KDJ+RSI：20附近金叉', len(kdj_rsi)),
+        summary(prebuy_ind, 'KDJ+RSI：提前关注', len(prebuy)),
+    ]
+    comp = pd.DataFrame(rows)
+
+    st.header('🧪 A/B：当前共振 vs KDJ+RSI低位金叉')
+    st.caption(
+        '同一股票池、同一回放日期、同一未来1/3/5日标签。'
+        'KDJ+RSI买入 = 最近3日K或D到过25以下 + 当日K上穿D + RSI14连续回升且处于30–65；'
+        '仅保留每只股票5个交易日内的第一个信号，避免重叠窗口重复计算。'
+        '本表只做研究，不改变正式A6候选。'
+    )
+    st.dataframe(
+        comp.style.format({
+            '平均每天':'{:.2f}', '1D≥3%':'{:.1%}', '3D≥3%':'{:.1%}',
+            '5D≥3%':'{:.1%}', '5D≥5%':'{:.1%}', '5D≥8%':'{:.1%}',
+            '平均5D最大涨幅':'{:+.2%}', '中位数5D最大涨幅':'{:+.2%}',
+            '平均5D收盘收益':'{:+.2%}', '平均5D最大回撤':'{:+.2%}',
+            '弱股<2%':'{:.1%}'
+        }, na_rep='—'),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    buy_detail = kdj_rsi_ind[[
+        'Replay Date', 'Ticker', 'KDJRSI阶段', 'KDJRSI评分',
+        'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
+        '1D Max Gain', '3D Max Gain', '5D Max Gain',
+        '5D Close Return', '5D Max Drawdown'
+    ]].sort_values(['Replay Date', 'KDJRSI评分'], ascending=[False, False])
+    with st.expander('查看KDJ+RSI独立买入信号明细', expanded=False):
+        st.dataframe(
+            buy_detail.style.format({
+                'KDJ_K':'{:.1f}', 'KDJ_D':'{:.1f}', 'KDJ_J':'{:.1f}',
+                'RSI14':'{:.1f}', '1D Max Gain':'{:+.2%}',
+                '3D Max Gain':'{:+.2%}', '5D Max Gain':'{:+.2%}',
+                '5D Close Return':'{:+.2%}', '5D Max Drawdown':'{:+.2%}'
+            }, na_rep='—'),
+            hide_index=True,
+            use_container_width=True
+        )
+
+
 def render_a4_a5_resonance_comparison(bt):
     """Same-window comparison: A4 vs current A5.2R vs A6 V2B (Volume mandatory)."""
     if bt is None or bt.empty:
@@ -3854,7 +4059,8 @@ def render_historical_a_replay(bt):
         return
 
     st.header('🎯 A6 FINAL — 历史验证')
-    st.caption('验证 V2B Core 及 Pivot / Room 优先级依据；这些历史结果不改变当天正式候选资格。')
+    st.caption('先比较当前共振与KDJ+RSI低位金叉，再保留原V2B及Pivot/Room研究；所有历史结果均不改变当天正式候选资格。')
+    render_kdj_rsi_ab_test(bt)
     render_a4_a5_resonance_comparison(bt)
     render_a6_v3_pivot_room_research(bt)
 
@@ -4165,7 +4371,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
         key="a6_final_replay_days"
     )
 
-    if st.button("运行 A6 FINAL 历史验证", use_container_width=True):
+    if st.button("运行60日：当前共振 vs KDJ+RSI", use_container_width=True):
         try:
             p = st.progress(0)
             s = st.empty()
