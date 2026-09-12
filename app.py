@@ -915,21 +915,30 @@ def calc_a5_resonance(df, row=None):
 
     # ---------- CMS 新核心：KD 20/80 ----------
     # 只用 K、D 的交叉和位置做交易触发，不再让 MACD / RSI / 量价 / RS 决定买卖。
-    # 买：K 今日上穿 D，且交叉发生在低位区（当前或前一交易日 K/D 至少一个 <= 20）。
-    # 卖：K 今日下穿 D，且交叉发生在高位区（当前或前一交易日 K/D 至少一个 >= 80）。
+    #
+    # 严格低位金叉：
+    #   昨日 K <= 20 且 D <= 20，
+    #   今日 K 上穿 D，
+    #   才触发 BUY。
+    #
+    # 高位死叉仍按原逻辑：
+    #   今日 K 下穿 D，且当前/前一交易日 K/D 至少一个 >= 80。
     kd_diff = k - d
     kd_cross_up_today = bool((kd_diff.iloc[-1] > 0) and (kd_diff.iloc[-2] <= 0))
     kd_cross_down_today = bool((kd_diff.iloc[-1] < 0) and (kd_diff.iloc[-2] >= 0))
 
-    kd_low_20 = bool(min(k0, d0, k1, d1) <= 20)
+    # BUY 必须是真正从 20 以下低位区发生的交叉，避免 AMAT 这类已离开低位的股票误入。
+    kd_low_20 = bool((k1 <= 20) and (d1 <= 20))
+
+    # SELL 暂时保留较宽的 80 高位定义。
     kd_high_80 = bool(max(k0, d0, k1, d1) >= 80)
 
     kd_buy = bool(kd_cross_up_today and kd_low_20)
     kd_sell = bool(kd_cross_down_today and kd_high_80)
     kd_action = "买" if kd_buy else ("卖" if kd_sell else "观察")
 
-    # 仅用于排序/展示：越接近低位20的金叉优先，不参与是否触发。
-    kd_buy_zone = min(k0, d0) if kd_buy else np.nan
+    # 仅用于排序/展示，不参与是否触发。
+    kd_buy_zone = max(k1, d1) if kd_buy else np.nan
     kd_sell_zone = max(k0, d0) if kd_sell else np.nan
 
     # ---------- 量：Price / Volume ----------
