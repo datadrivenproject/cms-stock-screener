@@ -17,9 +17,9 @@ except ImportError:
 # =========================================================
 # PAGE
 # =========================================================
-st.set_page_config(page_title="CMS A6 FINAL — KDJ+RSI A/B", page_icon="📈", layout="wide")
+st.set_page_config(page_title="CMS KD 20/80 — Core", page_icon="📈", layout="wide")
 
-st.title("📈 CMS A6 FINAL — KDJ+RSI A/B实验版")
+st.title("📈 CMS KD 20/80 — 低位金叉 / 高位死叉")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -851,7 +851,7 @@ def score_trend_momentum(df):
 
 
 # =========================================================
-# A5 — LAUNCH RESONANCE (TEST ONLY; A/B vs formal A4)
+# Legacy indicator calculations retained for reference; NOT part of KD 20/80 trade decision
 # One indicator = one column. Final decision is only 买 / 不买.
 # =========================================================
 def calc_a5_resonance(df, row=None):
@@ -913,49 +913,24 @@ def calc_a5_resonance(df, row=None):
     # Positive RSI resonance requires RSI to be non-declining on the current bar.
     rsi_ok = bool((50 <= rsi <= 72) and (rsi >= rsi_prev))
 
-    # ---------- KDJ + RSI 独立实验（不改变正式 A6 决策） ----------
-    # 对应“20附近金叉买入”的原始思路：KDJ负责触发，RSI只确认动能回升。
-    # 允许 <=25 作为“20附近”的日线容差，避免必须精确触及20而漏掉信号。
+    # ---------- CMS 新核心：KD 20/80 ----------
+    # 只用 K、D 的交叉和位置做交易触发，不再让 MACD / RSI / 量价 / RS 决定买卖。
+    # 买：K 今日上穿 D，且交叉发生在低位区（当前或前一交易日 K/D 至少一个 <= 20）。
+    # 卖：K 今日下穿 D，且交叉发生在高位区（当前或前一交易日 K/D 至少一个 >= 80）。
     kd_diff = k - d
-    kdj_cross_today = bool(
-        (kd_diff.iloc[-1] > 0) and (kd_diff.iloc[-2] <= 0)
-    )
-    kdj_low_recent = bool(
-        min(
-            safe_num(k.tail(3).min()),
-            safe_num(d.tail(3).min()),
-        ) <= 25
-    )
-    rsi_2ago = safe_num(rsi_series.iloc[-3])
-    rsi_turn_up = bool(
-        (30 <= rsi <= 65)
-        and (rsi > rsi_prev)
-        and (rsi > rsi_2ago)
-    )
-    kdj_rsi_buy = bool(kdj_cross_today and kdj_low_recent and rsi_turn_up)
+    kd_cross_up_today = bool((kd_diff.iloc[-1] > 0) and (kd_diff.iloc[-2] <= 0))
+    kd_cross_down_today = bool((kd_diff.iloc[-1] < 0) and (kd_diff.iloc[-2] >= 0))
 
-    # PRE-BUY只用于观察：K尚未上穿D，但低位回升、差距正在收窄、RSI同步回升。
-    kd_gap_now = safe_num(kd_diff.iloc[-1])
-    kd_gap_prev = safe_num(kd_diff.iloc[-2])
-    kdj_rsi_prebuy = bool(
-        (not kdj_rsi_buy)
-        and kdj_low_recent
-        and (k0 <= d0)
-        and (k0 > k1)
-        and (kd_gap_now > kd_gap_prev)
-        and rsi_turn_up
-    )
-    kdj_rsi_stage = (
-        "买入信号" if kdj_rsi_buy else
-        "提前关注" if kdj_rsi_prebuy else
-        "无信号"
-    )
-    kdj_rsi_score = int(
-        40 * kdj_cross_today
-        + 25 * kdj_low_recent
-        + 25 * rsi_turn_up
-        + 10 * (35 <= rsi <= 55)
-    )
+    kd_low_20 = bool(min(k0, d0, k1, d1) <= 20)
+    kd_high_80 = bool(max(k0, d0, k1, d1) >= 80)
+
+    kd_buy = bool(kd_cross_up_today and kd_low_20)
+    kd_sell = bool(kd_cross_down_today and kd_high_80)
+    kd_action = "买" if kd_buy else ("卖" if kd_sell else "观察")
+
+    # 仅用于排序/展示：越接近低位20的金叉优先，不参与是否触发。
+    kd_buy_zone = min(k0, d0) if kd_buy else np.nan
+    kd_sell_zone = max(k0, d0) if kd_sell else np.nan
 
     # ---------- 量：Price / Volume ----------
     avg20v = safe_num(volume.rolling(20).mean().iloc[-1])
@@ -1051,7 +1026,7 @@ def calc_a5_resonance(df, row=None):
     core_flags = [macd_ok, kdj_ok, rsi_ok, pv_ok, rs_ok]
     resonance_n = int(sum(core_flags))
 
-    # A6 FINAL / Startup Transition V2
+    # Legacy startup diagnostics retained for reference only
     # Goal: identify the transition from accumulation/base -> ignition,
     # rather than simply requiring every indicator to be rising today.
     #
@@ -1149,15 +1124,10 @@ def calc_a5_resonance(df, row=None):
     fresh_trigger = bool(fresh_trigger_count >= 2)
     location_context = bool(base_compression or pivot_early)
 
-    base_buy = bool(
-        resonance_n >= 4
-        and macd_ok
-        and pv_ok
-        and fresh_trigger
-        and location_context
-        and startup_score >= 5
-    )
-    decision = "买" if base_buy else "不买"
+    # 正式交易决定已经切换为 KD 20/80。
+    # 为兼容现有下游表格，A5决策继续保留字段名，但内容只由 KD 买入信号决定。
+    base_buy = kd_buy
+    decision = "买" if kd_buy else "不买"
 
     if pressure_too_close:
         position_reason = "压力过近"
@@ -1201,12 +1171,15 @@ def calc_a5_resonance(df, row=None):
         "支撑测试次数_A52R": support_touches,
         "压力强度_A52R": resistance_strength,
         "KDJ_K": k0, "KDJ_D": d0, "KDJ_J": j0,
-        "KDJRSI决策": "买" if kdj_rsi_buy else "不买",
-        "KDJRSI阶段": kdj_rsi_stage,
-        "KDJRSI评分": kdj_rsi_score,
-        "KDJ当日金叉": "是" if kdj_cross_today else "否",
-        "KDJ低位近3日": "是" if kdj_low_recent else "否",
-        "RSI连续回升": "是" if rsi_turn_up else "否",
+        "KD交易动作": kd_action,
+        "KD低位金叉20": "是" if kd_buy else "否",
+        "KD高位死叉80": "是" if kd_sell else "否",
+        "KD当日金叉": "是" if kd_cross_up_today else "否",
+        "KD当日死叉": "是" if kd_cross_down_today else "否",
+        "KD低位20": "是" if kd_low_20 else "否",
+        "KD高位80": "是" if kd_high_80 else "否",
+        "KD买入区值": kd_buy_zone,
+        "KD卖出区值": kd_sell_zone,
         "当日RVOL_A5": rvol,
     }
 
@@ -2719,41 +2692,6 @@ def _future_5d_labels(full_df, asof_date, base_close):
 
 
 
-def _historical_hard_filter_variant(r, relax_ma20=False, relax_ma200=False):
-    """Historical A/B test only. LIVE passes_v43a_hard_filter() is NOT changed."""
-    if r is None:
-        return False
-    try:
-        if r["Price"] < 5:
-            return False
-        if r["Dollar Volume"] < 20_000_000:
-            return False
-        if (not relax_ma20) and r["Price"] < r["MA20"] * 0.99:
-            return False
-        if r["Price"] < r["MA50"] * 0.97:
-            return False
-        if (not relax_ma200) and r["Price"] < r["MA200"] * 0.95:
-            return False
-        if pd.isna(r["MA20 Slope 5D"]) or r["MA20 Slope 5D"] < 0.002:
-            return False
-        if r["Structure Score"] < 8:
-            return False
-        return True
-    except Exception:
-        return False
-
-
-def _assign_variant_rank(day, rank_cols, ok_col, rank_col):
-    eligible = day[day[ok_col]].copy()
-    eligible = eligible.sort_values(
-        rank_cols, ascending=[True, False, False, False, False]
-    ).reset_index(drop=True)
-    eligible[rank_col] = eligible.index + 1
-    rank_map = dict(zip(eligible["Ticker"], eligible[rank_col]))
-    day[rank_col] = day["Ticker"].map(rank_map)
-    return day
-
-
 def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     """Replay the historical A core across the entire current universe.
 
@@ -2820,33 +2758,6 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         day = day.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
         day['Replay Universe Rank'] = day.index + 1
 
-        # ---------------------------------------------------------
-        # SAME-DATE 3-WAY HARD FILTER TEST
-        # Control: original A3
-        # MA200-only: relax MA200 only
-        # Combined: relax MA20 + MA200
-        # LIVE A logic is NOT changed.
-        # ---------------------------------------------------------
-        day['HF Control'] = day.apply(
-            lambda r: _historical_hard_filter_variant(r, False, False), axis=1
-        )
-        day['HF MA200-only'] = day.apply(
-            lambda r: _historical_hard_filter_variant(r, False, True), axis=1
-        )
-        day['HF Combined'] = day.apply(
-            lambda r: _historical_hard_filter_variant(r, True, True), axis=1
-        )
-
-        day = _assign_variant_rank(day, rank_cols, 'HF Control', 'Rank Control')
-        day = _assign_variant_rank(day, rank_cols, 'HF MA200-only', 'Rank MA200-only')
-        day = _assign_variant_rank(day, rank_cols, 'HF Combined', 'Rank Combined')
-
-        # Backward-compatible aliases: existing diagnostic tables continue to show Control A3.
-        day['Replay Eligible Rank'] = day['Rank Control']
-        day['Replay Top10'] = day['Rank Control'].apply(
-            lambda x: bool(pd.notna(x) and float(x) <= 10)
-        )
-
         # Add future labels only AFTER ranking.
         for _, r in day.iterrows():
             rec = dict(r)
@@ -2867,266 +2778,6 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     if status_box is not None:
         status_box.empty()
     return out
-
-
-
-
-def hard_filter_rule_failures(r):
-    """Return every failed hard-filter rule, not just the first one. Diagnostic only."""
-    fails = []
-    try:
-        if pd.isna(r.get('Price')) or r.get('Price', 0) < 5:
-            fails.append('股价低于$5')
-        if pd.isna(r.get('Dollar Volume')) or r.get('Dollar Volume', 0) < 20_000_000:
-            fails.append('流动性不足')
-        if pd.isna(r.get('MA20')) or r.get('Price', np.nan) < r.get('MA20', np.nan) * 0.99:
-            fails.append('价格明显低于MA20')
-        if pd.isna(r.get('MA50')) or r.get('Price', np.nan) < r.get('MA50', np.nan) * 0.97:
-            fails.append('价格明显低于MA50')
-        if pd.isna(r.get('MA200')) or r.get('Price', np.nan) < r.get('MA200', np.nan) * 0.95:
-            fails.append('价格明显低于MA200')
-        if pd.isna(r.get('MA20 Slope 5D')) or r.get('MA20 Slope 5D', np.nan) < 0.002:
-            fails.append('MA20斜率不足0.2%')
-        if pd.isna(r.get('Structure Score')) or r.get('Structure Score', 0) < 8:
-            fails.append('市场结构不足')
-    except Exception:
-        return ['数据不足']
-    return fails
-
-
-def add_hard_filter_diagnostic_columns(bt):
-    if bt is None or bt.empty:
-        return bt
-    x = bt.copy()
-    all_fails = x.apply(lambda r: hard_filter_rule_failures(r), axis=1)
-    x['Hard Filter All Failures'] = all_fails.apply(lambda z: '；'.join(z) if z else '通过')
-    x['Hard Filter Failure Count'] = all_fails.apply(len)
-    return x
-
-
-def render_hard_filter_diagnostics(d):
-    st.subheader('🧪 Hard Filter 漏杀诊断')
-    st.caption('只做历史诊断，不改变 LIVE A。每只股票可能同时违反多条规则，所以“失败规则次数”允许重复计数。')
-    x = add_hard_filter_diagnostic_columns(d)
-    rejected = x[x['Hard Filter'] != '通过'].copy()
-    if rejected.empty:
-        st.info('历史回放中没有被 Hard Filter 淘汰的样本。')
-        return
-
-    rules = ['股价低于$5','流动性不足','价格明显低于MA20','价格明显低于MA50','价格明显低于MA200','MA20斜率不足0.2%','市场结构不足']
-    rows=[]
-    strong5 = x['5D Max Gain'] >= .05
-    strong8 = x['5D Max Gain'] >= .08
-    weak = x['5D Max Gain'] < .02
-    total_rej5 = int(((x['Hard Filter']!='通过') & strong5).sum())
-    total_rej8 = int(((x['Hard Filter']!='通过') & strong8).sum())
-    for rule in rules:
-        failed = x['Hard Filter All Failures'].str.contains(rule, regex=False, na=False)
-        n_all = int(failed.sum())
-        n5 = int((failed & strong5).sum())
-        n8 = int((failed & strong8).sum())
-        nw = int((failed & weak).sum())
-        rows.append({
-            'Hard Filter规则':rule,
-            '失败样本':n_all,
-            '其中5日≥5%':n5,
-            '占全部被漏≥5%强股': n5/total_rej5 if total_rej5 else np.nan,
-            '其中5日≥8%':n8,
-            '占全部被漏≥8%强股': n8/total_rej8 if total_rej8 else np.nan,
-            '其中弱股<2%':nw,
-            '强股/弱股比': n5/nw if nw else np.nan,
-        })
-    diag=pd.DataFrame(rows).sort_values(['其中5日≥5%','其中5日≥8%'],ascending=False)
-    st.dataframe(diag.style.format({'占全部被漏≥5%强股':'{:.1%}','占全部被漏≥8%强股':'{:.1%}','强股/弱股比':'{:.2f}'},na_rep=''),hide_index=True,use_container_width=True)
-
-    st.markdown('**如果只放宽一条规则：理论上能救回多少强股，同时会放进多少弱股**')
-    # A sample is rescued by relaxing one rule only if it fails exactly that one rule.
-    relax_rows=[]
-    for rule in rules:
-        only = (x['Hard Filter Failure Count']==1) & x['Hard Filter All Failures'].eq(rule)
-        n= int(only.sum()); n5=int((only & strong5).sum()); n8=int((only & strong8).sum()); nw=int((only & weak).sum())
-        relax_rows.append({
-            '单独放宽规则':rule,'新增进入样本':n,'救回≥5%强股':n5,'救回≥8%强股':n8,'同时放入弱股<2%':nw,
-            '≥5%强股占新增': n5/n if n else np.nan,
-            '救回强股/弱股': n5/nw if nw else np.nan,
-        })
-    relax=pd.DataFrame(relax_rows).sort_values(['救回≥5%强股','救回≥8%强股'],ascending=False)
-    st.dataframe(relax.style.format({'≥5%强股占新增':'{:.1%}','救回强股/弱股':'{:.2f}'},na_rep=''),hide_index=True,use_container_width=True)
-
-    st.markdown('**被 Hard Filter 淘汰但后来 5日≥8% 的代表性强股**')
-    examples=x[(x['Hard Filter']!='通过') & (x['5D Max Gain']>=.08)].copy().sort_values('5D Max Gain',ascending=False)
-    cols=['Replay Date','Ticker','Replay Universe Rank','Hard Filter All Failures','Replay Core Score 85','Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score','MA20 Slope 5D','5D Max Gain','5D Close Return','5D Max Drawdown']
-    ex=examples[[c for c in cols if c in examples.columns]].head(100)
-    st.dataframe(ex.style.format({'MA20 Slope 5D':'{:.2%}','5D Max Gain':'{:+.2%}','5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'},na_rep=''),hide_index=True,use_container_width=True)
-
-
-
-def render_3way_hardfilter_comparison(bt):
-    """Direct same-window comparison of A3 Control vs MA200-only vs Combined.
-
-    Robust to Streamlit hot-reload/session_state: if the cached replay was created by
-    the previous app version and does not yet contain the new comparison columns,
-    rebuild those columns directly from the cached historical rows instead of crashing.
-    """
-    if bt is None or bt.empty:
-        return
-
-    d = bt.copy()
-
-    required_variant_cols = [
-        'HF Control', 'HF MA200-only', 'HF Combined',
-        'Rank Control', 'Rank MA200-only', 'Rank Combined'
-    ]
-    if not all(c in d.columns for c in required_variant_cols):
-        # Rebuild the three Hard Filter variants from already-computed historical features.
-        d['HF Control'] = d.apply(
-            lambda r: _historical_hard_filter_variant(r, False, False), axis=1
-        )
-        d['HF MA200-only'] = d.apply(
-            lambda r: _historical_hard_filter_variant(r, False, True), axis=1
-        )
-        d['HF Combined'] = d.apply(
-            lambda r: _historical_hard_filter_variant(r, True, True), axis=1
-        )
-
-        qorder = {'✅ 通过':0, '⚠️ 观察':1, '❌ 不适合Early':2}
-        d['_cmp_q'] = d.get('质量检查', pd.Series(index=d.index, dtype=object)).map(qorder).fillna(9)
-
-        def _rank_one_group(g, ok_col, rank_col):
-            gg = g[g[ok_col]].copy()
-            gg = gg.sort_values(
-                ['_cmp_q','Replay Core Score 85','Structure Score','Leadership Score','Accumulation Score'],
-                ascending=[True,False,False,False,False]
-            )
-            rank_map = {idx: i+1 for i, idx in enumerate(gg.index)}
-            return pd.Series([rank_map.get(idx, np.nan) for idx in g.index], index=g.index)
-
-        for ok_col, rank_col in [
-            ('HF Control','Rank Control'),
-            ('HF MA200-only','Rank MA200-only'),
-            ('HF Combined','Rank Combined')
-        ]:
-            d[rank_col] = np.nan
-            for _, idxs in d.groupby('Replay Date').groups.items():
-                g = d.loc[idxs]
-                ranks = _rank_one_group(g, ok_col, rank_col)
-                d.loc[ranks.index, rank_col] = ranks.values
-
-        d = d.drop(columns=['_cmp_q'], errors='ignore')
-        st.info('检测到旧版缓存的历史回测结果，已自动重建三版本排名；无需重新等待60日数据。')
-
-    d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
-    d = d.dropna(subset=['5D Max Gain'])
-    if d.empty:
-        return
-
-    versions = [
-        ('A3 Control', 'HF Control', 'Rank Control'),
-        ('MA200-only', 'HF MA200-only', 'Rank MA200-only'),
-        ('MA20+MA200', 'HF Combined', 'Rank Combined'),
-    ]
-
-    st.header('🧪 60日同窗口三版本 A/B/C 对照')
-    st.caption(
-        '同一批历史日期、同一股票池、同一排名逻辑，只改变 Hard Filter。'
-        'LIVE A 当前正式采用 MA200-only；本表保留 A3 / MA200-only / MA20+MA200 的历史对照。'
-    )
-
-    strong_all = d[d['5D Max Gain'] >= .05].copy()
-    rows = []
-    for label, hf_col, rank_col in versions:
-        top10 = d[pd.to_numeric(d[rank_col], errors='coerce') <= 10].copy()
-        gg = pd.to_numeric(top10['5D Max Gain'], errors='coerce').dropna()
-        hf_pass = float(d[hf_col].mean()) if hf_col in d.columns else np.nan
-        strong_hf_capture = (
-            float(strong_all[hf_col].mean())
-            if (not strong_all.empty and hf_col in strong_all.columns) else np.nan
-        )
-        strong_top20 = (
-            float((pd.to_numeric(strong_all[rank_col], errors='coerce') <= 20).fillna(False).mean())
-            if not strong_all.empty else np.nan
-        )
-        strong_top10 = (
-            float((pd.to_numeric(strong_all[rank_col], errors='coerce') <= 10).fillna(False).mean())
-            if not strong_all.empty else np.nan
-        )
-
-        rows.append({
-            '版本': label,
-            'Top10样本': len(gg),
-            'Top10 ≥3%': (gg >= .03).mean() if len(gg) else np.nan,
-            'Top10 ≥5%': (gg >= .05).mean() if len(gg) else np.nan,
-            'Top10 ≥8%': (gg >= .08).mean() if len(gg) else np.nan,
-            'Top10平均5日最大涨幅': gg.mean() if len(gg) else np.nan,
-            'Top10中位数5日最大涨幅': gg.median() if len(gg) else np.nan,
-            'Hard Filter通过率': hf_pass,
-            '≥5%强股通过HF': strong_hf_capture,
-            '≥5%强股进入Top20': strong_top20,
-            '≥5%强股进入Top10': strong_top10,
-        })
-
-    comp = pd.DataFrame(rows)
-
-    # Identify the best variant by the main strong-stock metrics.
-    score_cols = ['Top10 ≥5%', 'Top10 ≥8%', 'Top10平均5日最大涨幅']
-    comp['_wins'] = 0
-    for c in score_cols:
-        if comp[c].notna().any():
-            best = comp[c].max()
-            comp.loc[comp[c] == best, '_wins'] += 1
-    best_row = comp.sort_values(
-        ['_wins','Top10 ≥8%','Top10 ≥5%','Top10平均5日最大涨幅'],
-        ascending=[False,False,False,False]
-    ).iloc[0]
-
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric('回放交易日', int(d['Replay Date'].nunique()))
-    c2.metric('股票-日期样本', len(d))
-    c3.metric('当前领先版本', str(best_row['版本']))
-    c4.metric('领先版 Top10 ≥5%', f"{best_row['Top10 ≥5%']:.1%}")
-
-    show = comp.drop(columns=['_wins'])
-    st.dataframe(
-        show.style.format({
-            'Top10 ≥3%':'{:.1%}',
-            'Top10 ≥5%':'{:.1%}',
-            'Top10 ≥8%':'{:.1%}',
-            'Top10平均5日最大涨幅':'{:+.2%}',
-            'Top10中位数5日最大涨幅':'{:+.2%}',
-            'Hard Filter通过率':'{:.1%}',
-            '≥5%强股通过HF':'{:.1%}',
-            '≥5%强股进入Top20':'{:.1%}',
-            '≥5%强股进入Top10':'{:.1%}',
-        }, na_rep=''),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    # Direct deltas vs Control make the decision easier.
-    control = comp[comp['版本']=='A3 Control'].iloc[0]
-    delta_rows = []
-    for _, r in comp[comp['版本']!='A3 Control'].iterrows():
-        delta_rows.append({
-            '测试版本': r['版本'],
-            'Δ Top10 ≥3%': r['Top10 ≥3%'] - control['Top10 ≥3%'],
-            'Δ Top10 ≥5%': r['Top10 ≥5%'] - control['Top10 ≥5%'],
-            'Δ Top10 ≥8%': r['Top10 ≥8%'] - control['Top10 ≥8%'],
-            'Δ 平均最大涨幅': r['Top10平均5日最大涨幅'] - control['Top10平均5日最大涨幅'],
-            'Δ 强股进入Top10': r['≥5%强股进入Top10'] - control['≥5%强股进入Top10'],
-        })
-    st.markdown('**相对原 A3 的净变化**')
-    delta = pd.DataFrame(delta_rows)
-    st.dataframe(
-        delta.style.format({
-            'Δ Top10 ≥3%':'{:+.1%}',
-            'Δ Top10 ≥5%':'{:+.1%}',
-            'Δ Top10 ≥8%':'{:+.1%}',
-            'Δ 平均最大涨幅':'{:+.2%}',
-            'Δ 强股进入Top10':'{:+.1%}',
-        }, na_rep=''),
-        hide_index=True,
-        use_container_width=True
-    )
 
 
 
@@ -3152,946 +2803,126 @@ def _independent_signals(x, cooldown_sessions=5, all_dates=None):
     return out.loc[keep].drop(columns=['_date_order_ab'], errors='ignore')
 
 
-def render_kdj_rsi_ab_test(bt):
-    """Same-date, no-look-ahead A/B: current resonance vs KDJ+RSI low-zone cross."""
+def render_kd_strategy_validation(bt):
+    """Validate the new KD 20/80 core without comparing it with retired strategies."""
     if bt is None or bt.empty:
+        st.warning('历史回放没有得到有效样本。')
         return
 
     d = bt.copy()
     req = [
-        'Replay Date', 'Ticker', 'Price', 'Dollar Volume', 'A5决策',
-        '共振数', '启动分', 'Replay Core Score 85',
-        'KDJRSI决策', 'KDJRSI阶段', 'KDJRSI评分',
-        'KDJ当日金叉', 'KDJ低位近3日', 'RSI连续回升',
-        'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
-        '1D Max Gain', '3D Max Gain', '5D Max Gain',
-        '5D Close Return', '5D Max Drawdown'
+        'Replay Date','Ticker','Price','Dollar Volume',
+        'KD低位金叉20','KD高位死叉80','KDJ_K','KDJ_D','KDJ_J',
+        '1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown'
     ]
     missing = [c for c in req if c not in d.columns]
     if missing:
-        st.warning(
-            'KDJ+RSI对照字段尚未生成，请重新运行历史验证。缺少：'
-            + '、'.join(missing)
-        )
+        st.warning('KD 20/80 回测字段不完整，请重新运行历史验证。缺少：' + '、'.join(missing))
         return
 
-    numeric_cols = [
-        'Price', 'Dollar Volume', '共振数', '启动分', 'Replay Core Score 85',
-        'KDJRSI评分', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
-        '1D Max Gain', '3D Max Gain', '5D Max Gain',
-        '5D Close Return', '5D Max Drawdown'
-    ]
-    for c in numeric_cols:
+    for c in ['Price','Dollar Volume','KDJ_K','KDJ_D','KDJ_J','1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown']:
         d[c] = pd.to_numeric(d[c], errors='coerce')
-    d = d.dropna(subset=['Replay Date', 'Ticker', '5D Max Gain'])
+    d = d.dropna(subset=['Replay Date','Ticker','Price'])
     if d.empty:
         return
 
-    # Both methods start from the same minimal tradability pool.  Trend, MA20,
-    # MA50, MA200, structure, volume-price and RS are deliberately NOT gates
-    # for the KDJ+RSI experiment.
+    # 仅保留最基础的可交易性条件；不再用旧 MA/MACD/RSI/共振硬门槛。
     pool = d[(d['Price'] >= 5) & (d['Dollar Volume'] >= 20_000_000)].copy()
+    buys = pool[pool['KD低位金叉20'].eq('是')].copy()
+    buys = _independent_signals(buys, 5, pool['Replay Date'])
 
-    current = pool[pool['A5决策'].eq('买')].copy()
-    current = current.sort_values(
-        ['Replay Date', '共振数', '启动分', 'Replay Core Score 85'],
-        ascending=[True, False, False, False]
-    ).groupby('Replay Date', group_keys=False).head(10)
-
-    kdj_rsi = pool[pool['KDJRSI决策'].eq('买')].copy()
-    kdj_rsi = kdj_rsi.sort_values(
-        ['Replay Date', 'KDJRSI评分', 'RSI14'],
-        ascending=[True, False, True]
-    ).groupby('Replay Date', group_keys=False).head(10)
-
-    prebuy = pool[pool['KDJRSI阶段'].eq('提前关注')].copy()
-    prebuy = prebuy.sort_values(
-        ['Replay Date', 'KDJRSI评分', 'RSI14'],
-        ascending=[True, False, True]
-    ).groupby('Replay Date', group_keys=False).head(10)
-
-    # Five-session cooldown prevents the same ticker's overlapping forward
-    # windows from being counted as independent evidence.
-    replay_calendar = pool['Replay Date']
-    current_ind = _independent_signals(current, 5, replay_calendar)
-    kdj_rsi_ind = _independent_signals(kdj_rsi, 5, replay_calendar)
-    prebuy_ind = _independent_signals(prebuy, 5, replay_calendar)
+    g1 = pd.to_numeric(buys['1D Max Gain'], errors='coerce').dropna()
+    g3 = pd.to_numeric(buys['3D Max Gain'], errors='coerce').dropna()
+    g5 = pd.to_numeric(buys['5D Max Gain'], errors='coerce').dropna()
+    c5 = pd.to_numeric(buys['5D Close Return'], errors='coerce').dropna()
+    dd = pd.to_numeric(buys['5D Max Drawdown'], errors='coerce').dropna()
     dates_n = max(pool['Replay Date'].nunique(), 1)
 
-    def summary(x, label, raw_n):
-        g1 = pd.to_numeric(x['1D Max Gain'], errors='coerce').dropna()
-        g3 = pd.to_numeric(x['3D Max Gain'], errors='coerce').dropna()
-        g5 = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
-        c5 = pd.to_numeric(x['5D Close Return'], errors='coerce').dropna()
-        dd = pd.to_numeric(x['5D Max Drawdown'], errors='coerce').dropna()
-        return {
-            '方法': label,
-            '原始触发': int(raw_n),
-            '独立信号': len(g5),
-            '平均每天': len(g5) / dates_n,
-            '1D≥3%': (g1 >= .03).mean() if len(g1) else np.nan,
-            '3D≥3%': (g3 >= .03).mean() if len(g3) else np.nan,
-            '5D≥3%': (g5 >= .03).mean() if len(g5) else np.nan,
-            '5D≥5%': (g5 >= .05).mean() if len(g5) else np.nan,
-            '5D≥8%': (g5 >= .08).mean() if len(g5) else np.nan,
-            '平均5D最大涨幅': g5.mean() if len(g5) else np.nan,
-            '中位数5D最大涨幅': g5.median() if len(g5) else np.nan,
-            '平均5D收盘收益': c5.mean() if len(c5) else np.nan,
-            '平均5D最大回撤': dd.mean() if len(dd) else np.nan,
-            '弱股<2%': (g5 < .02).mean() if len(g5) else np.nan,
-        }
+    st.header('🎯 KD 20/80 历史验证')
+    st.caption('正式核心：低位20金叉买入；高位80死叉卖出。历史区只验证这一套新核心。')
 
-    rows = [
-        summary(current_ind, '当前共振核心（不含外层硬筛）', len(current)),
-        summary(kdj_rsi_ind, 'KDJ+RSI：20附近金叉', len(kdj_rsi)),
-        summary(prebuy_ind, 'KDJ+RSI：提前关注', len(prebuy)),
-    ]
-    comp = pd.DataFrame(rows)
+    c1,c2,c3,c4,c5m,c6 = st.columns(6)
+    c1.metric('独立买入信号', int(len(buys)))
+    c2.metric('平均每天', f'{len(buys)/dates_n:.2f}')
+    c3.metric('1D ≥3%', f'{(g1>=.03).mean():.1%}' if len(g1) else '—')
+    c4.metric('3D ≥3%', f'{(g3>=.03).mean():.1%}' if len(g3) else '—')
+    c5m.metric('5D ≥5%', f'{(g5>=.05).mean():.1%}' if len(g5) else '—')
+    c6.metric('5D ≥8%', f'{(g5>=.08).mean():.1%}' if len(g5) else '—')
 
-    st.header('🧪 A/B：当前共振 vs KDJ+RSI低位金叉')
-    st.caption(
-        '同一股票池、同一回放日期、同一未来1/3/5日标签。'
-        'KDJ+RSI买入 = 最近3日K或D到过25以下 + 当日K上穿D + RSI14连续回升且处于30–65；'
-        '仅保留每只股票5个交易日内的第一个信号，避免重叠窗口重复计算。'
-        '本表只做研究，不改变正式A6候选。'
-    )
-    st.dataframe(
-        comp.style.format({
-            '平均每天':'{:.2f}', '1D≥3%':'{:.1%}', '3D≥3%':'{:.1%}',
-            '5D≥3%':'{:.1%}', '5D≥5%':'{:.1%}', '5D≥8%':'{:.1%}',
-            '平均5D最大涨幅':'{:+.2%}', '中位数5D最大涨幅':'{:+.2%}',
-            '平均5D收盘收益':'{:+.2%}', '平均5D最大回撤':'{:+.2%}',
-            '弱股<2%':'{:.1%}'
-        }, na_rep='—'),
-        hide_index=True,
-        use_container_width=True
-    )
+    s1,s2,s3,s4 = st.columns(4)
+    s1.metric('平均5D最大涨幅', f'{g5.mean():+.2%}' if len(g5) else '—')
+    s2.metric('中位数5D最大涨幅', f'{g5.median():+.2%}' if len(g5) else '—')
+    s3.metric('平均5D收盘收益', f'{c5.mean():+.2%}' if len(c5) else '—')
+    s4.metric('平均5D最大回撤', f'{dd.mean():+.2%}' if len(dd) else '—')
 
-    buy_detail = kdj_rsi_ind[[
-        'Replay Date', 'Ticker', 'KDJRSI阶段', 'KDJRSI评分',
-        'KDJ_K', 'KDJ_D', 'KDJ_J', 'RSI14',
-        '1D Max Gain', '3D Max Gain', '5D Max Gain',
-        '5D Close Return', '5D Max Drawdown'
-    ]].sort_values(['Replay Date', 'KDJRSI评分'], ascending=[False, False])
-    with st.expander('查看KDJ+RSI独立买入信号明细', expanded=False):
-        st.dataframe(
-            buy_detail.style.format({
-                'KDJ_K':'{:.1f}', 'KDJ_D':'{:.1f}', 'KDJ_J':'{:.1f}',
-                'RSI14':'{:.1f}', '1D Max Gain':'{:+.2%}',
-                '3D Max Gain':'{:+.2%}', '5D Max Gain':'{:+.2%}',
-                '5D Close Return':'{:+.2%}', '5D Max Drawdown':'{:+.2%}'
-            }, na_rep='—'),
-            hide_index=True,
-            use_container_width=True
-        )
+    # 在回放日期内配对：低位金叉买入 -> 之后首个高位死叉卖出。
+    trades = []
+    z = pool.sort_values(['Ticker','Replay Date']).copy()
+    z['Replay Date'] = pd.to_datetime(z['Replay Date'])
+    for ticker, g in z.groupby('Ticker'):
+        g = g.sort_values('Replay Date').reset_index(drop=True)
+        in_pos = False
+        entry_date = entry_px = None
+        entry_i = None
+        for i, r in g.iterrows():
+            if (not in_pos) and r['KD低位金叉20'] == '是':
+                in_pos = True
+                entry_date = r['Replay Date']
+                entry_px = float(r['Price'])
+                entry_i = i
+            elif in_pos and r['KD高位死叉80'] == '是':
+                exit_px = float(r['Price'])
+                ret = exit_px / entry_px - 1 if entry_px and entry_px > 0 else np.nan
+                trades.append({
+                    '股票代码': ticker, '买入日期': entry_date, '买入价': entry_px,
+                    '卖出日期': r['Replay Date'], '卖出价': exit_px,
+                    '持有交易日': int(i-entry_i), '收益率': ret
+                })
+                in_pos = False
+                entry_date = entry_px = entry_i = None
 
-
-def render_a4_a5_resonance_comparison(bt):
-    """Same-window comparison: A4 vs current A5.2R vs A6 V2B (Volume mandatory)."""
-    if bt is None or bt.empty:
-        return
-    d = bt.copy()
-    req = [
-        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain','Hard Filter',
-        'A5决策','共振数','Replay Core Score 85','Leadership Score','Accumulation Score',
-        'MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振'
-    ]
-    if any(c not in d.columns for c in req):
-        st.warning("当前缓存字段不完整。请重新运行历史回测，生成完整共振字段。")
-        return
-
-    d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
-    d['共振数'] = pd.to_numeric(d['共振数'], errors='coerce')
-    d = d.dropna(subset=['5D Max Gain'])
-    if d.empty:
-        return
-
-    # A4 = existing eligible Top10 per replay day.
-    a4 = d[d['Replay Eligible Rank'] <= 10].copy()
-
-    # Current A5.2R rule (CONTROL): >=4/5 + MACD + (Volume OR RS), no forced 10.
-    pool = d[d['Hard Filter'].eq('通过')].copy()
-    pool['_a5_buy'] = (pool['A5决策'] == '买').astype(int)
-    pool = pool.sort_values(
-        ['Replay Date','_a5_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
-        ascending=[True,False,False,False,False,False]
-    )
-    a5 = pool.groupby('Replay Date', group_keys=False).head(10).copy()
-    a5 = a5[a5['A5决策'] == '买'].copy()
-
-    # A6 V2B EXPERIMENT: only one change from A5.2R.
-    # >=4/5 + MACD mandatory + Volume mandatory. RS remains one of the 5 resonance items,
-    # but RS can no longer substitute for failed Volume resonance.
-    exp = d[d['Hard Filter'].eq('通过')].copy()
-    macd = exp['MACD共振'].eq('是')
-    pv = exp['量价共振'].eq('是')
-    exp['_v2b_buy'] = ((exp['共振数'] >= 4) & macd & pv).astype(int)
-    exp = exp.sort_values(
-        ['Replay Date','_v2b_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
-        ascending=[True,False,False,False,False,False]
-    )
-    v2b = exp.groupby('Replay Date', group_keys=False).head(10).copy()
-    v2b = v2b[v2b['_v2b_buy'] == 1].copy()
-
-    def summary(x, label):
-        g = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
-        return {
-            '版本': label,
-            '入选样本': len(g),
-            '平均每天': len(g) / max(d['Replay Date'].nunique(), 1),
-            '≥3%': (g >= .03).mean() if len(g) else np.nan,
-            '≥5%': (g >= .05).mean() if len(g) else np.nan,
-            '≥8%': (g >= .08).mean() if len(g) else np.nan,
-            '平均5日最大涨幅': g.mean() if len(g) else np.nan,
-            '中位数5日最大涨幅': g.median() if len(g) else np.nan,
-            '弱股<2%': (g < .02).mean() if len(g) else np.nan,
-        }
-
-    comp = pd.DataFrame([
-        summary(a4,'当前A4 Top10'),
-        summary(a5,'A5.2R 当前规则'),
-        summary(v2b,'A6 V2B：量价必须通过')
-    ])
-    st.header("🧪 60日 A/B：A5.2R 当前规则 vs A6 V2B 量价必过")
-    st.caption(
-        "唯一实验改动：当前规则 = 共振≥4/5 + MACD必过 +（量价或RS至少一个）；"
-        "A6 V2B = 共振≥4/5 + MACD必过 + 量价必过。RS仍保留为5项共振之一。"
-        "支撑/压力/Room仍只做位置与风险信息，不参与一票否决。"
-    )
-    st.dataframe(
-        comp.style.format({
-            '平均每天':'{:.2f}','≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-            '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-        }, na_rep=''),
-        hide_index=True, use_container_width=True
-    )
-
-    # Direct delta of V2B versus current A5.2R control.
-    if len(a5) and len(v2b):
-        c = summary(a5,'control')
-        e = summary(v2b,'experiment')
-        delta = pd.DataFrame([{
-            '对比':'A6 V2B - A5.2R',
-            '样本变化': e['入选样本'] - c['入选样本'],
-            'Δ平均每天': e['平均每天'] - c['平均每天'],
-            'Δ≥3%': e['≥3%'] - c['≥3%'],
-            'Δ≥5%': e['≥5%'] - c['≥5%'],
-            'Δ≥8%': e['≥8%'] - c['≥8%'],
-            'Δ平均5D最大涨幅': e['平均5日最大涨幅'] - c['平均5日最大涨幅'],
-            'Δ中位数5D最大涨幅': e['中位数5日最大涨幅'] - c['中位数5日最大涨幅'],
-            'Δ弱股<2%': e['弱股<2%'] - c['弱股<2%'],
-        }])
-        st.subheader("A6 V2B 相对当前 A5.2R 的净变化")
-        st.dataframe(
-            delta.style.format({
-                'Δ平均每天':'{:+.2f}','Δ≥3%':'{:+.1%}','Δ≥5%':'{:+.1%}','Δ≥8%':'{:+.1%}',
-                'Δ平均5D最大涨幅':'{:+.2%}','Δ中位数5D最大涨幅':'{:+.2%}','Δ弱股<2%':'{:+.1%}'
-            }, na_rep=''), hide_index=True, use_container_width=True
-        )
-
-    # Show exactly what V2B removes: names that current A5 buys because RS substitutes for Volume.
-    removed = a5[(a5['量价共振'] != '是') & (a5['RS共振'] == '是')].copy()
-    if not removed.empty:
-        g = pd.to_numeric(removed['5D Max Gain'], errors='coerce').dropna()
-        removed_summary = pd.DataFrame([{
-            '被V2B剔除的类型':'A5买入但量价=否、RS=是',
-            '样本':len(g),
-            '≥3%':(g >= .03).mean() if len(g) else np.nan,
-            '≥5%':(g >= .05).mean() if len(g) else np.nan,
-            '≥8%':(g >= .08).mean() if len(g) else np.nan,
-            '平均5D最大涨幅':g.mean() if len(g) else np.nan,
-            '弱股<2%':(g < .02).mean() if len(g) else np.nan,
-        }])
-        st.subheader("V2B 到底剔除了什么")
-        st.dataframe(
-            removed_summary.style.format({
-                '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-                '平均5D最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-            }, na_rep=''), hide_index=True, use_container_width=True
-        )
-
-    # Indicator hit-rate table retained for context.
-    rows = []
-    for c in ['MACD共振','KDJ共振','RSI共振','量价共振','RS共振','空间共振']:
-        yes = d[d[c] == '是']
-        g = pd.to_numeric(yes['5D Max Gain'], errors='coerce').dropna()
-        rows.append({
-            '指标': c,
-            '触发样本': len(g),
-            '≥5%命中率': (g >= .05).mean() if len(g) else np.nan,
-            '≥8%命中率': (g >= .08).mean() if len(g) else np.nan,
-            '平均5日最大涨幅': g.mean() if len(g) else np.nan,
-        })
-    idf = pd.DataFrame(rows)
-    st.subheader("各共振指标单独效果")
-    st.dataframe(
-        idf.style.format({
-            '≥5%命中率':'{:.1%}','≥8%命中率':'{:.1%}','平均5日最大涨幅':'{:+.2%}'
-        }, na_rep=''), hide_index=True, use_container_width=True
-    )
-
-def render_ranking_diagnostics(bt):
-    """Diagnose which A ranking modules distinguish future strong stocks."""
-    if bt is None or bt.empty:
-        return
-
-    d = bt.copy()
-    needed = [
-        'Replay Date','Ticker','Replay Eligible Rank','5D Max Gain',
-        'Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
-        'Replay Core Score 85','MA20 Slope 5D','Volume Build Ratio',
-        'Up/Down Volume Ratio','Stock vs SPY 20D','Stock vs Sector 20D'
-    ]
-    for c in needed:
-        if c not in d.columns:
-            return
-
-    for c in [
-        'Replay Eligible Rank','5D Max Gain','Structure Score','Trend & Momentum Score',
-        'Accumulation Score','Leadership Score','Replay Core Score 85','MA20 Slope 5D',
-        'Volume Build Ratio','Up/Down Volume Ratio','Stock vs SPY 20D','Stock vs Sector 20D'
-    ]:
-        d[c] = pd.to_numeric(d[c], errors='coerce')
-
-    d = d.dropna(subset=['5D Max Gain'])
-    if d.empty:
-        return
-
-    st.header('🔬 A4 Ranking Diagnostic — 强股为什么没进 Top10')
-    st.caption(
-        '只做诊断，不改变 LIVE 排名权重。重点比较：Top10强股、Top10弱股、'
-        '以及被Top10漏掉但未来5日≥5%/≥8%的强股。'
-    )
-
-    d['组别'] = '其他'
-    d.loc[(d['Replay Eligible Rank'] <= 10) & (d['5D Max Gain'] >= .05), '组别'] = 'Top10强股 ≥5%'
-    d.loc[(d['Replay Eligible Rank'] <= 10) & (d['5D Max Gain'] < .02), '组别'] = 'Top10弱股 <2%'
-    d.loc[(d['Replay Eligible Rank'] > 10) & (d['5D Max Gain'] >= .08), '组别'] = '漏掉大涨股 ≥8%'
-    d.loc[(d['Replay Eligible Rank'] > 10) & (d['5D Max Gain'] >= .05) & (d['5D Max Gain'] < .08), '组别'] = '漏掉强股 5–8%'
-
-    diag_groups = ['Top10强股 ≥5%','Top10弱股 <2%','漏掉强股 5–8%','漏掉大涨股 ≥8%']
-    features = [
-        'Replay Core Score 85','Structure Score','Trend & Momentum Score',
-        'Accumulation Score','Leadership Score','MA20 Slope 5D',
-        'Volume Build Ratio','Up/Down Volume Ratio',
-        'Stock vs SPY 20D','Stock vs Sector 20D'
-    ]
-
-    grp = (
-        d[d['组别'].isin(diag_groups)]
-        .groupby('组别')[features]
-        .agg(['mean','median','count'])
-    )
-    if not grp.empty:
-        # Flatten MultiIndex columns for Streamlit.
-        grp.columns = [f'{a} {b}' for a,b in grp.columns]
-        grp = grp.reset_index()
-        st.subheader('① 四组股票的当天特征对比')
-        fmt = {}
-        for c in grp.columns:
-            if 'MA20 Slope' in c or 'Stock vs SPY' in c or 'Stock vs Sector' in c:
-                if 'count' not in c:
-                    fmt[c] = '{:.2%}'
-            elif c != '组别' and 'count' not in c:
-                fmt[c] = '{:.3f}'
-        st.dataframe(
-            grp.style.format(fmt, na_rep=''),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # Predictive separation by feature: strong >=5% vs weak <2%.
-    strong = d[d['5D Max Gain'] >= .05]
-    weak = d[d['5D Max Gain'] < .02]
-    rows = []
-    for f in features:
-        s = pd.to_numeric(strong[f], errors='coerce').dropna()
-        w = pd.to_numeric(weak[f], errors='coerce').dropna()
-        allv = pd.to_numeric(d[f], errors='coerce').dropna()
-        future = d.loc[allv.index, '5D Max Gain'] if len(allv) else pd.Series(dtype=float)
-        corr = allv.corr(future) if len(allv) >= 3 else np.nan
-        sm, wm = s.mean() if len(s) else np.nan, w.mean() if len(w) else np.nan
-        pooled = np.nan
-        if len(s) >= 2 and len(w) >= 2:
-            denom = np.sqrt((s.var(ddof=1) + w.var(ddof=1)) / 2)
-            pooled = (sm - wm) / denom if denom and not pd.isna(denom) else np.nan
-        rows.append({
-            '特征': f,
-            '强股均值(≥5%)': sm,
-            '弱股均值(<2%)': wm,
-            '强-弱差': sm - wm if not pd.isna(sm) and not pd.isna(wm) else np.nan,
-            '标准化区分度': pooled,
-            '与5日最大涨幅相关': corr
-        })
-    sep = pd.DataFrame(rows)
-    sep['绝对区分度'] = sep['标准化区分度'].abs()
-    sep = sep.sort_values(['绝对区分度','与5日最大涨幅相关'], ascending=[False,False]).drop(columns=['绝对区分度'])
-
-    st.subheader('② 哪个模块最能区分未来强股与弱股')
-    fmt2 = {
-        '强股均值(≥5%)':'{:.3f}',
-        '弱股均值(<2%)':'{:.3f}',
-        '强-弱差':'{:+.3f}',
-        '标准化区分度':'{:+.3f}',
-        '与5日最大涨幅相关':'{:+.3f}',
-    }
-    st.dataframe(
-        sep.style.format(fmt2, na_rep=''),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    # Top/bottom quartile outcome test for each module.
-    st.subheader('③ 每个模块高分组 vs 低分组，未来5日表现')
-    qrows = []
-    module_features = ['Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score']
-    for f in module_features:
-        vals = pd.to_numeric(d[f], errors='coerce')
-        valid = d[vals.notna()].copy()
-        if valid.empty:
-            continue
-        q25 = valid[f].quantile(.25)
-        q75 = valid[f].quantile(.75)
-        low = valid[valid[f] <= q25]
-        high = valid[valid[f] >= q75]
-        for label, x in [('低25%', low), ('高25%', high)]:
-            g = pd.to_numeric(x['5D Max Gain'], errors='coerce').dropna()
-            qrows.append({
-                '模块': f,
-                '分组': label,
-                '样本': len(g),
-                '≥5%命中率': (g >= .05).mean() if len(g) else np.nan,
-                '≥8%命中率': (g >= .08).mean() if len(g) else np.nan,
-                '平均5日最大涨幅': g.mean() if len(g) else np.nan,
-                '中位数5日最大涨幅': g.median() if len(g) else np.nan,
-            })
-    qdf = pd.DataFrame(qrows)
-    if not qdf.empty:
-        st.dataframe(
-            qdf.style.format({
-                '≥5%命中率':'{:.1%}',
-                '≥8%命中率':'{:.1%}',
-                '平均5日最大涨幅':'{:+.2%}',
-                '中位数5日最大涨幅':'{:+.2%}',
-            }, na_rep=''),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # Missed strong stocks: which component is low relative to current Top10 threshold?
-    st.subheader('④ 漏掉的 ≥8% 大涨股：为什么排名靠后')
-    missed8 = d[(d['Replay Eligible Rank'] > 10) & (d['5D Max Gain'] >= .08)].copy()
-    if missed8.empty:
-        st.info('当前回放窗口没有漏掉的 ≥8% 大涨股。')
+    tdf = pd.DataFrame(trades)
+    if not tdf.empty:
+        rr = pd.to_numeric(tdf['收益率'], errors='coerce').dropna()
+        st.subheader('🔁 20买 → 80卖 完整闭环（仅统计回放窗口内已完成交易）')
+        q1,q2,q3,q4 = st.columns(4)
+        q1.metric('完成交易', len(rr))
+        q2.metric('胜率', f'{(rr>0).mean():.1%}' if len(rr) else '—')
+        q3.metric('平均每笔收益', f'{rr.mean():+.2%}' if len(rr) else '—')
+        q4.metric('中位数收益', f'{rr.median():+.2%}' if len(rr) else '—')
+        with st.expander('查看已完成交易明细', expanded=False):
+            st.dataframe(tdf.style.format({'买入价':'{:.2f}','卖出价':'{:.2f}','收益率':'{:+.2%}'}, na_rep='—'), hide_index=True, use_container_width=True)
     else:
-        cols = [
-            'Replay Date','Ticker','Replay Eligible Rank','Replay Core Score 85',
-            'Structure Score','Trend & Momentum Score','Accumulation Score','Leadership Score',
-            'MA20 Slope 5D','Stock vs SPY 20D','Stock vs Sector 20D','5D Max Gain'
-        ]
-        show = missed8.sort_values(['5D Max Gain','Replay Eligible Rank'], ascending=[False,True])
-        st.dataframe(
-            show[[c for c in cols if c in show.columns]].head(100).style.format({
-                'MA20 Slope 5D':'{:.2%}',
-                'Stock vs SPY 20D':'{:+.2%}',
-                'Stock vs Sector 20D':'{:+.2%}',
-                '5D Max Gain':'{:+.2%}',
-            }, na_rep=''),
-            hide_index=True,
-            use_container_width=True
-        )
+        st.info('当前回放窗口内没有形成完整的“20低位金叉买入 → 80高位死叉卖出”闭环；可把回放天数加长后继续验证。')
 
-
-def _vp_summary(x, label):
-    g = pd.to_numeric(x.get('5D Max Gain'), errors='coerce').dropna() if isinstance(x, pd.DataFrame) else pd.Series(dtype=float)
-    return {
-        '版本/阶段': label,
-        '样本': len(g),
-        '≥3%': (g >= .03).mean() if len(g) else np.nan,
-        '≥5%': (g >= .05).mean() if len(g) else np.nan,
-        '≥8%': (g >= .08).mean() if len(g) else np.nan,
-        '平均5日最大涨幅': g.mean() if len(g) else np.nan,
-        '中位数5日最大涨幅': g.median() if len(g) else np.nan,
-        '弱股<2%': (g < .02).mean() if len(g) else np.nan,
-    }
-
-
-def _current_fix3_selection_for_vp(d):
-    """Rebuild exactly the current A5.2R FIX3 historical selection; no forced 10."""
-    pool = d[d['Hard Filter'].eq('通过')].copy()
-    pool['_buy'] = (pool['A5决策'] == '买').astype(int)
-    pool['共振数'] = pd.to_numeric(pool['共振数'], errors='coerce')
-    pool = pool.sort_values(
-        ['Replay Date','_buy','共振数','Replay Core Score 85','Leadership Score','Accumulation Score'],
-        ascending=[True,False,False,False,False,False]
-    )
-    out = pool.groupby('Replay Date', group_keys=False).head(10).copy()
-    return out[out['A5决策'].eq('买')].copy()
-
-
-def render_vp1_backtest(bt):
-    """VP1 diagnostic backtest. Does not modify FIX3 selection logic."""
-    if bt is None or bt.empty:
-        return
-    d = bt.copy()
-    req = ['Replay Date','Ticker','Hard Filter','A5决策','共振数','VP阶段','VP分','VP量比20','5D Max Gain']
-    missing = [c for c in req if c not in d.columns]
-    if missing:
-        st.warning('VP1历史字段尚未生成。请重新点击上方“运行60日 A5.2R + VP1 回测”。')
-        return
-    d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
-    d = d.dropna(subset=['5D Max Gain'])
-    if d.empty:
-        return
-
-    st.header('🧪 VP1 — Volume-Price Phase 历史回测')
-    st.caption('VP1只做诊断，不改变 A5.2R FIX3 的买/不买。所有阶段均使用当时已知OHLCV计算，再观察随后5个交易日。')
-
-    # Table A: all replay samples by phase — validates whether phases themselves separate outcomes.
-    phase_order = ['A 缩量蓄势','B 放量启动','C 派发风险','N 普通']
-    rows=[]
-    for ph in phase_order:
-        rows.append(_vp_summary(d[d['VP阶段'].eq(ph)], ph))
-    phase_df=pd.DataFrame(rows)
-    st.subheader('① 全历史样本：A / B / C / N 各阶段未来5日表现')
-    st.dataframe(phase_df.style.format({
-        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    # Table B: only names that FIX3 actually selected. This is the key apples-to-apples diagnostic.
-    fix3 = _current_fix3_selection_for_vp(d)
-    rows=[]
-    for ph in phase_order:
-        rows.append(_vp_summary(fix3[fix3['VP阶段'].eq(ph)], f'FIX3买入 + {ph}'))
-    fix3_phase=pd.DataFrame(rows)
-    st.subheader('② FIX3实际入选样本内部：不同VP阶段表现')
-    st.dataframe(fix3_phase.style.format({
-        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    # Table C: candidate VP gates vs unchanged benchmark. This does NOT apply them to live selection.
-    variants = [
-        ('FIX3 原版 Benchmark', fix3),
-        ('FIX3 + 仅B放量启动', fix3[fix3['VP阶段'].eq('B 放量启动')]),
-        ('FIX3 + A/B健康阶段', fix3[fix3['VP阶段'].isin(['A 缩量蓄势','B 放量启动'])]),
-        ('FIX3 + 排除C派发风险', fix3[~fix3['VP阶段'].eq('C 派发风险')]),
-    ]
-    comp=pd.DataFrame([_vp_summary(x,label) for label,x in variants])
-    st.subheader('③ FIX3 Benchmark vs VP候选过滤方式（仅回测，不改正式逻辑）')
-    st.dataframe(comp.style.format({
-        '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-        '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    # Transition-like B quality: B preceded by dry-up vs B without clear dry-up.
-    if 'VP前期缩量' in fix3.columns:
-        b = fix3[fix3['VP阶段'].eq('B 放量启动')]
-        trans = pd.DataFrame([
-            _vp_summary(b[b['VP前期缩量'].eq('是')], 'B：前期缩量→放量启动'),
-            _vp_summary(b[b['VP前期缩量'].ne('是')], 'B：直接放量启动'),
-        ])
-        st.subheader('④ B阶段细分：真正的“缩量 → 放量启动”是否更强')
-        st.dataframe(trans.style.format({
-            '≥3%':'{:.1%}','≥5%':'{:.1%}','≥8%':'{:.1%}',
-            '平均5日最大涨幅':'{:+.2%}','中位数5日最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-        }, na_rep=''), hide_index=True, use_container_width=True)
-
-    st.info('判断标准：如果 B（尤其“前期缩量→B”）的 ≥5%/≥8% 命中率明显高于 FIX3 Benchmark，同时 C 的弱股率明显更高，VP1 才值得进入下一轮正式规则测试。当前页面不会自动修改 FIX3。')
-
-
-
-def _room_summary(x, label):
-    """Summary for Pivot/Room research; all future returns are outcome labels only."""
-    if not isinstance(x, pd.DataFrame) or x.empty:
-        return {
-            '版本/空间组': label, '样本': 0,
-            '1D平均最大涨幅': np.nan, '3D平均最大涨幅': np.nan,
-            '5D≥3%': np.nan, '5D≥5%': np.nan, '5D≥8%': np.nan,
-            '5D平均最大涨幅': np.nan, '5D中位数最大涨幅': np.nan,
-            '弱股<2%': np.nan,
-        }
-    g1 = pd.to_numeric(x.get('1D Max Gain'), errors='coerce')
-    g3 = pd.to_numeric(x.get('3D Max Gain'), errors='coerce')
-    g5 = pd.to_numeric(x.get('5D Max Gain'), errors='coerce')
-    valid = g5.notna()
-    g5v = g5[valid]
-    return {
-        '版本/空间组': label,
-        '样本': int(valid.sum()),
-        '1D平均最大涨幅': g1[valid].mean() if valid.any() else np.nan,
-        '3D平均最大涨幅': g3[valid].mean() if valid.any() else np.nan,
-        '5D≥3%': (g5v >= .03).mean() if len(g5v) else np.nan,
-        '5D≥5%': (g5v >= .05).mean() if len(g5v) else np.nan,
-        '5D≥8%': (g5v >= .08).mean() if len(g5v) else np.nan,
-        '5D平均最大涨幅': g5v.mean() if len(g5v) else np.nan,
-        '5D中位数最大涨幅': g5v.median() if len(g5v) else np.nan,
-        '弱股<2%': (g5v < .02).mean() if len(g5v) else np.nan,
-    }
-
-
-def _base_buy_candidates_for_room(d):
-    """Reconstruct the core A5.2R buy condition BEFORE the current space veto."""
-    x = d[d['Hard Filter'].eq('通过')].copy()
-    rn = pd.to_numeric(x.get('共振数'), errors='coerce')
-    macd = x.get('MACD共振', pd.Series(index=x.index, dtype=object)).eq('是')
-    pv = x.get('量价共振', pd.Series(index=x.index, dtype=object)).eq('是')
-    rs = x.get('RS共振', pd.Series(index=x.index, dtype=object)).eq('是')
-    x = x[(rn >= 4) & macd & (pv | rs)].copy()
-    if x.empty:
-        return x
-    x['_room_rank'] = pd.to_numeric(x.get('Replay Core Score 85'), errors='coerce')
-    x['_rn'] = pd.to_numeric(x.get('共振数'), errors='coerce')
-    x = x.sort_values(
-        ['Replay Date','_rn','_room_rank','Leadership Score','Accumulation Score'],
-        ascending=[True,False,False,False,False]
-    )
-    # Match the no-force-10 framework while keeping pre-space candidates comparable by day.
-    return x.groupby('Replay Date', group_keys=False).head(10).copy()
-
-
-def _room_bucket(df):
-    """Mutually exclusive room buckets using only as-of-date resistance information."""
-    if df is None or df.empty:
-        return pd.Series(dtype=object)
-    room = pd.to_numeric(df.get('上方空间'), errors='coerce')
-    pos = df.get('位置判断', pd.Series(index=df.index, dtype=object)).astype(str)
-    out = pd.Series('其他/不确定', index=df.index, dtype=object)
-    out[pos.eq('上方开放') | room.isna()] = '上方开放'
-    out[(room >= .08)] = 'Room ≥8%'
-    out[(room >= .05) & (room < .08)] = 'Room 5–8%'
-    out[(room >= .02) & (room < .05)] = 'Room 2–5%'
-    out[(room >= 0) & (room < .02)] = 'Room <2%'
-    out[room < 0] = '已进入/越过压力区'
-    return out
-
-
-def render_pivot_room_backtest(bt):
-    """Pivot/Room diagnostic backtest. Does not modify live FIX3 decision logic."""
-    if bt is None or bt.empty:
-        return
-    d = bt.copy()
-    req = [
-        'Replay Date','Ticker','Hard Filter','A5决策','共振数','MACD共振','量价共振','RS共振',
-        '位置判断','上方空间','压力测试次数_A52R','5D Max Gain'
-    ]
-    missing = [c for c in req if c not in d.columns]
-    if missing:
-        st.warning('Pivot/Room历史字段尚未完整生成：' + ', '.join(missing))
-        return
-
-    for c in ['1D Max Gain','3D Max Gain','5D Max Gain','上方空间','压力测试次数_A52R']:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors='coerce')
-    d = d.dropna(subset=['5D Max Gain'])
-    if d.empty:
-        return
-
-    st.header('🧭 Pivot / Room — 压力位与上方空间历史验证')
-    st.caption(
-        '本模块只做研究，不改变 A5.2R FIX3 正式买/不买。压力区、测试次数和 Room 均只使用回放当日之前的OHLCV计算；'
-        '随后1/3/5日涨幅仅作为结果标签。'
-    )
-
-    # A. Current FIX3 buys grouped by mutually-exclusive room bucket.
-    fix3 = _current_fix3_selection_for_vp(d)
-    fix3['Room分组'] = _room_bucket(fix3)
-    order = ['上方开放','Room ≥8%','Room 5–8%','Room 2–5%','Room <2%','已进入/越过压力区','其他/不确定']
-    rows = []
-    for lab in order:
-        x = fix3[fix3['Room分组'].eq(lab)]
-        if len(x) or lab in ['上方开放','Room ≥8%','Room 5–8%','Room 2–5%','Room <2%']:
-            rows.append(_room_summary(x, lab))
-    t1 = pd.DataFrame(rows)
-    st.subheader('① FIX3实际入选样本：不同上方空间的1D / 3D / 5D表现')
-    st.dataframe(t1.style.format({
-        '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
-        '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
-        '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    # B. Threshold variants against unchanged FIX3 benchmark.
-    room = pd.to_numeric(fix3['上方空间'], errors='coerce')
-    open_mask = fix3['位置判断'].eq('上方开放') | room.isna()
-    variants = [
-        ('FIX3 原版 Benchmark', fix3),
-        ('FIX3 + 上方开放', fix3[open_mask]),
-        ('FIX3 + 开放或Room≥8%', fix3[open_mask | (room >= .08)]),
-        ('FIX3 + 开放或Room≥5%', fix3[open_mask | (room >= .05)]),
-        ('FIX3 + 开放或Room≥3%', fix3[open_mask | (room >= .03)]),
-    ]
-    t2 = pd.DataFrame([_room_summary(x, lab) for lab, x in variants])
-    st.subheader('② FIX3 Benchmark vs Room候选阈值（仅回测，不改正式逻辑）')
-    st.dataframe(t2.style.format({
-        '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
-        '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
-        '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
-
-    # C. Validate the existing pressure-too-close veto on pre-space core-buy candidates.
-    base = _base_buy_candidates_for_room(d)
-    if not base.empty:
-        room_b = pd.to_numeric(base['上方空间'], errors='coerce')
-        touches = pd.to_numeric(base['压力测试次数_A52R'], errors='coerce').fillna(0)
-        pos_b = base['位置判断'].astype(str)
-        close_pressure = pos_b.eq('压力过近') | ((touches >= 2) & (room_b >= 0) & (room_b < .02))
-        space_pass = ~close_pressure
-        t3 = pd.DataFrame([
-            _room_summary(base, 'Core Buy（空间过滤前）'),
-            _room_summary(base[space_pass], '当前FIX3：空间通过'),
-            _room_summary(base[close_pressure], '当前FIX3：压力过近被否决'),
-        ])
-        st.subheader('③ 当前“压力过近”否决是否有效')
-        st.dataframe(t3.style.format({
-            '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
-            '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
-            '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-        }, na_rep=''), hide_index=True, use_container_width=True)
-
-        # D. Pivot strength / repeated resistance structure.
-        open_b = pos_b.eq('上方开放') | room_b.isna()
-        one_touch = (~open_b) & (touches <= 1)
-        repeated_far = (~open_b) & (touches >= 2) & (room_b >= .02)
-        repeated_close = (~open_b) & (touches >= 2) & (room_b >= 0) & (room_b < .02)
-        t4 = pd.DataFrame([
-            _room_summary(base[open_b], '无明确上方压力'),
-            _room_summary(base[one_touch], '弱压力：≤1次测试'),
-            _room_summary(base[repeated_far], '重复压力≥2次，但Room≥2%'),
-            _room_summary(base[repeated_close], '重复压力≥2次，且Room<2%'),
-        ])
-        st.subheader('④ Pivot强度：压力测试次数 × 距离')
-        st.dataframe(t4.style.format({
-            '1D平均最大涨幅':'{:+.2%}','3D平均最大涨幅':'{:+.2%}',
-            '5D≥3%':'{:.1%}','5D≥5%':'{:.1%}','5D≥8%':'{:.1%}',
-            '5D平均最大涨幅':'{:+.2%}','5D中位数最大涨幅':'{:+.2%}','弱股<2%':'{:.1%}'
-        }, na_rep=''), hide_index=True, use_container_width=True)
-
-    st.info(
-        '判断重点：只有当“开放或Room≥5%/8%”在 ≥5%、≥8%、5D平均涨幅和弱股率上形成清晰、稳定的改善，'
-        '同时样本量没有被过度砍掉，才考虑把更严格Room阈值并入A。否则继续保留FIX3当前只否决“重复压力且<2%”的规则。'
-    )
-
-
-def _v3_v2b_selection(d):
-    """Rebuild exactly the A6 V2B research selection, no forced fill."""
-    x = d[d["Hard Filter"].eq("通过")].copy()
-    x["共振数"] = pd.to_numeric(x["共振数"], errors="coerce")
-    macd = x["MACD共振"].eq("是")
-    pv = x["量价共振"].eq("是")
-    x["_v2b_buy"] = ((x["共振数"] >= 4) & macd & pv).astype(int)
-    x = x.sort_values(
-        ["Replay Date", "_v2b_buy", "共振数", "Replay Core Score 85",
-         "Leadership Score", "Accumulation Score"],
-        ascending=[True, False, False, False, False, False]
-    )
-    x = x.groupby("Replay Date", group_keys=False).head(10).copy()
-    return x[x["_v2b_buy"].eq(1)].copy()
-
-
-def _v3_summary(x, label, dates_n):
-    g = pd.to_numeric(x.get("5D Max Gain"), errors="coerce").dropna()
-    return {
-        "分层": label,
-        "样本": len(g),
-        "平均每天": len(g) / max(int(dates_n), 1),
-        "≥3%": (g >= .03).mean() if len(g) else np.nan,
-        "≥5%": (g >= .05).mean() if len(g) else np.nan,
-        "≥8%": (g >= .08).mean() if len(g) else np.nan,
-        "平均5D最大涨幅": g.mean() if len(g) else np.nan,
-        "中位数5D最大涨幅": g.median() if len(g) else np.nan,
-        "弱股<2%": (g < .02).mean() if len(g) else np.nan,
-    }
-
-
-def _render_v3_table(rows):
-    t = pd.DataFrame(rows)
-    st.dataframe(
-        t.style.format({
-            "平均每天": "{:.2f}",
-            "≥3%": "{:.1%}", "≥5%": "{:.1%}", "≥8%": "{:.1%}",
-            "平均5D最大涨幅": "{:+.2%}",
-            "中位数5D最大涨幅": "{:+.2%}",
-            "弱股<2%": "{:.1%}",
-        }, na_rep=""),
-        hide_index=True,
-        use_container_width=True
-    )
-
-
-def render_a6_v3_pivot_room_research(bt):
-    """V2B Core fixed; Pivot/Room fields are stratification only."""
-    if bt is None or bt.empty:
-        return
-
-    req = [
-        "Replay Date", "Hard Filter", "共振数", "MACD共振", "量价共振",
-        "Replay Core Score 85", "Leadership Score", "Accumulation Score",
-        "5D Max Gain", "Pivot Status V3", "First Room Status V3",
-        "Breakout Room Status V3"
-    ]
-    missing = [c for c in req if c not in bt.columns]
-    if missing:
-        st.warning("当前缓存还是旧回测结果，尚无A6 V3 Pivot/Room字段。请重新点击“运行60日 A6 V3 Pivot/Room 回测”。缺少：" + ", ".join(missing))
-        return
-
-    d = bt.copy()
-    d["5D Max Gain"] = pd.to_numeric(d["5D Max Gain"], errors="coerce")
-    d = d.dropna(subset=["5D Max Gain"])
-    if d.empty:
-        return
-
-    v2b = _v3_v2b_selection(d)
-    dates_n = d["Replay Date"].nunique()
-
-    st.header("🧭 Pivot / Room 优先级验证")
-    st.caption(
-        "V2B Core完全不变：共振≥4/5 + MACD必过 + 量价必过；"
-        "Pivot Status、First Room、Breakout Room 当前只做60日分层研究，不参与正式买/不买。"
-    )
-
-    base = _v3_summary(v2b, "A6 V2B Core Benchmark", dates_n)
-    st.subheader("① V2B Benchmark")
-    _render_v3_table([base])
-
-    st.subheader("② Pivot Status：突破前 / 接近 / 刚突破 / 延伸")
-    pivot_order = ["突破前 >3%", "接近Pivot 0–3%", "刚突破 0–2%", "突破后延伸 >2%", "数据不足"]
-    rows = [_v3_summary(v2b[v2b["Pivot Status V3"].eq(lab)], lab, dates_n)
-            for lab in pivot_order if (v2b["Pivot Status V3"].eq(lab)).any() or lab != "数据不足"]
-    _render_v3_table(rows)
-
-    st.subheader("③ First Room：当前价到第一个上方障碍")
-    room_order = ["开放", "Room ≥8%", "Room 5–8%", "Room 2–5%", "Room <2%", "不确定"]
-    rows = [_v3_summary(v2b[v2b["First Room Status V3"].eq(lab)], lab, dates_n)
-            for lab in room_order if (v2b["First Room Status V3"].eq(lab)).any() or lab != "不确定"]
-    _render_v3_table(rows)
-
-    st.subheader("④ Breakout Room：突破Pivot后到下一重复压力区")
-    rows = [_v3_summary(v2b[v2b["Breakout Room Status V3"].eq(lab)], lab, dates_n)
-            for lab in room_order if (v2b["Breakout Room Status V3"].eq(lab)).any() or lab != "不确定"]
-    _render_v3_table(rows)
-
-    # =========================================================
-    # A6 V3.1 precise combination research
-    # "开放" is deliberately excluded from Room-good definitions.
-    # V2B Core remains unchanged; all tests below are research only.
-    # =========================================================
-    first_ge5 = v2b["First Room Status V3"].isin(["Room ≥8%", "Room 5–8%"])
-    first_ge2 = v2b["First Room Status V3"].isin(["Room ≥8%", "Room 5–8%", "Room 2–5%"])
-    breakout_ge8 = v2b["Breakout Room Status V3"].eq("Room ≥8%")
-    breakout_ge5 = v2b["Breakout Room Status V3"].isin(["Room ≥8%", "Room 5–8%"])
-    pivot_pre3 = v2b["Pivot Status V3"].eq("突破前 >3%")
-    pivot_near_fresh = v2b["Pivot Status V3"].isin(["接近Pivot 0–3%", "刚突破 0–2%"])
-
-    st.subheader("⑤ 精确组合验证")
-    st.caption(
-        "上一轮显示Room的“开放”组并不强，因此本轮不再把“开放”与≥5%混合。"
-        "所有组合仍只做研究，不改变V2B Core。"
-    )
-
-    variants = [
-        ("V2B Benchmark", v2b),
-        ("V2B + First Room ≥5%", v2b[first_ge5]),
-        ("V2B + First Room ≥2%", v2b[first_ge2]),
-        ("V2B + Breakout Room ≥8%", v2b[breakout_ge8]),
-        ("V2B + Breakout Room ≥5%", v2b[breakout_ge5]),
-        ("V2B + First≥5% + Breakout≥8%", v2b[first_ge5 & breakout_ge8]),
-        ("V2B + Pivot突破前 >3%", v2b[pivot_pre3]),
-        ("V2B + Pivot突破前>3% + First≥5%", v2b[pivot_pre3 & first_ge5]),
-        ("V2B + Pivot突破前>3% + Breakout≥8%", v2b[pivot_pre3 & breakout_ge8]),
-        ("V2B + Pivot突破前>3% + First≥5% + Breakout≥8%",
-         v2b[pivot_pre3 & first_ge5 & breakout_ge8]),
-        ("对照：V2B + Pivot接近/刚突破", v2b[pivot_near_fresh]),
-    ]
-    _render_v3_table([_v3_summary(x, lab, dates_n) for lab, x in variants])
-
-    base_n = len(v2b)
-    base_g = pd.to_numeric(v2b["5D Max Gain"], errors="coerce").dropna()
-    base_5 = (base_g >= .05).mean() if len(base_g) else np.nan
-    base_8 = (base_g >= .08).mean() if len(base_g) else np.nan
-    base_weak = (base_g < .02).mean() if len(base_g) else np.nan
-
-    rank_rows = []
-    for lab, x in variants[1:-1]:
-        g = pd.to_numeric(x["5D Max Gain"], errors="coerce").dropna()
-        n = len(g)
-        daily = n / max(int(dates_n), 1)
-        h5 = (g >= .05).mean() if n else np.nan
-        h8 = (g >= .08).mean() if n else np.nan
-        weak = (g < .02).mean() if n else np.nan
-        rank_rows.append({
-            "组合": lab,
-            "样本": n,
-            "平均每天": daily,
-            "保留样本%": n / base_n if base_n else np.nan,
-            "Δ≥5%": h5 - base_5 if n else np.nan,
-            "Δ≥8%": h8 - base_8 if n else np.nan,
-            "Δ弱股<2%": weak - base_weak if n else np.nan,
-            "研究判断": (
-                "优先级候选"
-                if n >= 60 and daily >= 1.0 and h5 >= base_5 + .04 and weak <= base_weak
-                else "样本偏少"
-                if n < 40
-                else "观察"
-            )
-        })
-
-    st.subheader("⑥ 相对V2B的净改善与样本保留")
-    rdf = pd.DataFrame(rank_rows)
-    st.dataframe(
-        rdf.style.format({
-            "平均每天":"{:.2f}", "保留样本%":"{:.1%}",
-            "Δ≥5%":"{:+.1%}", "Δ≥8%":"{:+.1%}", "Δ弱股<2%":"{:+.1%}"
-        }, na_rep=""),
-        hide_index=True, use_container_width=True
-    )
-
-    st.info(
-        "FINAL验证原则：不因为小样本命中率很高就设硬门槛。"
-        "重点找≥5%/≥8%提高、弱股下降，同时仍保留足够样本和每天候选的条件。"
-        "若强组合每天不足约1只，更适合做A候选优先级，而不是一票否决。"
-    )
+    detail_cols = ['Replay Date','Ticker','KDJ_K','KDJ_D','KDJ_J','1D Max Gain','3D Max Gain','5D Max Gain','5D Close Return','5D Max Drawdown']
+    detail = buys[[c for c in detail_cols if c in buys.columns]].sort_values('Replay Date', ascending=False)
+    with st.expander('查看 KD 低位金叉买入明细', expanded=False):
+        st.dataframe(detail.style.format({
+            'KDJ_K':'{:.1f}','KDJ_D':'{:.1f}','KDJ_J':'{:.1f}',
+            '1D Max Gain':'{:+.2%}','3D Max Gain':'{:+.2%}','5D Max Gain':'{:+.2%}',
+            '5D Close Return':'{:+.2%}','5D Max Drawdown':'{:+.2%}'
+        }, na_rep='—'), hide_index=True, use_container_width=True)
 
 
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
         return
-
-    st.header('🎯 A6 FINAL — 历史验证')
-    st.caption('先比较当前共振与KDJ+RSI低位金叉，再保留原V2B及Pivot/Room研究；所有历史结果均不改变当天正式候选资格。')
-    render_kdj_rsi_ab_test(bt)
-    render_a4_a5_resonance_comparison(bt)
-    render_a6_v3_pivot_room_research(bt)
-
-    d = bt.copy()
-    if '5D Max Gain' in d.columns:
-        d['5D Max Gain'] = pd.to_numeric(d['5D Max Gain'], errors='coerce')
-    if 'Replay Date' in d.columns:
-        dates_n = d['Replay Date'].nunique()
-    else:
-        dates_n = 0
-
-    fix3 = d[d.get('A5决策', pd.Series(index=d.index, dtype=object)).eq('买')].copy() if 'A5决策' in d.columns else pd.DataFrame()
-    if not fix3.empty:
-        g = pd.to_numeric(fix3['5D Max Gain'], errors='coerce').dropna()
-        c1,c2,c3,c4,c5 = st.columns(5)
-        c1.metric('回放交易日', int(dates_n))
-        c2.metric('FIX3样本', int(len(g)))
-        c3.metric('5D ≥5%', f'{(g>=.05).mean():.1%}' if len(g) else '—')
-        c4.metric('5D ≥8%', f'{(g>=.08).mean():.1%}' if len(g) else '—')
-        c5.metric('弱股 <2%', f'{(g<.02).mean():.1%}' if len(g) else '—')
-
-    csv = d.to_csv(index=False).encode('utf-8-sig')
-    st.download_button('💾 下载 FINAL 历史回放明细', csv,
-                       file_name=f"A52R_FINAL_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
-                       mime='text/csv', use_container_width=True)
+    render_kd_strategy_validation(bt)
+    dates_n = bt['Replay Date'].nunique() if 'Replay Date' in bt.columns else 0
+    csv = bt.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        '💾 下载 KD 20/80 历史回放明细', csv,
+        file_name=f"KD_20_80_Replay_{dates_n}D_{datetime.now().strftime('%Y-%m-%d')}.csv",
+        mime='text/csv', use_container_width=True
+    )
 
 # =========================================================
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("A6 FINAL")
+    st.header("CMS KD 20/80")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
     st.markdown("**Early Engine V2 权重**")
     st.write("市场结构 25")
@@ -4102,13 +2933,13 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("A6 FINAL：强势资格 + Startup Transition V3共同决定正式候选；Pivot/Room继续只做优先级排序。")
+    st.success("正式核心已切换：KD低位20金叉买入，高位80死叉卖出。")
 
 st.info(
-    "A6 FINAL 500池：从 GitHub Raw 读取当前 S&P 500，并保留原自选股；若读取失败会明确停止，不再偷偷退回110只。Core决定候选资格；Pivot/Room只负责排序。"
+    "股票池继续使用当前 S&P 500 + 原自选股；交易触发只看 KD 20/80，旧 MACD/RSI/共振不再决定候选资格。"
 )
 
-scan_clicked = st.button("🚀 运行 A6 FINAL 盘后扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行 KD 20/80 盘后扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
@@ -4149,11 +2980,11 @@ if scan_clicked:
         st.warning(
             "股票池已经扩大，但以下股票目前 Supabase 还没有复权日K，因此本次先跳过："
             + preview + more +
-            "。A6 FINAL 不会改用 Yahoo 日K混跑。"
+            "。KD 20/80 正式扫描不会改用 Yahoo 日K混跑。"
         )
 
     if not available_tickers:
-        st.error("Supabase 当前没有可用于 A6 FINAL 的股票日K，扫描停止。")
+        st.error("Supabase 当前没有可用于 KD 20/80 的股票日K，扫描停止。")
         st.stop()
 
     results = []
@@ -4173,40 +3004,24 @@ if scan_clicked:
         st.stop()
 
     all_df = pd.DataFrame(results)
-    # A6 FINAL formal candidate pool — Startup Transition V3:
-    # Formal candidates must pass BOTH:
-    #   1) original strength qualification, and
-    #   2) the stricter launch-stage transition gate.
-    # Never force-fill to top_n.
+    # CMS KD 20/80 正式候选：只让 KD 低位金叉决定是否入选。
+    # 保留最基础的可交易性要求（价格和成交额），不再用旧 MACD/RSI/共振/Startup 门槛。
     eligible = all_df[
-        (all_df["Hard Filter"] == "通过")
-        & (all_df["A5决策"] == "买")
-        & (pd.to_numeric(all_df["启动分"], errors="coerce") >= 5)
-        & (pd.to_numeric(all_df["新鲜触发数"], errors="coerce") >= 2)
-        & (all_df["位置确认"] == "是")
+        (pd.to_numeric(all_df["Price"], errors="coerce") >= 5)
+        & (pd.to_numeric(all_df["Dollar Volume"], errors="coerce") >= 20_000_000)
+        & (all_df["KD低位金叉20"] == "是")
     ].copy()
 
-    quality_order = {"✅ 通过": 0, "⚠️ 观察": 1, "❌ 不适合Early": 2}
-    eligible["_质量排序"] = eligible["质量检查"].map(quality_order).fillna(9)
-
-    # Pivot/Room priority comes first; existing A quality scores break ties.
-    sort_cols = [
-        "_质量排序", "A6优先分", "共振数", "Early V2 Score",
-        "Structure Score", "Leadership Score", "Accumulation Score"
-    ]
-    sort_cols = [c for c in sort_cols if c in eligible.columns]
-    ascending_map = {
-        "_质量排序": True, "A6优先分": False, "共振数": False,
-        "Early V2 Score": False, "Structure Score": False,
-        "Leadership Score": False, "Accumulation Score": False
-    }
+    eligible["_KD排序"] = pd.to_numeric(eligible.get("KD买入区值"), errors="coerce")
+    eligible["_成交额排序"] = pd.to_numeric(eligible.get("Dollar Volume"), errors="coerce")
     eligible = eligible.sort_values(
-        sort_cols,
-        ascending=[ascending_map[c] for c in sort_cols],
-    ).drop(columns=["_质量排序"]).reset_index(drop=True)
+        ["_KD排序", "_成交额排序"],
+        ascending=[True, False],
+    ).drop(columns=["_KD排序", "_成交额排序"], errors="ignore").reset_index(drop=True)
 
     eligible["Rank"] = eligible.index + 1
-    top_df = eligible.head(top_n).copy()
+    # KD 信号有几只就显示几只，不强制凑数，也不因 top_n 截断。
+    top_df = eligible.copy()
 
     # Keep the latest result during Streamlit reruns.
     st.session_state["v43a_top_df"] = top_df.copy()
@@ -4222,145 +3037,56 @@ if scan_clicked:
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
-        st.warning("当前没有符合 A6 FINAL Core 的正式候选。")
+        st.warning("今天没有出现 KD 低位20金叉买入信号。")
+        # 即使没有买入，也显示全市场出现的高位80死叉，便于已有持仓检查卖点。
+        if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
+            sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
+            if not sells.empty:
+                st.subheader('🔴 KD 高位80死叉 — 卖出检查')
+                cols = [c for c in ['Ticker','Company','Price','KDJ_K','KDJ_D','KDJ_J','KD交易动作'] if c in sells.columns]
+                show = sells[cols].rename(columns={'Ticker':'股票代码','Company':'公司','Price':'当前价格','KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD交易动作':'动作'})
+                st.dataframe(show.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
         return
 
-    st.success(f"✅ A6 FINAL 扫描完成：{len(top_df)}只正式候选（不强制凑满）")
+    st.success(f"✅ KD 20/80 扫描完成：{len(top_df)}只低位金叉买入候选")
+    st.caption('核心规则：K 上穿 D 且交叉位于20低位区 → 买；K 下穿 D 且交叉位于80高位区 → 卖。MACD、RSI和旧共振不再决定买卖。')
 
-    display_cols = [
-        # 结果放最前；最终只给“买 / 不买”
-        "A5决策", "Rank", "Ticker", "Company", "Price",
-        "A6优先级", "A6优先分", "A6优先原因",
-        "Pivot Status V3", "First Room Status V3", "Breakout Room Status V3",
-        "共振数", "启动阶段", "启动分", "新鲜触发", "新鲜触发数", "位置确认", "MACD启动", "KDJ启动", "量能启动", "前期压缩", "Pivot早期", "5日涨幅_启动判断",
-        # 一个指标一个col
-        "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
-        "空间等级", "空间优先级",
-        "位置判断", "A5.2R支撑区", "A5.2R压力区", "距支撑区", "上方空间",
-        # 关键数值，便于复核
-        "Early V2 Score", "Structure Score", "Trend & Momentum Score",
-        "Accumulation Score", "Leadership Score",
-        "KDJ_K", "KDJ_D", "KDJ_J", "RSI14", "MACD Phase",
-        "Volume Build Ratio", "Up/Down Volume Ratio", "RS Acceleration",
-        "Major Resistance Zone", "Major Support Zone", "Short-term Breakout",
-        "Confidence"
-    ]
-    display_cols = [c for c in display_cols if c in top_df.columns]
-
-    fmt = {
-        "Price": "{:.2f}",
-        "5日涨幅_启动判断": "{:+.1%}",
-        "压缩比_启动": "{:.2f}",
-        "Pivot延伸_启动": "{:+.1%}",
-        "Short-term Breakout": "{:.2f}",
-        "MA20 Slope 5D": "{:.2%}",
-        "RSI14": "{:.1f}",
-        "Volume Build Ratio": "{:.2f}",
-        "Up/Down Volume Ratio": "{:.2f}",
-        "上方空间": "{:+.1%}",
-        "距支撑区": "{:.1%}",
-        "Stock vs SPY 20D": "{:+.1%}",
-        "Sector vs SPY 20D": "{:+.1%}",
-        "Stock vs Sector 20D": "{:+.1%}",
-        "ROE": "{:.1%}",
-        "Operating Margin": "{:.1%}",
-        "Debt to Equity": "{:.1f}",
-        "Forward PE": "{:.1f}",
-        "PEG": "{:.2f}",
-        "Revenue Growth": "{:.1%}",
-        "Earnings Growth": "{:.1%}",
+    display_cols = [c for c in [
+        'Rank','Ticker','Company','Price','KD交易动作',
+        'KDJ_K','KDJ_D','KDJ_J','KD低位20','KD当日金叉','KD买入区值',
+        'Dollar Volume','ATR14','5D Return','20D Return'
+    ] if c in top_df.columns]
+    rename = {
+        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格','KD交易动作':'动作',
+        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD低位20':'低位≤20','KD当日金叉':'今日金叉',
+        'KD买入区值':'交叉区值','Dollar Volume':'成交额','ATR14':'ATR14','5D Return':'5日涨跌幅','20D Return':'20日涨跌幅'
     }
+    show = top_df[display_cols].rename(columns=rename)
+    st.subheader('🟢 KD 低位20金叉 — 买入候选')
+    st.dataframe(show.style.format({
+        '当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}','交叉区值':'{:.1f}',
+        '成交额':'{:,.0f}','ATR14':'{:.2f}','5日涨跌幅':'{:+.1%}','20日涨跌幅':'{:+.1%}'
+    }, na_rep=''), hide_index=True, use_container_width=True)
 
-    st.subheader("🎯 A6 FINAL — 次日正式候选")
-    cn_titles = {
-        "A5决策":"结果",
-        "A6优先级":"优先级", "A6优先分":"优先分", "A6优先原因":"优先原因",
-        "Pivot Status V3":"Pivot状态", "First Room Status V3":"First Room",
-        "Breakout Room Status V3":"Breakout Room",
-        "共振数":"共振数", "MACD共振":"MACD", "KDJ共振":"KDJ", "RSI共振":"RSI", "量价共振":"量价", "RS共振":"相对强度", "空间共振":"空间", "空间等级":"空间等级", "空间优先级":"空间优先级", "位置判断":"位置判断", "A5.2R支撑区":"支撑区", "A5.2R压力区":"压力区", "距支撑区":"距支撑", "上方空间":"上方空间", "KDJ_K":"K", "KDJ_D":"D", "KDJ_J":"J",
-        "Rank":"排名", "Ticker":"股票代码", "Company":"公司", "Early V2 Score":"Early V2总分",
-        "Confidence":"信心等级", "Fundamental Confirmation":"基本面确认", "Fundamental Reason":"基本面依据",
-        "Quality Fundamental":"质量", "FCF Fundamental":"现金流", "Debt Fundamental":"负债",
-        "Valuation Fundamental":"估值", "Growth Fundamental":"增长",
-        "Structure Score":"市场结构分", "Trend & Momentum Score":"趋势动量分",
-        "Accumulation Score":"资金积累分", "Leadership Score":"相对强势分", "Catalyst Score":"催化剂分",
-        "Price":"当前价格", "Major Resistance Zone":"主要压力区", "Resistance Touches":"压力测试次数",
-        "Major Support Zone":"主要支撑区", "Short-term Breakout":"20日突破参考",
-        "R→S Flip Zone":"R→S回踩区", "R→S Flip Touches":"R→S历史测试次数",
-        "MA20 Slope 5D":"MA20 5日斜率", "MACD Phase":"MACD阶段", "Volume Build Ratio":"量能增强比",
-        "Up/Down Volume Ratio":"涨跌量比", "OBV Trend":"OBV趋势",
-        "Stock vs SPY 20D":"个股 vs SPY", "Sector vs SPY 20D":"板块 vs SPY",
-        "Stock vs Sector 20D":"个股 vs 板块", "RS Acceleration":"RS加速度",
-        "Catalyst Label":"催化剂状态", "Positive Catalyst":"正面催化剂", "Negative Catalyst":"负面催化剂",
-        "ROE":"ROE", "Operating Margin":"营业利润率", "Debt to Equity":"Debt/Equity",
-        "Forward PE":"Forward P/E", "PEG":"PEG", "Revenue Growth":"营收增长", "Earnings Growth":"盈利增长",
-        "CMS Context":"CMS参考"
-    }
-    show_df = top_df[display_cols].rename(columns=cn_titles)
-    fmt_cn = {cn_titles.get(k,k): v for k,v in fmt.items()}
-    st.dataframe(
-        show_df.style.format({k: v for k, v in fmt_cn.items() if k in show_df.columns}, na_rep=""),
-        hide_index=True,
-        use_container_width=True,
-    )
+    if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
+        sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
+        if not sells.empty:
+            st.subheader('🔴 KD 高位80死叉 — 卖出检查')
+            cols = [c for c in ['Ticker','Company','Price','KDJ_K','KDJ_D','KDJ_J','KD卖出区值','KD交易动作'] if c in sells.columns]
+            sh = sells[cols].rename(columns={'Ticker':'股票代码','Company':'公司','Price':'当前价格','KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD卖出区值':'交叉区值','KD交易动作':'动作'})
+            st.dataframe(sh.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}','交叉区值':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
 
-    st.caption(
-        "注意：这里的‘一级/二级重点候选’表示第二天重点监控，不代表开盘立即买入。"
-        "真正买点由 B/C 用1H和15min确认；买入后继续由同一个 B/C App 管理退出。"
-    )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        csv = reorder_a_columns(top_df).rename(columns=A_SHEET_CN_MAP).to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "💾 下载 A6 FINAL 候选",
-            csv,
-            file_name=f"A52R_FINAL_Top_{len(top_df)}_{datetime.now().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with c2:
-        if st.button("☁️ 保存到 Google Sheet", use_container_width=True):
-            try:
-                n, u = save_daily_candidates(top_df)
-                st.success(f"已保存：新增 {n} 行，更新 {u} 行。工作表：{DAILY_WORKSHEET}")
-            except Exception as e:
-                st.error(f"Google Sheet 保存失败：{e}")
-
-    with st.expander("查看五大模块详细解释"):
-        st.markdown(
-            """
-**① 市场结构（25）**：一年日K Swing High/Low 聚类形成真正的压力/支撑区；同时保留20日短期突破位、Compression 和 R→S Flip。  
-**② 趋势动量（20）**：MA20 5日斜率不再只看 >0；MACD区分零轴下转强、零轴下金叉、零轴上扩大、零轴上缩短；RSI只做健康度确认。  
-**③ 资金积累（20）**：Volume Build + Up/Down Volume + OBV。日K只能判断‘资金积累证据’，不能宣称真实主动买盘。  
-**④ 领导力（20）**：Stock vs SPY、Sector vs SPY、Stock vs Sector；5D只判断近期是否加速，不继续增加更多基准。  
-**⑤ Catalyst（15）**：扩大正面/负面关键词并按事件类别识别；没有Catalyst不会直接淘汰，但明显负面Catalyst会压低候选级别。  
-**⑥ Fundamental Confirmation（不计入100分）**：Quality / FCF / Debt / Valuation / Growth 只用于确认公司质量与 Confidence，不改变 Early V2 技术排名；数据缺失显示“数据不足”，不会自动判为失败。  
-"""
-        )
-
-    with st.expander("查看未通过 Hard Filter 的股票"):
-        failed = all_df[all_df["Hard Filter"] != "通过"].copy()
-        if failed.empty:
-            st.write("全部股票都通过 Hard Filter。")
-        else:
-            st.dataframe(
-                failed[["Ticker", "Price", "Early V2 Score", "Hard Filter Reason"]]
-                .sort_values("Early V2 Score", ascending=False),
-                hide_index=True,
-                use_container_width=True,
-            )
 
 
 if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
-    st.caption("点击上方按钮运行 A6 FINAL 盘后扫描。")
+    st.caption("点击上方按钮运行 KD 20/80 盘后扫描。")
 
 st.divider()
 with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
     st.caption(
-        "这里仅用于验证 A6 FINAL，不参与每天正式盘后扫描。"
+        "这里仅用于验证 KD 20/80 核心，不参与每天正式盘后扫描。"
         "历史 Replay 暂使用 Yahoo 约2年日K；正式盘后扫描继续使用 Supabase 复权日线。"
     )
 
@@ -4371,7 +3097,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
         key="a6_final_replay_days"
     )
 
-    if st.button("运行60日：当前共振 vs KDJ+RSI", use_container_width=True):
+    if st.button("运行历史验证：KD 20买 / 80卖", use_container_width=True):
         try:
             p = st.progress(0)
             s = st.empty()
