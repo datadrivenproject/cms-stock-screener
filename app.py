@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS A — KD20 超跌反弹核心")
+st.title("📈 CMS A — KD20超跌反弹 + Early V2验证")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -2896,6 +2896,42 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
                 "KD高位死叉80": "是" if sell else "否",
+                "Early V2 Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Early V2 Score", np.nan)
+                ),
+                "Structure Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Structure Score", np.nan)
+                ),
+                "Trend & Momentum Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Trend & Momentum Score", np.nan)
+                ),
+                "Accumulation Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Accumulation Score", np.nan)
+                ),
+                "Leadership Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Leadership Score", np.nan)
+                ),
+                "Catalyst Score": safe_num(
+                    calc_a5_resonance(
+                        d.iloc[:loc+1].copy(),
+                        {"Price": price}
+                    ).get("Catalyst Score", np.nan)
+                ),
                 "1D Max Gain": g1,
                 "3D Max Gain": g3,
                 "5D Max Gain": g5,
@@ -3575,6 +3611,184 @@ def render_triple_factor_validation(bt):
         )
 
 
+
+def render_early_v2_validation(bt):
+    """
+    验证 Early Engine V2 五维评分是否真的能改善 A 新核心候选的未来表现。
+    A新核心固定为：
+      KD20金叉 + 前5日跌>=3% + ATR%>=4%
+    然后比较 Early V2 总分门槛 20/30/40/50/60。
+    """
+    if bt is None or bt.empty:
+        return
+
+    x = bt.copy()
+
+    needed = [
+        "KD低位金叉20", "前5日涨跌", "ATR%",
+        "Early V2 Score", "5D Max Gain", "5D Max Drawdown"
+    ]
+    missing = [c for c in needed if c not in x.columns]
+    if missing:
+        st.warning("Early V2历史验证缺少字段：" + "、".join(missing))
+        return
+
+    for c in [
+        "前5日涨跌", "ATR%", "Early V2 Score",
+        "5D Max Gain", "5D Max Drawdown",
+        "Structure Score", "Trend & Momentum Score",
+        "Accumulation Score", "Leadership Score", "Catalyst Score"
+    ]:
+        if c in x.columns:
+            x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    # 第一层 A 新核心固定，不改变
+    base = x[
+        (x["KD低位金叉20"] == "是")
+        & (x["前5日涨跌"] <= -0.03)
+        & (x["ATR%"] >= 0.04)
+    ].copy()
+
+    st.header("🧭 Early Engine V2 分数有效性验证")
+    st.caption(
+        "先固定 A 新核心：KD20金叉 + 前5日跌≥3% + ATR≥4%。"
+        "然后只测试 Early V2 总分是否能进一步提高5日表现。"
+        "这一步只做历史验证，不改变当前正式选股。"
+    )
+
+    if base.empty:
+        st.info("当前历史窗口没有满足 A 新核心的样本。")
+        return
+
+    rows = []
+
+    def summarize(label, y):
+        if y.empty:
+            return
+        g5 = pd.to_numeric(y["5D Max Gain"], errors="coerce").dropna()
+        dd = pd.to_numeric(y["5D Max Drawdown"], errors="coerce").dropna()
+        if len(g5) == 0:
+            return
+        rows.append({
+            "Early V2门槛": label,
+            "样本数": len(y),
+            "样本保留率": len(y) / len(base),
+            "5D≥3%": (g5 >= .03).mean(),
+            "5D≥5%": (g5 >= .05).mean(),
+            "5D≥8%": (g5 >= .08).mean(),
+            "5D≥10%": (g5 >= .10).mean(),
+            "平均5D最大涨幅": g5.mean(),
+            "中位数5D最大涨幅": g5.median(),
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+        })
+
+    summarize("全部A正式优选", base)
+
+    for threshold in [20, 30, 40, 50, 60]:
+        summarize(
+            f"总分≥{threshold}",
+            base[base["Early V2 Score"] >= threshold]
+        )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        st.info("Early V2 分数验证没有形成有效样本。")
+        return
+
+    base_hit10 = out.iloc[0]["5D≥10%"]
+    base_hit5 = out.iloc[0]["5D≥5%"]
+
+    out["10%相对提升"] = out["5D≥10%"] / base_hit10 if base_hit10 > 0 else np.nan
+    out["5%相对提升"] = out["5D≥5%"] / base_hit5 if base_hit5 > 0 else np.nan
+
+    st.dataframe(
+        out.style.format({
+            "样本保留率":"{:.1%}",
+            "5D≥3%":"{:.1%}",
+            "5D≥5%":"{:.1%}",
+            "5D≥8%":"{:.1%}",
+            "5D≥10%":"{:.1%}",
+            "平均5D最大涨幅":"{:+.2%}",
+            "中位数5D最大涨幅":"{:+.2%}",
+            "平均5D最大回撤":"{:+.2%}",
+            "10%相对提升":"{:.2f}x",
+            "5%相对提升":"{:.2f}x",
+        }, na_rep="—"),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # 找一个“样本>=20，且10%命中率高于不设门槛”的候选阈值
+    candidates = out[
+        (out["Early V2门槛"] != "全部A正式优选")
+        & (out["样本数"] >= 20)
+        & (out["5D≥10%"] > base_hit10)
+    ].copy()
+
+    if not candidates.empty:
+        best = candidates.sort_values(
+            ["5D≥10%", "样本数"],
+            ascending=[False, False]
+        ).iloc[0]
+        st.success(
+            f"当前值得继续验证的 Early V2 门槛：{best['Early V2门槛']}；"
+            f"5D≥10%={best['5D≥10%']:.1%}，"
+            f"样本={int(best['样本数'])}，"
+            f"相对无门槛={best['10%相对提升']:.2f}x。"
+            "先不要直接升级成硬过滤，建议看120/250日是否一致。"
+        )
+    else:
+        st.info(
+            "当前没有出现“样本≥20且5D≥10%明显优于无门槛”的 Early V2 分数阈值。"
+            "这意味着 Early V2 更适合继续做排序，而不是硬过滤。"
+        )
+
+    # 五个分项也顺便做相关性对照，帮助判断到底哪个维度可能有用
+    dims = [
+        ("Structure Score", "市场结构"),
+        ("Trend & Momentum Score", "趋势动量"),
+        ("Accumulation Score", "资金积累"),
+        ("Leadership Score", "领导力"),
+        ("Catalyst Score", "Catalyst"),
+    ]
+
+    dim_rows = []
+    for col, label in dims:
+        if col not in base.columns:
+            continue
+        high = base[base[col] >= base[col].median()].copy()
+        low = base[base[col] < base[col].median()].copy()
+        if len(high) < 8 or len(low) < 8:
+            continue
+        gh = pd.to_numeric(high["5D Max Gain"], errors="coerce").dropna()
+        gl = pd.to_numeric(low["5D Max Gain"], errors="coerce").dropna()
+        if len(gh) == 0 or len(gl) == 0:
+            continue
+        dim_rows.append({
+            "维度": label,
+            "中位数分界": base[col].median(),
+            "高分组样本": len(high),
+            "高分组5D≥10%": (gh >= .10).mean(),
+            "低分组样本": len(low),
+            "低分组5D≥10%": (gl >= .10).mean(),
+            "高低差": (gh >= .10).mean() - (gl >= .10).mean(),
+        })
+
+    dim_df = pd.DataFrame(dim_rows)
+    if not dim_df.empty:
+        st.subheader("五维评分里，哪个维度更有用？")
+        st.dataframe(
+            dim_df.style.format({
+                "中位数分界":"{:.1f}",
+                "高分组5D≥10%":"{:.1%}",
+                "低分组5D≥10%":"{:.1%}",
+                "高低差":"{:+.1%}",
+            }, na_rep="—"),
+            hide_index=True,
+            use_container_width=True
+        )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -3989,5 +4203,7 @@ if "a_historical_replay" in st.session_state:
     render_washout_escape_research(st.session_state["a_historical_replay"])
     st.divider()
     render_triple_factor_validation(st.session_state["a_historical_replay"])
+    st.divider()
+    render_early_v2_validation(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
     st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
