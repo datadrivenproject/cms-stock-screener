@@ -3478,13 +3478,6 @@ def render_washout_escape_research(bt):
     out = out.sort_values(["5D≥10%","样本数"], ascending=[False,False]).reset_index(drop=True)
 
     st.write(f"当前 KD20 基础 5D≥10% 命中率：**{base:.1%}**")
-    score_series = pd.to_numeric(base["Early V2 Score"], errors="coerce").dropna()
-    if len(score_series):
-        st.caption(
-            f"Early V2历史总分范围：{score_series.min():.0f}–{score_series.max():.0f}；"
-            f"中位数 {score_series.median():.1f}；平均 {score_series.mean():.1f}。"
-        )
-
     st.dataframe(
         out.style.format({
             "样本保留率":"{:.1%}",
@@ -3777,6 +3770,13 @@ def render_early_v2_validation(bt):
 
     out["10%相对提升"] = out["5D≥10%"] / base_hit10 if base_hit10 > 0 else np.nan
     out["5%相对提升"] = out["5D≥5%"] / base_hit5 if base_hit5 > 0 else np.nan
+
+    score_series = pd.to_numeric(base["Early V2 Score"], errors="coerce").dropna()
+    if len(score_series):
+        st.caption(
+            f"Early V2历史总分范围：{score_series.min():.0f}–{score_series.max():.0f}；"
+            f"中位数 {score_series.median():.1f}；平均 {score_series.mean():.1f}。"
+        )
 
     st.dataframe(
         out.style.format({
