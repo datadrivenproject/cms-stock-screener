@@ -38,7 +38,7 @@ jobs:
 
       - name: 1 - Incrementally update 529 raw EOD
         run: |
-          python load_stock_daily_529.py
+          python -u load_stock_daily_529.py
 
       - name: 2 - Rebuild adjusted OHLC for 529
         run: |
