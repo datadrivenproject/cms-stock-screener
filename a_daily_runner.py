@@ -9,6 +9,7 @@ Production rules:
 - FRESHNESS GATE: only tickers whose latest adjusted date equals the freshest
   date available in the current universe may participate in today's A scan.
   Stale tickers are logged and automatically return once their data catches up.
+- 资金积累分 is display/secondary information only; it is NOT an eligibility filter.
 - This file does NOT change app.py.
 """
 
@@ -21,7 +22,6 @@ from pathlib import Path
 import pandas as pd
 
 APP_FILE = Path(__file__).with_name("app.py")
-ACCUMULATION_MIN_SCORE = 8
 MAX_CANDIDATES = 20
 MAX_MISSING_TICKERS = 5
 
@@ -137,7 +137,7 @@ def ticker_latest_date(df):
 def main():
     print("=" * 88, flush=True)
     print("CMS A — KD-CORE HEADLESS DAILY RUNNER", flush=True)
-    print(f"Accumulation confirmation: >= {ACCUMULATION_MIN_SCORE}/20", flush=True)
+    print("Selection source of truth: app.py A正式候选 (no extra accumulation cutoff)", flush=True)
     print("Freshness gate: ON — stale tickers cannot participate in today's A scan.", flush=True)
     print("=" * 88, flush=True)
 
@@ -191,8 +191,6 @@ def main():
 
     all_df = pd.DataFrame(rows)
     formal = all_df[all_df.get("A正式候选", "否").astype(str).eq("是")].copy()
-    accum = pd.to_numeric(formal.get("资金积累总分"), errors="coerce").fillna(0)
-    formal = formal[accum >= ACCUMULATION_MIN_SCORE].copy()
 
     if not formal.empty:
         formal["_a_priority"] = pd.to_numeric(formal.get("A优先级"), errors="coerce").fillna(9)
@@ -213,8 +211,8 @@ def main():
     print(f"Missing adjusted: {len(missing)}", flush=True)
     print(f"Stale excluded: {len(stale_tickers)}", flush=True)
     print(f"Fresh universe analyzed: {len(all_df)}", flush=True)
-    print(f"app.py formal KD candidates: {(all_df.get('A正式候选', '否').astype(str) == '是').sum()}", flush=True)
-    print(f"After accumulation >= {ACCUMULATION_MIN_SCORE}: {len(formal)}", flush=True)
+    print(f"app.py formal KD candidates: {len(formal)}", flush=True)
+    print("Extra accumulation eligibility filter: OFF", flush=True)
     print(f"Sheet result: {result}", flush=True)
 
     if not formal.empty:
@@ -224,7 +222,7 @@ def main():
         ] if c in formal.columns]
         print(formal[cols].to_string(index=False), flush=True)
     else:
-        print("No KD-Core candidate passed accumulation confirmation today.", flush=True)
+        print("No app.py formal KD-Core candidate today.", flush=True)
 
     print("✅ KD-Core scheduled scan completed with freshness gate.", flush=True)
 
