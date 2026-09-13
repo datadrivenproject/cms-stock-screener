@@ -20,6 +20,38 @@ except ImportError:
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
 st.title("📈 CMS A — KD20超跌反弹 + 恐慌释放排序")
+
+# ===== 页面显示：最后数据日期 =====
+def get_page_last_data_date():
+    """
+    从当前程序已加载/缓存的数据中寻找真正的最新行情日期。
+    找不到时显示“未知”，不使用今天日期冒充交易数据日期。
+    """
+    try:
+        # 优先从 session_state 中已经存在的扫描/历史结果寻找日期字段
+        date_candidates = []
+        for _, obj in st.session_state.items():
+            if isinstance(obj, pd.DataFrame) and not obj.empty:
+                for c in ["最后数据日期", "Date", "date", "交易日期", "日期",
+                          "最新日期", "data_date", "scan_date"]:
+                    if c in obj.columns:
+                        vals = pd.to_datetime(obj[c], errors="coerce").dropna()
+                        if len(vals):
+                            date_candidates.append(vals.max())
+
+                # 如果日期在 DatetimeIndex
+                if isinstance(obj.index, pd.DatetimeIndex) and len(obj.index):
+                    date_candidates.append(pd.Timestamp(obj.index.max()))
+
+        if date_candidates:
+            return max(date_candidates).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return "未知"
+
+_page_last_date = get_page_last_data_date()
+st.info(f"📅 最后数据日期：{_page_last_date}")
+
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -2343,67 +2375,75 @@ def reorder_a_columns(df):
 
 
 def save_daily_candidates(df):
-    """Save Top candidates with ONE batch write instead of row-by-row API calls."""
+    """
+    安全写入 A_Candidates：
+    1) 本次0只候选 -> 不清空旧数据，只提示无候选
+    2) 有候选 -> 覆盖写入最新结果
+    3) 自动增加“扫描日期”列，方便确认使用的是哪天数据
+    """
+    if df is None or len(df) == 0:
+        return {
+            "written": False,
+            "count": 0,
+            "message": "本次无候选，A_Candidates 保留原数据，未清空。"
+        }
+
+    out = df.copy()
+
+    # 最后数据日期：必须尽量使用行情本身的最新交易日，
+    # 不能用今天日期冒充市场数据日期。
+    last_data_date = ""
+    for c in ["最后数据日期", "Date", "date", "交易日期", "日期", "最新日期", "data_date"]:
+        if c in out.columns:
+            try:
+                vals = pd.to_datetime(out[c], errors="coerce").dropna()
+                if len(vals):
+                    last_data_date = vals.max().strftime("%Y-%m-%d")
+                    break
+            except Exception:
+                pass
+
+    # 候选结果通常来自同一个正式扫描日；若已有 scan_date 字段也尝试读取。
+    if not last_data_date and "scan_date" in out.columns:
+        try:
+            vals = pd.to_datetime(out["scan_date"], errors="coerce").dropna()
+            if len(vals):
+                last_data_date = vals.max().strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # 识别不到时明确写“未知”，绝不写当前日期造成误解。
+    if not last_data_date:
+        last_data_date = "未知"
+
+    # 放在第一列，一打开 Google Sheet 就能看到数据到底更新到哪一天。
+    if "最后数据日期" in out.columns:
+        out["最后数据日期"] = last_data_date
+    else:
+        out.insert(0, "最后数据日期", last_data_date)
+
+    # 删除旧版容易混淆的“扫描日期”
+    if "扫描日期" in out.columns:
+        out = out.drop(columns=["扫描日期"])
+
     ws = get_daily_worksheet()
-    saved = df.copy()
-    scan_date = datetime.now().strftime("%Y-%m-%d")
-    scan_time = datetime.now().strftime("%H:%M:%S")
-    saved.insert(0, "Scan Date", scan_date)
-    saved.insert(1, "Scan Time", scan_time)
 
-    fixed = ["Scan Date", "Scan Time"]
-    primary = [c for c in A_PRIMARY_COLS if c in saved.columns]
-    rest = [c for c in saved.columns if c not in fixed + primary]
-    saved = saved[fixed + primary + rest].copy()
-    sheet_df = saved.rename(columns=A_SHEET_CN_MAP)
-    headers = list(sheet_df.columns)
+    # 只有在有候选时才清空并覆盖
+    ws.clear()
 
-    existing = ws.get_all_values()
-    if existing and existing[0] != headers:
-        # Schema changed: rebuild once. This costs two writes only on version changes.
-        ws.clear()
-        existing = []
+    clean = out.copy()
+    clean = clean.replace([np.inf, -np.inf], np.nan)
+    clean = clean.where(pd.notna(clean), "")
 
-    date_col, ticker_col = "扫描日期", "股票代码"
-    date_idx, ticker_idx = headers.index(date_col), headers.index(ticker_col)
+    values = [clean.columns.tolist()] + clean.astype(object).values.tolist()
+    ws.update(values=values, range_name="A1")
 
-    old_rows = existing[1:] if existing else []
-    new_map = {
-        (str(r[date_col]), str(r[ticker_col]).upper()): [_cell(r.get(c, "")) for c in headers]
-        for _, r in sheet_df.iterrows()
+    return {
+        "written": True,
+        "count": len(out),
+        "message": f"已写入 A_Candidates（{len(out)}只），最后数据日期 {last_data_date}"
     }
 
-    merged_rows = []
-    seen = set()
-    updated_rows = 0
-    for row in old_rows:
-        padded = list(row) + [""] * max(0, len(headers) - len(row))
-        padded = padded[:len(headers)]
-        key = (str(padded[date_idx]), str(padded[ticker_idx]).upper())
-        if key in new_map:
-            merged_rows.append(new_map[key])
-            seen.add(key)
-            updated_rows += 1
-        else:
-            merged_rows.append(padded)
-
-    for key, vals in new_map.items():
-        if key not in seen:
-            merged_rows.append(vals)
-
-    new_rows = len(new_map) - updated_rows
-    # One matrix update = one Sheets write request in normal operation.
-    ws.update("A1", [headers] + merged_rows, value_input_option="USER_ENTERED")
-    return new_rows, updated_rows
-
-
-
-# =========================================================
-# A STRONG-STOCK HISTORY / BACKTEST — V4.3A.3B-FIX3
-# Keeps LIVE A ranking unchanged. Stores the whole scanned universe so we can
-# measure whether A ranks future 3–5 day big movers near the top.
-# =========================================================
-ALL_SCAN_WORKSHEET = "A_AllScannedHistory"
 
 def get_named_worksheet(name, rows=12000, cols=80):
     if gspread is None or Credentials is None:
@@ -4488,8 +4528,11 @@ if scan_clicked:
     # Google Sheet 导出：只写入当前A候选，不改变选股逻辑
     if st.button("📤 写入 Google Sheet", key="write_sheet_v4"):
         try:
-            save_daily_candidates(eligible)
-            st.success(f"已写入 Google Sheet：A_Candidates（{len(eligible)}只）")
+            result = save_daily_candidates(eligible)
+            if result.get("written"):
+                st.success(result.get("message"))
+            else:
+                st.warning(result.get("message"))
         except Exception as e:
             st.error(f"写入 Google Sheet 失败：{e}")
 
