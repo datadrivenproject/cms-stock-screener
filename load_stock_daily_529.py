@@ -6,7 +6,6 @@ import io
 import requests
 import pandas as pd
 from collections import defaultdict, Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
 # =========================================================
@@ -32,8 +31,8 @@ DB_BATCH = 500
 REQUEST_PAUSE_SECONDS = 4.0
 
 # 429 backoff. Retry-After header is honored when present.
-MAX_RETRIES = 5
-BACKOFF_SECONDS = [30, 60, 120, 240, 300]
+MAX_RETRIES = 2
+BACKOFF_SECONDS = [15, 30]
 
 MIN_VALID_DAYS = 200
 
@@ -160,130 +159,56 @@ def sb_headers(key):
 
 def get_existing_status(base_url, key, tickers):
     """
-    Lightweight Supabase status check.
-
-    HARD RULE PRESERVED:
-      - We only need each ticker's latest stored trade_date to know where to resume.
-      - Do NOT download the ticker's full history just to find that date.
-
-    For each ticker we request only its newest row:
-      order=trade_date.desc, Range=0-0
-
-    `Prefer: count=exact` lets the same tiny response also report the total number
-    of stored rows in Content-Range, so the existing >=200-day verification still works.
-    Requests are parallelized conservatively to avoid the old 25-ticker/full-history
-    query that caused Supabase 504 Gateway Timeout.
+    Read existing Supabase status for each ticker:
+      counts[ticker] = number of stored rows
+      latest[ticker] = latest stored trade_date
     """
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
 
     counts = Counter()
     latest = {}
 
-    STATUS_WORKERS = 8
-    STATUS_RETRIES = 4
-    STATUS_BACKOFF = [2, 5, 10, 20]
+    for bno, batch in enumerate(chunks(tickers, 25), 1):
+        filt = "in.(" + ",".join(batch) + ")"
+        start = 0
+        page_size = 1000
 
-    def one_ticker_status(ticker):
-        params = {
-            "select": "ticker,trade_date",
-            "ticker": f"eq.{ticker}",
-            "order": "trade_date.desc",
-        }
-
-        last_error = None
-
-        for attempt in range(STATUS_RETRIES):
+        while True:
             headers = dict(sb_headers(key))
-            headers["Range"] = "0-0"
-            headers["Prefer"] = "count=exact"
+            headers["Range"] = f"{start}-{start + page_size - 1}"
 
-            try:
-                r = requests.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=30,
-                )
+            r = requests.get(
+                url,
+                params={
+                    "select": "ticker,trade_date",
+                    "ticker": filt,
+                    "order": "ticker.asc,trade_date.asc",
+                },
+                headers=headers,
+                timeout=120,
+            )
 
-                if r.ok:
-                    rows = r.json()
-                    last_date = ""
-                    if rows:
-                        last_date = str(rows[0].get("trade_date", ""))[:10]
-
-                    # Expected formats include: "0-0/252" or "*/0".
-                    content_range = str(r.headers.get("Content-Range", ""))
-                    total = 0
-                    if "/" in content_range:
-                        tail = content_range.rsplit("/", 1)[-1].strip()
-                        if tail.isdigit():
-                            total = int(tail)
-
-                    # Safe fallback if Supabase omitted an exact count header.
-                    if total == 0 and rows:
-                        total = 1
-
-                    return ticker, total, last_date
-
-                # Retry transient Supabase / gateway / rate-limit errors.
-                if r.status_code in (408, 425, 429, 500, 502, 503, 504):
-                    last_error = RuntimeError(
-                        f"HTTP {r.status_code}: {r.text[:300]}"
-                    )
-                    wait = STATUS_BACKOFF[min(attempt, len(STATUS_BACKOFF) - 1)]
-                    time.sleep(wait)
-                    continue
-
+            if not r.ok:
+                print(r.text[:1500])
                 r.raise_for_status()
 
-            except requests.RequestException as e:
-                last_error = e
-                wait = STATUS_BACKOFF[min(attempt, len(STATUS_BACKOFF) - 1)]
-                time.sleep(wait)
+            page = r.json()
 
-        raise RuntimeError(f"{ticker} Supabase status check failed: {last_error}")
+            for row in page:
+                t = str(row.get("ticker", "")).upper()
+                d = str(row.get("trade_date", ""))[:10]
 
-    total_tickers = len(tickers)
-    completed = 0
-    failures = []
+                if t:
+                    counts[t] += 1
+                    if d and (t not in latest or d > latest[t]):
+                        latest[t] = d
 
-    with ThreadPoolExecutor(max_workers=STATUS_WORKERS) as ex:
-        future_map = {
-            ex.submit(one_ticker_status, t): t
-            for t in tickers
-        }
+            if len(page) < page_size:
+                break
 
-        for fut in as_completed(future_map):
-            ticker = future_map[fut]
-            completed += 1
+            start += page_size
 
-            try:
-                t, cnt, last_date = fut.result()
-                counts[t] = cnt
-                if last_date:
-                    latest[t] = last_date
-
-                status = last_date if last_date else "NO HISTORY"
-                print(
-                    f"  [{completed:03d}/{total_tickers}] {t}: "
-                    f"latest={status}, rows={cnt}",
-                    flush=True,
-                )
-
-            except Exception as e:
-                failures.append((ticker, str(e)))
-                print(
-                    f"  [{completed:03d}/{total_tickers}] {ticker}: "
-                    f"❌ status check failed: {e}",
-                    flush=True,
-                )
-
-    if failures:
-        sample = "; ".join(f"{t}: {msg}" for t, msg in failures[:10])
-        raise RuntimeError(
-            f"Supabase status check failed for {len(failures)} ticker(s). "
-            f"First failures: {sample}"
-        )
+        print(f"Supabase status batch {bno}: {len(batch)} tickers")
 
     return counts, latest
 
@@ -294,9 +219,18 @@ def next_calendar_day(yyyy_mm_dd):
 
 
 def today_iso():
-    # Explicit date bound required by Business Quant.
-    # EOD mode only returns settled sessions, so weekends/holidays add nothing.
-    return date.today().isoformat()
+    """
+    Upper bound for settled EOD data.
+
+    On Saturday/Sunday, use the most recent weekday instead of today's
+    calendar date. This avoids asking Business Quant for weekend dates.
+    US market holidays are harmless here: EOD mode simply returns no bar
+    for a non-trading weekday.
+    """
+    d = date.today()
+    while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        d -= timedelta(days=1)
+    return d.isoformat()
 
 
 def fetch_batch_incremental(api_key, batch, from_date, till_date):
@@ -330,15 +264,30 @@ def fetch_batch_incremental(api_key, batch, from_date, till_date):
             )
 
             if r.status_code == 429:
+                # Do not let one stale ticker block the entire 529-stock resume.
+                # Retry briefly once; on the final 429, fail this batch so the
+                # caller records it and immediately continues to the next batch.
+                if attempt >= MAX_RETRIES:
+                    raise RuntimeError(
+                        f"Business Quant 429 after {MAX_RETRIES} attempts "
+                        f"[{from_date} -> {till_date}] "
+                        f"tickers={','.join(batch)}"
+                    )
+
                 retry_after = r.headers.get("Retry-After")
                 try:
-                    wait_s = int(float(retry_after)) if retry_after else BACKOFF_SECONDS[attempt - 1]
+                    server_wait = int(float(retry_after)) if retry_after else BACKOFF_SECONDS[attempt - 1]
                 except Exception:
-                    wait_s = BACKOFF_SECONDS[attempt - 1]
+                    server_wait = BACKOFF_SECONDS[attempt - 1]
+
+                # Keep resume jobs moving even if the provider sends a very long
+                # Retry-After value.
+                wait_s = min(server_wait, BACKOFF_SECONDS[attempt - 1])
 
                 print(
                     f"  ⚠️ 429 Too Many Requests. "
-                    f"等待 {wait_s} 秒后重试 ({attempt}/{MAX_RETRIES})..."
+                    f"等待 {wait_s} 秒后短暂重试 ({attempt}/{MAX_RETRIES})；"
+                    f"若仍 429 将跳过本批并继续..."
                 )
                 time.sleep(wait_s)
                 continue
