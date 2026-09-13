@@ -21,41 +21,81 @@ st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="�
 
 st.title("📈 CMS A — KD20超跌反弹 + 恐慌释放排序")
 
-# ===== 页面显示：最后数据日期 =====
-def get_page_last_data_date():
+# ===== 页面显示：Supabase 最后数据日期 =====
+@st.cache_data(ttl=300, show_spinner=False)
+def get_supabase_last_data_date():
     """
-    从当前程序已加载/缓存的数据中寻找真正的最新行情日期。
-    找不到时显示“未知”，不使用今天日期冒充交易数据日期。
+    页面打开时直接查询 Supabase stock_daily 的最新 trade_date。
+    不依赖先运行扫描，也不用今天日期冒充行情日期。
     """
     try:
-        # 优先从 session_state 中已经存在的扫描/历史结果寻找日期字段
-        date_candidates = []
-        for _, obj in st.session_state.items():
-            if isinstance(obj, pd.DataFrame) and not obj.empty:
-                for c in ["最后数据日期", "Date", "date", "交易日期", "日期",
-                          "最新日期", "data_date", "scan_date"]:
-                    if c in obj.columns:
-                        vals = pd.to_datetime(obj[c], errors="coerce").dropna()
-                        if len(vals):
-                            date_candidates.append(vals.max())
+        def find_secret(name):
+            # 顶层 Secrets
+            try:
+                if name in st.secrets:
+                    return st.secrets[name]
+            except Exception:
+                pass
 
-                # 如果日期在 DatetimeIndex
-                if isinstance(obj.index, pd.DatetimeIndex) and len(obj.index):
-                    date_candidates.append(pd.Timestamp(obj.index.max()))
+            # 支持 TOML 分组
+            try:
+                def walk(obj):
+                    if hasattr(obj, "items"):
+                        for k, v in obj.items():
+                            if str(k) == name:
+                                return v
+                            found = walk(v)
+                            if found is not None:
+                                return found
+                    return None
+                return walk(st.secrets)
+            except Exception:
+                return None
 
-        if date_candidates:
-            return max(date_candidates).strftime("%Y-%m-%d")
+        base_url = find_secret("SUPABASE_URL")
+        api_key = find_secret("SUPABASE_SERVICE_ROLE_KEY")
+
+        if not base_url or not api_key:
+            return "未知"
+
+        base_url = str(base_url).strip().rstrip("/")
+        api_key = str(api_key).strip()
+
+        if "/rest/v1" in base_url:
+            base_url = base_url.split("/rest/v1", 1)[0].rstrip("/")
+
+        endpoint = f"{base_url}/rest/v1/stock_daily"
+        headers = {
+            "apikey": api_key,
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+        params = {
+            "select": "trade_date",
+            "order": "trade_date.desc",
+            "limit": "1",
+        }
+
+        r = requests.get(endpoint, headers=headers, params=params, timeout=15)
+        if r.status_code >= 400:
+            return "未知"
+
+        rows = r.json()
+        if not rows:
+            return "未知"
+
+        dt = pd.to_datetime(rows[0].get("trade_date"), errors="coerce")
+        if pd.isna(dt):
+            return "未知"
+
+        return dt.strftime("%Y-%m-%d")
     except Exception:
-        pass
-    return "未知"
+        return "未知"
 
-_page_last_date = get_page_last_data_date()
-st.info(f"📅 最后数据日期：{_page_last_date}")
 
-st.caption(
-    "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
-    "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
-)
+_page_last_date = get_supabase_last_data_date()
+st.info(f"📅 Supabase 最后数据日期：{_page_last_date}")
+
 
 # =========================================================
 # SETTINGS
@@ -4392,7 +4432,7 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("CMS A 新核心")
+    st.header("CMS A 核心扫描")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
 
     st.success(
@@ -4403,22 +4443,20 @@ with st.sidebar:
         "前5日跌≥5% = 强反弹候选"
     )
 
-    st.markdown("**资金积累确认（0–20）**")
-    st.write("OBV改善 0–5")
-    st.write("下跌缩量 0–5")
-    st.write("上涨放量 0–5")
-    st.write("量价背离 / 卖压衰竭 0–5")
-    st.caption("目前先用于解释和研究；是否把≥4升级为正式第4条件，要等长窗口验证。")
-    st.caption("RSI / 量价 / OBV 继续监控，不作为硬买入条件。")
+    st.markdown("**恐慌释放排序（不做硬过滤）**")
+    st.write("强：3–4分")
+    st.write("中：2分")
+    st.write("弱：0–1分")
+    st.caption("正式A仍只有：KD20低位金叉 + 前5日跌≥3% + ATR≥4%。")
+    st.caption("恐慌释放只用于候选排序和解释，不会减少候选数量。")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
 
 st.info(
-    "A采用两层架构：第一层用 KD20 + 前5日跌幅 + ATR% 选出候选；"
-    "第二层保留 Early Engine V2 的市场结构、趋势动量、资金积累、领导力、Catalyst 做优先级排序。"
-    "二次评分不会把第一层已经选出的股票硬性剔除。"
+    "A正式核心：KD20低位金叉 + 前5日跌≥3% + ATR≥4%。"
+    "前5日跌≥5%可标记为强反弹候选；恐慌释放仅做排序，不做硬过滤。"
 )
 
-scan_clicked = st.button("🚀 运行 CMS A 新核心扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行 CMS A 核心扫描扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
@@ -4483,7 +4521,7 @@ if scan_clicked:
         st.stop()
 
     all_df = pd.DataFrame(results)
-    # CMS A 新核心：
+    # CMS A 核心扫描：
     # 先保留全部严格 KD20 金叉信号，便于观察；
     # 再按经过长窗口验证的 A 候选等级排序。
     # 正式优选 = KD20 + 前5日跌>=3% + ATR%>=4%
