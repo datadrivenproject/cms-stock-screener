@@ -7,7 +7,7 @@ CMS A — KD-CORE HEADLESS DAILY RUNNER
 Purpose
 -------
 Run the SAME stock-analysis functions already defined in app.py, but without
-rendering Streamlit UI.  The scheduled A job therefore uses app.py as the
+rendering Streamlit UI. The scheduled A job therefore uses app.py as the
 single source of truth for the KD signal and supporting fields.
 
 Current production selection used by this runner:
@@ -16,7 +16,7 @@ Current production selection used by this runner:
       + ATR% >=4%; app.py also labels the >=5% decline tier as stronger)
   2) explainable accumulation confirmation >= ACCUMULATION_MIN_SCORE
   3) candidates are ranked by A优先级 first, then accumulation score,
-     then panic-release score.  Old Early V2 / Structure / Leadership /
+     then panic-release score. Old Early V2 / Structure / Leadership /
      Catalyst scores do NOT decide eligibility or ranking here.
 
 This file does NOT change app.py.
@@ -34,6 +34,7 @@ import pandas as pd
 APP_FILE = Path(__file__).with_name("app.py")
 ACCUMULATION_MIN_SCORE = 8   # 8/20 = minimum confirmation; easy to tune later
 MAX_CANDIDATES = 20          # not a quota; fewer are kept when fewer qualify
+MAX_MISSING_TICKERS = 5      # small isolated data gaps must not kill the whole A scan
 
 
 def env(name):
@@ -182,20 +183,33 @@ def main():
 
     missing = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
     if missing:
-        raise RuntimeError(
-            "A scan blocked: adjusted Supabase data missing for " + ", ".join(missing[:40])
+        if len(missing) > MAX_MISSING_TICKERS:
+            raise RuntimeError(
+                f"A scan blocked: adjusted Supabase data missing for {len(missing)} tickers: "
+                + ", ".join(missing[:40])
+            )
+        print(
+            f"⚠️ Small isolated adjusted-data gap: {len(missing)} ticker(s) skipped: "
+            + ", ".join(missing),
+            flush=True,
         )
 
-    scan_date = latest_data_date(data)
+    available_tickers = [t for t in tickers if t not in missing]
+    if not available_tickers:
+        raise RuntimeError("A scan blocked: no usable adjusted Supabase data")
+
+    usable_data = {t: data[t] for t in available_tickers}
+    scan_date = latest_data_date(usable_data)
     print(f"Latest adjusted data date: {scan_date}", flush=True)
+    print(f"Usable universe: {len(available_tickers)} / {len(tickers)}", flush=True)
 
     rows = []
-    for i, ticker in enumerate(tickers, 1):
+    for i, ticker in enumerate(available_tickers, 1):
         row = ns["analyze_daily_candidate"](ticker, data[ticker], benchmarks)
         if row is not None:
             row["最后数据日期"] = scan_date
             rows.append(row)
-        print(f"[{i:03d}/{len(tickers)}] {ticker}", flush=True)
+        print(f"[{i:03d}/{len(available_tickers)}] {ticker}", flush=True)
 
     if not rows:
         raise RuntimeError("A scan produced no valid rows")
@@ -221,11 +235,13 @@ def main():
         formal["Rank"] = formal.index + 1
 
     # Important: save_daily_candidates does NOT clear the previous sheet when
-    # there are zero candidates.  That protects B from an accidental empty scan.
+    # there are zero candidates. That protects B from an accidental empty scan.
     result = ns["save_daily_candidates"](formal)
 
     print("\n" + "=" * 88, flush=True)
     print("KD-CORE DAILY SUMMARY", flush=True)
+    print(f"Requested universe: {len(tickers)}", flush=True)
+    print(f"Skipped for missing adjusted data: {len(missing)}", flush=True)
     print(f"Analyzed: {len(all_df)}", flush=True)
     print(f"app.py formal KD candidates: {(all_df.get('A正式候选', '否').astype(str) == '是').sum()}", flush=True)
     print(f"After accumulation >= {ACCUMULATION_MIN_SCORE}: {len(formal)}", flush=True)
