@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-CMS A — KD-CORE HEADLESS DAILY RUNNER
+"""CMS A — KD-CORE HEADLESS DAILY RUNNER.
 
-Purpose
--------
-Run the SAME stock-analysis functions already defined in app.py, but without
-rendering Streamlit UI. The scheduled A job therefore uses app.py as the
-single source of truth for the KD signal and supporting fields.
-
-Current production selection used by this runner:
-  1) app.py must mark A正式候选 == 是
-     (currently strict KD20 low-zone golden cross + prior 5D decline >=3%
-      + ATR% >=4%; app.py also labels the >=5% decline tier as stronger)
-  2) explainable accumulation confirmation >= ACCUMULATION_MIN_SCORE
-  3) candidates are ranked by A优先级 first, then accumulation score,
-     then panic-release score. Old Early V2 / Structure / Leadership /
-     Catalyst scores do NOT decide eligibility or ranking here.
-
-This file does NOT change app.py.
+Production rules:
+- app.py remains the source of truth for A正式候选 and indicator calculations.
+- Small isolated missing adjusted-data gaps are skipped rather than killing A.
+- FRESHNESS GATE: only tickers whose latest adjusted date equals the freshest
+  date available in the current universe may participate in today's A scan.
+  Stale tickers are logged and automatically return once their data catches up.
+- This file does NOT change app.py.
 """
 
 import ast
@@ -30,11 +20,10 @@ from pathlib import Path
 
 import pandas as pd
 
-
 APP_FILE = Path(__file__).with_name("app.py")
-ACCUMULATION_MIN_SCORE = 8   # 8/20 = minimum confirmation; easy to tune later
-MAX_CANDIDATES = 20          # not a quota; fewer are kept when fewer qualify
-MAX_MISSING_TICKERS = 5      # small isolated data gaps must not kill the whole A scan
+ACCUMULATION_MIN_SCORE = 8
+MAX_CANDIDATES = 20
+MAX_MISSING_TICKERS = 5
 
 
 def env(name):
@@ -51,7 +40,6 @@ def parse_google_service_account(raw):
             return info
     except Exception:
         pass
-
     try:
         parsed = tomllib.loads(raw)
         info = parsed.get("gcp_service_account", parsed)
@@ -59,7 +47,6 @@ def parse_google_service_account(raw):
             return info
     except Exception:
         pass
-
     raise RuntimeError(
         "GCP_SERVICE_ACCOUNT_JSON must be full service-account JSON or a "
         "Streamlit [gcp_service_account] TOML block."
@@ -86,44 +73,32 @@ class _HeadlessStreamlit:
 
 
 def load_production_namespace():
-    """Load imports/constants/functions from app.py, but never render its UI."""
     source = APP_FILE.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(APP_FILE))
-
     selected = []
     for node in tree.body:
         lineno = getattr(node, "lineno", 0)
-
-        # Current app.py UI begins after the production function section.
-        # Keep the same safety boundary used by the previous runner.
         if lineno >= 3232:
             continue
-
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             selected.append(node)
             continue
-
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
             if "st" not in names:
                 selected.append(node)
             continue
-
         if isinstance(node, ast.Import):
             kept = [a for a in node.names if a.name != "streamlit"]
             if kept:
                 selected.append(ast.Import(names=kept))
             continue
-
         if isinstance(node, ast.ImportFrom):
             selected.append(node)
             continue
-
         if isinstance(node, ast.Try):
             selected.append(node)
             continue
-
-        # app.py has a map update expression in the production section.
         if isinstance(node, ast.Expr) and lineno == 1826:
             selected.append(node)
 
@@ -134,44 +109,36 @@ def load_production_namespace():
         "gcp_service_account": service_account,
         "tracker": {"sheet_name": env("TRACKER_SHEET_NAME")},
     }
-
     ns = {
         "__name__": "cms_a_production_core",
         "__file__": str(APP_FILE),
         "st": _HeadlessStreamlit(fake_secrets),
     }
-
     mod = ast.Module(body=selected, type_ignores=[])
     ast.fix_missing_locations(mod)
     exec(compile(mod, str(APP_FILE), "exec"), ns, ns)
-
-    required = [
-        "get_universe",
-        "supabase_batch_download",
-        "get_benchmark_returns",
-        "analyze_daily_candidate",
-        "save_daily_candidates",
-    ]
+    required = ["get_universe", "supabase_batch_download", "get_benchmark_returns",
+                "analyze_daily_candidate", "save_daily_candidates"]
     missing = [name for name in required if name not in ns]
     if missing:
         raise RuntimeError("Could not load from app.py: " + ", ".join(missing))
-
     return ns
 
 
-def latest_data_date(data):
-    dates = []
-    for df in data.values():
-        if df is not None and not df.empty:
-            dates.append(pd.Timestamp(df.index.max()).date())
-    return max(dates).isoformat() if dates else "未知"
+def ticker_latest_date(df):
+    if df is None or df.empty:
+        return None
+    try:
+        return pd.Timestamp(df.index.max()).date()
+    except Exception:
+        return None
 
 
 def main():
     print("=" * 88, flush=True)
     print("CMS A — KD-CORE HEADLESS DAILY RUNNER", flush=True)
     print(f"Accumulation confirmation: >= {ACCUMULATION_MIN_SCORE}/20", flush=True)
-    print("Old Early V2 / Structure / Leadership / Catalyst are NOT eligibility gates.", flush=True)
+    print("Freshness gate: ON — stale tickers cannot participate in today's A scan.", flush=True)
     print("=" * 88, flush=True)
 
     ns = load_production_namespace()
@@ -182,44 +149,48 @@ def main():
     benchmarks = ns["get_benchmark_returns"]()
 
     missing = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
-    if missing:
-        if len(missing) > MAX_MISSING_TICKERS:
-            raise RuntimeError(
-                f"A scan blocked: adjusted Supabase data missing for {len(missing)} tickers: "
-                + ", ".join(missing[:40])
-            )
-        print(
-            f"⚠️ Small isolated adjusted-data gap: {len(missing)} ticker(s) skipped: "
-            + ", ".join(missing),
-            flush=True,
+    if missing and len(missing) > MAX_MISSING_TICKERS:
+        raise RuntimeError(
+            f"A scan blocked: adjusted Supabase data missing for {len(missing)} tickers: "
+            + ", ".join(missing[:40])
         )
+    if missing:
+        print(f"⚠️ Missing adjusted data skipped ({len(missing)}): " + ", ".join(missing), flush=True)
 
-    available_tickers = [t for t in tickers if t not in missing]
-    if not available_tickers:
-        raise RuntimeError("A scan blocked: no usable adjusted Supabase data")
+    dated = {t: ticker_latest_date(data.get(t)) for t in tickers if t not in missing}
+    dated = {t: d for t, d in dated.items() if d is not None}
+    if not dated:
+        raise RuntimeError("A scan blocked: no usable dated adjusted Supabase data")
 
-    usable_data = {t: data[t] for t in available_tickers}
-    scan_date = latest_data_date(usable_data)
-    print(f"Latest adjusted data date: {scan_date}", flush=True)
-    print(f"Usable universe: {len(available_tickers)} / {len(tickers)}", flush=True)
+    freshest_date = max(dated.values())
+    fresh_tickers = [t for t in tickers if dated.get(t) == freshest_date]
+    stale_tickers = [t for t in tickers if t in dated and dated[t] < freshest_date]
+
+    print(f"Freshest adjusted date: {freshest_date.isoformat()}", flush=True)
+    print(f"Fresh tickers: {len(fresh_tickers)}", flush=True)
+    print(f"Stale tickers excluded today: {len(stale_tickers)}", flush=True)
+    if stale_tickers:
+        preview = ", ".join(f"{t}({dated[t].isoformat()})" for t in stale_tickers[:60])
+        print("⚠️ STALE excluded: " + preview, flush=True)
+        if len(stale_tickers) > 60:
+            print(f"... plus {len(stale_tickers) - 60} more stale tickers", flush=True)
+
+    if not fresh_tickers:
+        raise RuntimeError("A scan blocked: no ticker passed freshness gate")
 
     rows = []
-    for i, ticker in enumerate(available_tickers, 1):
+    for i, ticker in enumerate(fresh_tickers, 1):
         row = ns["analyze_daily_candidate"](ticker, data[ticker], benchmarks)
         if row is not None:
-            row["最后数据日期"] = scan_date
+            row["最后数据日期"] = freshest_date.isoformat()
             rows.append(row)
-        print(f"[{i:03d}/{len(available_tickers)}] {ticker}", flush=True)
+        print(f"[{i:03d}/{len(fresh_tickers)}] {ticker}", flush=True)
 
     if not rows:
         raise RuntimeError("A scan produced no valid rows")
 
     all_df = pd.DataFrame(rows)
-
-    # Formal KD-Core trigger comes directly from current app.py.
     formal = all_df[all_df.get("A正式候选", "否").astype(str).eq("是")].copy()
-
-    # Accumulation is the final confirmation layer requested for KD-Core.
     accum = pd.to_numeric(formal.get("资金积累总分"), errors="coerce").fillna(0)
     formal = formal[accum >= ACCUMULATION_MIN_SCORE].copy()
 
@@ -228,38 +199,34 @@ def main():
         formal["_accum"] = pd.to_numeric(formal.get("资金积累总分"), errors="coerce").fillna(0)
         formal["_panic"] = pd.to_numeric(formal.get("恐慌释放分"), errors="coerce").fillna(0)
         formal = formal.sort_values(
-            ["_a_priority", "_accum", "_panic"],
-            ascending=[True, False, False],
+            ["_a_priority", "_accum", "_panic"], ascending=[True, False, False]
         ).drop(columns=["_a_priority", "_accum", "_panic"])
         formal = formal.head(MAX_CANDIDATES).reset_index(drop=True)
         formal["Rank"] = formal.index + 1
 
-    # Important: save_daily_candidates does NOT clear the previous sheet when
-    # there are zero candidates. That protects B from an accidental empty scan.
     result = ns["save_daily_candidates"](formal)
 
     print("\n" + "=" * 88, flush=True)
     print("KD-CORE DAILY SUMMARY", flush=True)
     print(f"Requested universe: {len(tickers)}", flush=True)
-    print(f"Skipped for missing adjusted data: {len(missing)}", flush=True)
-    print(f"Analyzed: {len(all_df)}", flush=True)
+    print(f"Freshest date: {freshest_date.isoformat()}", flush=True)
+    print(f"Missing adjusted: {len(missing)}", flush=True)
+    print(f"Stale excluded: {len(stale_tickers)}", flush=True)
+    print(f"Fresh universe analyzed: {len(all_df)}", flush=True)
     print(f"app.py formal KD candidates: {(all_df.get('A正式候选', '否').astype(str) == '是').sum()}", flush=True)
     print(f"After accumulation >= {ACCUMULATION_MIN_SCORE}: {len(formal)}", flush=True)
     print(f"Sheet result: {result}", flush=True)
 
     if not formal.empty:
-        cols = [
-            c for c in [
-                "Rank", "Ticker", "Price", "A候选等级", "A核心原因",
-                "5D Return", "ATR%", "KDJ_K", "KDJ_D",
-                "资金积累总分", "资金积累解释", "恐慌释放分"
-            ] if c in formal.columns
-        ]
+        cols = [c for c in [
+            "Rank", "Ticker", "Price", "A候选等级", "A核心原因", "5D Return", "ATR%",
+            "KDJ_K", "KDJ_D", "资金积累总分", "资金积累解释", "恐慌释放分", "最后数据日期"
+        ] if c in formal.columns]
         print(formal[cols].to_string(index=False), flush=True)
     else:
         print("No KD-Core candidate passed accumulation confirmation today.", flush=True)
 
-    print("✅ KD-Core scheduled scan completed.", flush=True)
+    print("✅ KD-Core scheduled scan completed with freshness gate.", flush=True)
 
 
 if __name__ == "__main__":
