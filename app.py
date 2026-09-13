@@ -2566,7 +2566,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     重要：
     - 不再逐日调用旧 A5/A6 全套 analyzer。
     - 每只股票的 KDJ / RSI / 20日平均成交额只计算一次。
-    - 历史回放只使用 Supabase stock_daily 最近约650日历日。
+    - 历史回放只读取完成当前回测所需的最近区间，避免拉取多余历史。
     - 每个回放日期直接读取预先计算好的指标。
     """
 
@@ -2581,12 +2581,16 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
 
     if status_box is not None:
         status_box.write(
-            f"正在从 Supabase 读取最近历史日K：约 {len(all_tickers)} 只股票……"
+            f"① 正在从 Supabase 读取历史日K：约 {len(all_tickers)} 只股票……"
         )
 
     # 650 calendar days is comfortably enough for 60 replay days +
     # indicator warm-up + five forward trading days.
-    data_all = supabase_batch_download_recent(all_tickers, calendar_days=650)
+    calendar_days = max(140, int(replay_days) * 2 + 90)
+    data_all = supabase_batch_download_recent(
+        all_tickers,
+        calendar_days=calendar_days
+    )
 
     spy = data_all.get("SPY")
     if spy is None or spy.empty:
@@ -2608,7 +2612,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
 
     if status_box is not None:
         status_box.write(
-            f"数据读取完成。正在一次性计算 KDJ + RSI（{len(tickers)}只）……"
+            f"✅ 数据读取完成。② 正在一次性计算 KDJ + RSI（{len(tickers)}只）……"
         )
 
     all_out = []
@@ -2620,7 +2624,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
 
         if status_box is not None and (ti == 1 or ti % 25 == 0 or ti == total):
             status_box.write(
-                f"正在计算 KDJ + RSI：{ti}/{total} — {ticker}"
+                f"② 正在计算 KDJ + RSI：{ti}/{total} — {ticker}"
             )
 
         df = data_all.get(ticker)
@@ -3123,11 +3127,24 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
     replay_days = st.selectbox(
         "历史回放交易日",
         [20, 30, 60],
-        index=2,
+        index=1,
         key="a6_final_replay_days"
     )
 
-    if st.button("⚡ 运行快速历史A/B：KD vs KD+RSI", use_container_width=True):
+    c_run, c_clear = st.columns([3, 1])
+    with c_run:
+        run_hist_clicked = st.button("⚡ 运行快速历史A/B：KD vs KD+RSI", use_container_width=True)
+    with c_clear:
+        clear_hist_clicked = st.button("清空旧结果", use_container_width=True)
+
+    if clear_hist_clicked:
+        st.session_state.pop("a_historical_replay", None)
+        st.session_state.pop("a_historical_replay_days", None)
+        st.session_state.pop("a_historical_replay_done", None)
+        st.session_state.pop("a_historical_replay_error", None)
+        st.rerun()
+
+    if run_hist_clicked:
         try:
             p = st.progress(0)
             s = st.empty()
@@ -3138,11 +3155,10 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
             )
             st.session_state["a_historical_replay"] = bt
             st.session_state["a_historical_replay_days"] = int(replay_days)
+            st.session_state["a_historical_replay_done"] = True
         except Exception as e:
+            st.session_state["a_historical_replay_error"] = str(e)
             st.error(f"A历史回测失败：{e}")
-
-    if "a_historical_replay" in st.session_state:
-        render_historical_a_replay(st.session_state["a_historical_replay"])
 
     with st.expander("Forward Validation 历史库", expanded=False):
         if "a_all_history_save_msg" in st.session_state:
@@ -3159,3 +3175,18 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
                 st.error(f"Forward Validation失败：{e}")
         if "a_strong_bt" in st.session_state:
             render_strong_stock_backtest(st.session_state["a_strong_bt"])
+
+
+# =========================================================
+# HISTORICAL A/B RESULT — always visible after a run
+# =========================================================
+if "a_historical_replay" in st.session_state:
+    st.divider()
+    st.header("📊 KD vs KD+RSI 历史A/B结果")
+    st.caption(
+        f"最近运行：{st.session_state.get('a_historical_replay_days', '—')} 个交易日。"
+        "结果放在 Research 折叠框外，运行完成后无需重新打开折叠框。"
+    )
+    render_historical_a_replay(st.session_state["a_historical_replay"])
+elif "a_historical_replay_error" in st.session_state:
+    st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
