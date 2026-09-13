@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS A — KD20超跌反弹 + 可解释资金积累")
+st.title("📈 CMS A — KD20超跌反弹 + 恐慌释放排序")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -1952,6 +1952,75 @@ def calc_room_quality(row):
 # =========================================================
 # PER-STOCK ANALYSIS
 # =========================================================
+
+def calc_panic_release_label(df):
+    """
+    恐慌释放：只做A候选排序和解释，不做硬过滤。
+
+    4个简单特征，每项1分：
+      1) 近10日下跌日平均成交量 / 20日均量 >= 1.20
+      2) OBV近5日下降
+      3) 前5日跌幅 <= -5%
+      4) 金叉日成交量 / 20日均量 >= 1.20
+
+    3-4分 = 强
+    2分   = 中
+    0-1分 = 弱
+    """
+    out = {"恐慌释放分": 0, "恐慌释放强弱": "弱", "恐慌释放解释": ""}
+    try:
+        d = _norm_daily_index(df).copy()
+        if len(d) < 25:
+            out["恐慌释放解释"] = "历史不足25日"
+            return out
+
+        close = pd.to_numeric(d["Close"], errors="coerce")
+        volume = pd.to_numeric(d["Volume"], errors="coerce")
+        ret1 = close.pct_change()
+        vol_ma20 = volume.rolling(20).mean().iloc[-1]
+
+        score = 0
+        reasons = []
+
+        # 1. 下跌日放量
+        recent = pd.DataFrame({"ret": ret1, "vol": volume}).tail(10)
+        down = recent[recent["ret"] < 0]
+        if len(down) >= 2 and pd.notna(vol_ma20) and vol_ma20 > 0:
+            ratio = down["vol"].mean() / vol_ma20
+            if ratio >= 1.20:
+                score += 1
+                reasons.append(f"下跌日放量 {ratio:.2f}x")
+
+        # 2. OBV近5日走弱
+        direction = np.sign(close.diff()).fillna(0)
+        obv = (direction * volume.fillna(0)).cumsum()
+        if len(obv) >= 6 and obv.iloc[-1] < obv.iloc[-6]:
+            score += 1
+            reasons.append("OBV近5日走弱")
+
+        # 3. 前5日明显超跌
+        ret5 = pct_return(close, 5)
+        if pd.notna(ret5) and ret5 <= -5.0:
+            score += 1
+            reasons.append(f"前5日跌 {abs(ret5):.1f}%")
+
+        # 4. 金叉日放量
+        if pd.notna(vol_ma20) and vol_ma20 > 0:
+            vr = volume.iloc[-1] / vol_ma20
+            if vr >= 1.20:
+                score += 1
+                reasons.append(f"金叉日量比 {vr:.2f}x")
+
+        label = "强" if score >= 3 else ("中" if score == 2 else "弱")
+        out["恐慌释放分"] = int(score)
+        out["恐慌释放强弱"] = label
+        out["恐慌释放解释"] = "；".join(reasons) if reasons else "无明显恐慌释放特征"
+        return out
+    except Exception as e:
+        out["恐慌释放解释"] = f"计算失败：{type(e).__name__}"
+        return out
+
+
 def analyze_daily_candidate(ticker, df, benchmarks):
     try:
         if df is None or len(df) < 210:
@@ -2067,6 +2136,9 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         # 可解释资金积累评分：正式页面展示/研究使用
         accumulation_detail = calc_explainable_accumulation(df)
         row.update(accumulation_detail)
+
+        # 恐慌释放只用于排序/解释，不会减少候选数量
+        row.update(calc_panic_release_label(df))
 
         # =====================================================
         # CMS A NEW CORE — validated tiering
@@ -2250,8 +2322,7 @@ def get_daily_worksheet():
 A_PRIMARY_COLS = [
     "Ticker", "Company", "Rank",
     "A候选等级", "A正式候选", "A动作", "A核心原因",
-    "资金积累总分", "OBV改善分", "下跌缩量分",
-    "上涨放量分", "量价背离分", "资金积累解释",
+    "恐慌释放强弱", "恐慌释放分", "恐慌释放解释",
     "A5决策", "空间等级", "空间优先级",
     "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
@@ -4395,18 +4466,17 @@ if scan_clicked:
         eligible.get("Dollar Volume"), errors="coerce"
     )
 
-    eligible["_资金积累排序"] = pd.to_numeric(
-        eligible.get("资金积累总分"), errors="coerce"
+    eligible["_恐慌排序"] = pd.to_numeric(
+        eligible.get("恐慌释放分"), errors="coerce"
     ).fillna(-1)
 
-    # 正式A不再使用 Early Engine V2。
-    # A等级优先；同等级内优先显示资金积累迹象更强的股票。
+    # A硬条件不变；恐慌释放只负责同等级排序，不删除股票。
     eligible = eligible.sort_values(
-        ["_A优先级", "_资金积累排序", "_跌幅排序", "_ATR排序", "_成交额排序"],
+        ["_A优先级", "_恐慌排序", "_跌幅排序", "_ATR排序", "_成交额排序"],
         ascending=[True, False, True, False, False],
     ).drop(
         columns=[
-            "_A优先级", "_资金积累排序",
+            "_A优先级", "_恐慌排序",
             "_跌幅排序", "_ATR排序", "_成交额排序"
         ],
         errors="ignore"
@@ -4450,17 +4520,15 @@ def render_results(top_df, all_df):
         f"正式优选 {formal_n} 只（其中强反弹 {strong_n} 只）。"
     )
     st.caption(
-        "A新核心：KD20金叉是入口；前5日跌≥3%且ATR≥4%进入正式优选；"
+        "A核心：KD20金叉是入口；前5日跌≥3%且ATR≥4%进入正式优选；"
         "前5日跌≥5%且ATR≥4%标记为强反弹候选。"
-        "同一等级内优先显示资金积累迹象更强的股票。"
-        "RSI、成交量、OBV继续监控，但不作为硬门槛。"
+        "恐慌释放只用于排序，不作为过滤条件，所以不会减少候选数量。"
     )
 
     display_cols = [c for c in [
         'Rank','Ticker','Company','Price',
         'A候选等级','A动作','A核心原因',
-        '资金积累总分','OBV改善分','下跌缩量分',
-        '上涨放量分','量价背离分','资金积累解释',
+        '恐慌释放强弱','恐慌释放分','恐慌释放解释',
         'KDJ_K','KDJ_D','KDJ_J',
         '5D Return','ATR%','ATR14',
         'RSI14_新','RVOL','Up/Down Volume Ratio','OBV Trend',
@@ -4470,12 +4538,9 @@ def render_results(top_df, all_df):
     rename = {
         'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格',
         'A候选等级':'A等级','A动作':'决定','A核心原因':'核心原因',
-        '资金积累总分':'资金积累',
-        'OBV改善分':'OBV改善',
-        '下跌缩量分':'下跌缩量',
-        '上涨放量分':'上涨放量',
-        '量价背离分':'量价背离/卖压衰竭',
-        '资金积累解释':'资金积累明细',
+        '恐慌释放强弱':'恐慌释放',
+        '恐慌释放分':'恐慌分',
+        '恐慌释放解释':'恐慌释放明细',
         'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
         '5D Return':'前5日涨跌','ATR%':'ATR%','ATR14':'ATR14',
         'RSI14_新':'RSI14','RVOL':'量比',
@@ -4568,7 +4633,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
 
     c_run, c_clear = st.columns([3, 1])
     with c_run:
-        run_hist_clicked = st.button("⚡ 运行快速历史A/B：KD vs KD+RSI", use_container_width=True)
+        run_hist_clicked = st.button("⚡ 运行 A 核心历史回放", use_container_width=True)
     with c_clear:
         clear_hist_clicked = st.button("清空旧结果", use_container_width=True)
 
@@ -4622,7 +4687,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
 # =========================================================
 if "a_historical_replay" in st.session_state:
     st.divider()
-    st.header("📊 KD vs KD+RSI 历史A/B结果")
+    st.header("📊 A 核心历史回放结果")
     requested_days = st.session_state.get(
         "a_historical_requested_days",
         st.session_state.get("a_historical_replay_days", "—")
@@ -4642,16 +4707,5 @@ if "a_historical_replay" in st.session_state:
             "结果放在 Research 折叠框外，运行完成后无需重新打开折叠框。"
         )
     render_historical_a_replay(st.session_state["a_historical_replay"])
-    st.divider()
-    render_kd10_breakout_factor_research(st.session_state["a_historical_replay"])
-    st.divider()
-    render_washout_escape_research(st.session_state["a_historical_replay"])
-    st.divider()
-    render_triple_factor_validation(st.session_state["a_historical_replay"])
-    st.divider()
-    render_accumulation_4factor_validation(st.session_state["a_historical_replay"])
-    render_accumulation_threshold_validation(st.session_state["a_historical_replay"])
-    st.divider()
-    render_early_v2_validation(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
     st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
