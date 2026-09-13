@@ -2683,6 +2683,50 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         # J 值动能与当天RSI仅作辅助研究
         j_slope = j - j.shift(1)
 
+        # ---------- 洗盘 vs 出逃：量价研究 ----------
+        # 这些字段只做研究，不参与当前正式KD20买入。
+        ret1 = close.pct_change()
+
+        # OBV：上涨日加量、下跌日减量
+        obv_direction = np.sign(close.diff()).fillna(0)
+        obv = (obv_direction * volume).cumsum()
+        obv_change5 = obv / obv.shift(5).abs().replace(0, np.nan)
+        obv_slope5 = obv.diff(5) / volume.rolling(20).mean().replace(0, np.nan)
+
+        # 最近5日上涨日/下跌日的平均成交量
+        up_vol = volume.where(ret1 > 0)
+        down_vol = volume.where(ret1 < 0)
+        up_vol5 = up_vol.rolling(5, min_periods=1).mean()
+        down_vol5 = down_vol.rolling(5, min_periods=1).mean()
+        up_down_vol_ratio5 = up_vol5 / down_vol5.replace(0, np.nan)
+
+        # 下跌日是否放量：最近5日下跌日平均量 / 20日均量
+        down_volume_ratio5 = down_vol5 / vol20.replace(0, np.nan)
+
+        # 金叉当天成交量 / 20日均量
+        cross_day_volume_ratio = volume_ratio
+
+        # 价格5日下跌时，OBV若相对抗跌/回升，更偏向“抛压衰竭”；
+        # 价格下跌且OBV同步明显走弱，更偏向“资金流出”。
+        price_down5 = ret5 <= -0.03
+        obv_holding = obv_slope5 >= -0.5
+        obv_weak = obv_slope5 <= -1.5
+        selloff_heavy_volume = down_volume_ratio5 >= 1.20
+        selloff_light_volume = down_volume_ratio5 <= 0.90
+        cross_volume_confirm = cross_day_volume_ratio >= 1.20
+
+        washout_score = (
+            price_down5.astype(int)
+            + selloff_light_volume.astype(int)
+            + obv_holding.astype(int)
+            + cross_volume_confirm.astype(int)
+        )
+        escape_score = (
+            price_down5.astype(int)
+            + selloff_heavy_volume.astype(int)
+            + obv_weak.astype(int)
+        )
+
         # B1 = within the latest 3 bars RSI touched <=30, and today RSI rises.
         rsi_recent_min3 = rsi.rolling(3).min()
         rsi_turn_up = rsi > rsi.shift(1)
@@ -2747,6 +2791,12 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "KD Spread": safe_num(kd_spread.iloc[loc]),
                 "KD Spread Accel": safe_num(kd_spread_accel.iloc[loc]),
                 "J Slope": safe_num(j_slope.iloc[loc]),
+                "OBV Slope5": safe_num(obv_slope5.iloc[loc]),
+                "上涨/下跌量比5": safe_num(up_down_vol_ratio5.iloc[loc]),
+                "下跌量比20": safe_num(down_volume_ratio5.iloc[loc]),
+                "金叉日量比20": safe_num(cross_day_volume_ratio.iloc[loc]),
+                "洗盘分": safe_num(washout_score.iloc[loc]),
+                "出逃分": safe_num(escape_score.iloc[loc]),
                 "KD低位金叉20": "是" if buy_a else "否",
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
@@ -3171,6 +3221,109 @@ def render_kd10_breakout_factor_research(bt):
         )
 
 
+
+def render_washout_escape_research(bt):
+    """研究KD20金叉前后的量价行为：疑似洗盘 vs 疑似出逃。"""
+    if bt is None or bt.empty:
+        return
+
+    x = bt[bt["KD低位金叉20"].eq("是")].copy()
+    if x.empty:
+        return
+
+    cols = [
+        "5D Max Gain","前5日涨跌","Volume Ratio20","OBV Slope5",
+        "上涨/下跌量比5","下跌量比20","金叉日量比20","洗盘分","出逃分"
+    ]
+    for c in cols:
+        if c in x.columns:
+            x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    base = (x["5D Max Gain"] >= .10).mean()
+
+    st.header("🌊 KD20：洗盘 vs 出逃量价研究")
+    st.caption(
+        "目的不是判断真实“主力身份”，而是用可量化的成交量、OBV和价格行为，"
+        "区分更像抛压衰竭/反弹准备的形态，与更像持续资金流出的形态。当前只研究，不改变正式买入。"
+    )
+
+    rules = []
+
+    def test_rule(name, mask):
+        y = x[mask.fillna(False)].copy()
+        if len(y) < 10:
+            return
+        hit10 = (y["5D Max Gain"] >= .10).mean()
+        hit8 = (y["5D Max Gain"] >= .08).mean()
+        hit5 = (y["5D Max Gain"] >= .05).mean()
+        rules.append({
+            "量价特征": name,
+            "样本数": len(y),
+            "样本保留率": len(y)/len(x),
+            "5D≥5%": hit5,
+            "5D≥8%": hit8,
+            "5D≥10%": hit10,
+            "相对基础提升": hit10/base if base > 0 else np.nan,
+            "平均5D最大涨幅": y["5D Max Gain"].mean(),
+        })
+
+    # 单项量价特征
+    test_rule("金叉日量比≥1.2", x["金叉日量比20"] >= 1.2)
+    test_rule("金叉日量比≥1.5", x["金叉日量比20"] >= 1.5)
+    test_rule("下跌日缩量≤0.9", x["下跌量比20"] <= .9)
+    test_rule("下跌日放量≥1.2", x["下跌量比20"] >= 1.2)
+    test_rule("上涨量>下跌量", x["上涨/下跌量比5"] >= 1.0)
+    test_rule("上涨量≥下跌量1.2倍", x["上涨/下跌量比5"] >= 1.2)
+    test_rule("OBV较抗跌", x["OBV Slope5"] >= -.5)
+    test_rule("OBV明显走弱", x["OBV Slope5"] <= -1.5)
+
+    # 与刚发现的“前5日下跌”结合
+    down3 = x["前5日涨跌"] <= -.03
+    down5 = x["前5日涨跌"] <= -.05
+
+    test_rule("前5日跌≥3% + 金叉放量≥1.2", down3 & (x["金叉日量比20"] >= 1.2))
+    test_rule("前5日跌≥3% + 下跌缩量", down3 & (x["下跌量比20"] <= .9))
+    test_rule("前5日跌≥3% + OBV抗跌", down3 & (x["OBV Slope5"] >= -.5))
+    test_rule("前5日跌≥5% + 金叉放量≥1.2", down5 & (x["金叉日量比20"] >= 1.2))
+    test_rule("前5日跌≥5% + 下跌缩量", down5 & (x["下跌量比20"] <= .9))
+
+    # 综合研究分
+    test_rule("疑似洗盘分≥2", x["洗盘分"] >= 2)
+    test_rule("疑似洗盘分≥3", x["洗盘分"] >= 3)
+    test_rule("疑似出逃分≥2", x["出逃分"] >= 2)
+
+    out = pd.DataFrame(rules)
+    if out.empty:
+        st.info("当前样本不足以形成量价研究表。")
+        return
+
+    out = out.sort_values(["5D≥10%","样本数"], ascending=[False,False]).reset_index(drop=True)
+
+    st.write(f"当前 KD20 基础 5D≥10% 命中率：**{base:.1%}**")
+    st.dataframe(
+        out.style.format({
+            "样本保留率":"{:.1%}",
+            "5D≥5%":"{:.1%}",
+            "5D≥8%":"{:.1%}",
+            "5D≥10%":"{:.1%}",
+            "相对基础提升":"{:.2f}x",
+            "平均5D最大涨幅":"{:+.2%}",
+        }, na_rep="—"),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    good = out[(out["样本数"] >= 15) & (out["5D≥10%"] > base)].copy()
+    if not good.empty:
+        best = good.iloc[0]
+        st.info(
+            f"当前值得继续验证的量价特征：{best['量价特征']}；"
+            f"5D≥10%={best['5D≥10%']:.1%}，样本={int(best['样本数'])}，"
+            f"相对基础={best['相对基础提升']:.2f}x。"
+            "先不要直接变成正式过滤条件。"
+        )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -3439,5 +3592,7 @@ if "a_historical_replay" in st.session_state:
     render_historical_a_replay(st.session_state["a_historical_replay"])
     st.divider()
     render_kd10_breakout_factor_research(st.session_state["a_historical_replay"])
+    st.divider()
+    render_washout_escape_research(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
     st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
