@@ -427,6 +427,62 @@ def supabase_batch_download(tickers_tuple):
     return out
 
 
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def supabase_batch_download_recent(tickers_tuple, calendar_days=650):
+    """
+    历史KD/RSI回测专用：
+    只读取最近 calendar_days 天的 Supabase stock_daily，
+    避免把500+股票的全部历史数据全部拉下来。
+    """
+    tickers = [str(t).upper().strip() for t in tickers_tuple if str(t).strip()]
+    if not tickers:
+        return {}
+
+    base_url, api_key = _get_supabase_runtime_config()
+    endpoint = f"{base_url}/rest/v1/stock_daily"
+    headers = _supabase_headers(api_key)
+    rows_by_ticker = {t: [] for t in tickers}
+
+    start_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=int(calendar_days))).strftime("%Y-%m-%d")
+
+    for chunk in split_chunks(tickers, 20):
+        ticker_filter = "in.(" + ",".join(chunk) + ")"
+        start = 0
+        page_size = 1000
+        while True:
+            params = {
+                "select": "ticker,trade_date,adj_open,adj_high,adj_low,adj_close,volume",
+                "ticker": ticker_filter,
+                "trade_date": f"gte.{start_date}",
+                "order": "ticker.asc,trade_date.asc",
+            }
+            h = dict(headers)
+            h["Range"] = f"{start}-{start + page_size - 1}"
+            r = requests.get(endpoint, params=params, headers=h, timeout=60)
+            if not r.ok:
+                raise RuntimeError(
+                    f"Supabase stock_daily 读取失败 HTTP {r.status_code}: {r.text[:500]}"
+                )
+
+            page = r.json()
+            for row in page:
+                t = str(row.get("ticker", "")).upper()
+                if t in rows_by_ticker:
+                    rows_by_ticker[t].append(row)
+
+            if len(page) < page_size:
+                break
+            start += page_size
+
+    out = {}
+    for t, rows in rows_by_ticker.items():
+        df = _daily_rows_to_df(rows)
+        if df is not None and not df.empty:
+            out[t] = df
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def supabase_download_single(ticker):
     return supabase_batch_download((str(ticker).upper(),)).get(str(ticker).upper())
@@ -2504,11 +2560,16 @@ def _future_5d_labels(full_df, asof_date, base_close):
 
 
 def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
-    """Replay the historical A core across the entire current universe.
-
-    The final 5 trading days are reserved for forward outcome labels, so every
-    replayed date has a complete 5-day future window available immediately.
     """
+    FAST KD/RSI historical replay.
+
+    重要：
+    - 不再逐日调用旧 A5/A6 全套 analyzer。
+    - 每只股票的 KDJ / RSI / 20日平均成交额只计算一次。
+    - 历史回放只使用 Supabase stock_daily 最近约650日历日。
+    - 每个回放日期直接读取预先计算好的指标。
+    """
+
     try:
         tickers = get_universe()
     except Exception as e:
@@ -2516,81 +2577,179 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
             status_box.write(str(e))
         return pd.DataFrame()
 
-    all_tickers = tuple(dict.fromkeys(tickers + BENCHMARK_TICKERS))
+    all_tickers = tuple(dict.fromkeys(tickers + ["SPY"]))
+
     if status_box is not None:
-        status_box.write('正在下载约2年历史日K（股票池 + SPY/板块ETF）……')
-    data_all = safe_batch_download(all_tickers, '2y')
-    stock_data = {t: _norm_daily_index(data_all[t]) for t in tickers if t in data_all and data_all[t] is not None and not data_all[t].empty}
-    bench_data = {t: _norm_daily_index(data_all[t]) for t in BENCHMARK_TICKERS if t in data_all and data_all[t] is not None and not data_all[t].empty}
+        status_box.write(
+            f"正在从 Supabase 读取最近历史日K：约 {len(all_tickers)} 只股票……"
+        )
 
-    spy = bench_data.get('SPY')
+    # 650 calendar days is comfortably enough for 60 replay days +
+    # indicator warm-up + five forward trading days.
+    data_all = supabase_batch_download_recent(all_tickers, calendar_days=650)
+
+    spy = data_all.get("SPY")
     if spy is None or spy.empty:
-        raise RuntimeError('历史回放无法取得 SPY 日K。')
-    spy_dates = list(spy.index)
-    if len(spy_dates) < 220 + replay_days + 5:
-        raise RuntimeError('历史数据不足，无法完成所选回放天数。')
+        raise RuntimeError("历史回放无法取得 SPY 日K。")
 
-    # Mature historical dates only: exclude the latest 5 trading days.
+    spy = _norm_daily_index(spy)
+    spy_dates = list(spy.index)
+
+    # Need warm-up for KDJ/RSI/20D dollar volume plus forward 5 days.
+    min_required = max(80, int(replay_days) + 35)
+    if len(spy_dates) < min_required:
+        raise RuntimeError(
+            f"Supabase 历史数据不足：SPY只有 {len(spy_dates)} 个交易日。"
+        )
+
     mature_dates = spy_dates[:-5]
     replay_dates = mature_dates[-int(replay_days):]
-    sector_map = _get_replay_sector_map(tickers)
+    replay_set = set(pd.Timestamp(x) for x in replay_dates)
+
+    if status_box is not None:
+        status_box.write(
+            f"数据读取完成。正在一次性计算 KDJ + RSI（{len(tickers)}只）……"
+        )
 
     all_out = []
-    total_steps = max(1, len(replay_dates) * len(tickers))
-    done = 0
+    total = max(1, len(tickers))
 
-    for di, asof in enumerate(replay_dates, start=1):
-        if status_box is not None:
-            status_box.write(f'历史回放 {pd.Timestamp(asof).date()}（{di}/{len(replay_dates)}）— 正在扫描约{len(tickers)}只……')
-        benchmarks = _historical_benchmark_snapshot(bench_data, asof)
-        day_rows = []
-        for t in tickers:
-            full = stock_data.get(t)
-            done += 1
-            if progress_bar is not None:
-                progress_bar.progress(min(100, int(done / total_steps * 100)))
-            if full is None or full.empty:
-                continue
-            hist = full[full.index <= pd.Timestamp(asof)]
-            row = analyze_historical_a_core(t, hist, sector_map.get(t, 'Unknown'), benchmarks)
-            if row is None:
-                continue
-            row['Replay Date'] = pd.Timestamp(asof).strftime('%Y-%m-%d')
-            day_rows.append(row)
+    for ti, ticker in enumerate(tickers, start=1):
+        if progress_bar is not None:
+            progress_bar.progress(min(100, int(ti / total * 100)))
 
-        if not day_rows:
+        if status_box is not None and (ti == 1 or ti % 25 == 0 or ti == total):
+            status_box.write(
+                f"正在计算 KDJ + RSI：{ti}/{total} — {ticker}"
+            )
+
+        df = data_all.get(ticker)
+        if df is None or df.empty:
             continue
-        day = pd.DataFrame(day_rows)
 
-        # Whole-pool rank for diagnostics.
-        qorder = {'✅ 通过':0, '⚠️ 观察':1, '❌ 不适合Early':2}
-        day['_q'] = day['质量检查'].map(qorder).fillna(9)
-        rank_cols = ['_q','Replay Core Score 85','Structure Score','Leadership Score','Accumulation Score']
-        day = day.sort_values(rank_cols, ascending=[True,False,False,False,False]).reset_index(drop=True)
-        day['Replay Universe Rank'] = day.index + 1
+        d = _norm_daily_index(df).copy()
+        for c in ["Open", "High", "Low", "Close", "Volume"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["High", "Low", "Close", "Volume"])
+        if len(d) < 35:
+            continue
 
-        # Add future labels only AFTER ranking.
-        for _, r in day.iterrows():
-            rec = dict(r)
-            full = stock_data.get(str(r['Ticker']).upper())
-            labels = _future_5d_labels(full, asof, float(r['Price'])) if full is not None else None
-            if labels is not None:
-                rec.update(labels)
-                g = labels['5D Max Gain']
-                rec['Hit +3%'] = bool(g >= 0.03)
-                rec['Hit +5%'] = bool(g >= 0.05)
-                rec['Hit +8%'] = bool(g >= 0.08)
-                rec['Strength Class'] = '🚀 ≥8%' if g >= .08 else ('🔥 5–8%' if g >= .05 else ('🟡 2–5%' if g >= .02 else '⚪ <2%'))
-                all_out.append(rec)
+        high = d["High"]
+        low = d["Low"]
+        close = d["Close"]
+        volume = d["Volume"]
 
-    out = pd.DataFrame(all_out)
+        # KDJ 9,3,3 — exactly the same formula as the live scanner.
+        ll9 = low.rolling(9).min()
+        hh9 = high.rolling(9).max()
+        rsv = (close - ll9) / (hh9 - ll9).replace(0, np.nan) * 100
+        k = rsv.ewm(alpha=1/3, adjust=False).mean()
+        kd = k.ewm(alpha=1/3, adjust=False).mean()
+        j = 3 * k - 2 * kd
+
+        # RSI14 — same function as live scanner.
+        rsi = calc_rsi(close, 14)
+
+        # Basic liquidity rule used by the current live candidate pool.
+        dollar_volume = (close * volume).rolling(20).mean()
+
+        # Signals, calculated for every historical bar in one shot.
+        kd_diff = k - kd
+        cross_up = (kd_diff > 0) & (kd_diff.shift(1) <= 0)
+        cross_down = (kd_diff < 0) & (kd_diff.shift(1) >= 0)
+
+        kd_buy = cross_up & (k <= 20) & (kd <= 20)
+        kd_sell = cross_down & (k >= 80) & (kd >= 80)
+
+        # B1 = within the latest 3 bars RSI touched <=30, and today RSI rises.
+        rsi_recent_min3 = rsi.rolling(3).min()
+        rsi_turn_up = rsi > rsi.shift(1)
+        b1 = kd_buy & (rsi_recent_min3 <= 30) & rsi_turn_up
+
+        # B2 = yesterday RSI <=30 and today RSI >30.
+        b2 = kd_buy & (rsi.shift(1) <= 30) & (rsi > 30)
+
+        # Only inspect the selected replay dates.
+        available_dates = [dt for dt in replay_dates if pd.Timestamp(dt) in d.index]
+        for asof in available_dates:
+            asof = pd.Timestamp(asof)
+            loc = d.index.get_loc(asof)
+            if isinstance(loc, slice) or not isinstance(loc, (int, np.integer)):
+                continue
+
+            # Need 5 future sessions for complete labels.
+            if loc + 5 >= len(d):
+                continue
+
+            price = safe_num(close.iloc[loc])
+            dv = safe_num(dollar_volume.iloc[loc])
+            if pd.isna(price) or pd.isna(dv):
+                continue
+
+            future = d.iloc[loc+1:loc+6]
+            if len(future) < 5:
+                continue
+
+            fhi = pd.to_numeric(future["High"], errors="coerce")
+            flo = pd.to_numeric(future["Low"], errors="coerce")
+            fcl = pd.to_numeric(future["Close"], errors="coerce")
+
+            g1 = float(fhi.iloc[:1].max() / price - 1)
+            g3 = float(fhi.iloc[:3].max() / price - 1)
+            g5 = float(fhi.iloc[:5].max() / price - 1)
+            c5 = float(fcl.iloc[4] / price - 1)
+            dd5 = float(flo.iloc[:5].min() / price - 1)
+
+            buy_a = bool(kd_buy.iloc[loc]) if not pd.isna(kd_buy.iloc[loc]) else False
+            buy_b1 = bool(b1.iloc[loc]) if not pd.isna(b1.iloc[loc]) else False
+            buy_b2 = bool(b2.iloc[loc]) if not pd.isna(b2.iloc[loc]) else False
+            sell = bool(kd_sell.iloc[loc]) if not pd.isna(kd_sell.iloc[loc]) else False
+
+            # Store all basic-liquidity rows so the validation denominator/date
+            # structure remains correct. This is only ~500 x replay_days rows.
+            all_out.append({
+                "Replay Date": asof.strftime("%Y-%m-%d"),
+                "Ticker": ticker,
+                "Price": price,
+                "Dollar Volume": dv,
+                "KDJ_K": safe_num(k.iloc[loc]),
+                "KDJ_D": safe_num(kd.iloc[loc]),
+                "KDJ_J": safe_num(j.iloc[loc]),
+                "RSI14_新": safe_num(rsi.iloc[loc]),
+                "RSI昨日": safe_num(rsi.shift(1).iloc[loc]),
+                "KD低位金叉20": "是" if buy_a else "否",
+                "KD+RSI超卖回升": "是" if buy_b1 else "否",
+                "KD+RSI上穿30": "是" if buy_b2 else "否",
+                "KD高位死叉80": "是" if sell else "否",
+                "1D Max Gain": g1,
+                "3D Max Gain": g3,
+                "5D Max Gain": g5,
+                "5D Close Return": c5,
+                "5D Max Drawdown": dd5,
+                "Hit +3%": bool(g5 >= .03),
+                "Hit +5%": bool(g5 >= .05),
+                "Hit +8%": bool(g5 >= .08),
+                "Hit +10%": bool(g5 >= .10),
+            })
+
     if progress_bar is not None:
         progress_bar.progress(100)
+
+    out = pd.DataFrame(all_out)
+
     if status_box is not None:
-        status_box.empty()
+        if out.empty:
+            status_box.write("历史计算完成，但没有形成可用样本。")
+        else:
+            a_n = int((out["KD低位金叉20"] == "是").sum())
+            b1_n = int((out["KD+RSI超卖回升"] == "是").sum())
+            b2_n = int((out["KD+RSI上穿30"] == "是").sum())
+            status_box.write(
+                f"✅ 历史计算完成：{len(out):,} 条股票×日期记录；"
+                f"A={a_n}，B1={b1_n}，B2={b2_n} 个原始信号。"
+            )
+
     return out
-
-
 
 
 def _independent_signals(x, cooldown_sessions=5, all_dates=None):
@@ -2958,7 +3117,7 @@ st.divider()
 with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
     st.caption(
         "这里用于比较 A纯KD、B1 KD+RSI超卖回升、B2 KD+RSI上穿30，不参与盘中执行。"
-        "历史 Replay 与正式盘后扫描统一使用 Supabase stock_daily 复权日线。"
+        "历史 Replay 与正式盘后扫描统一使用 Supabase stock_daily；回测只读取最近需要的历史区间，并一次性计算KDJ/RSI。"
     )
 
     replay_days = st.selectbox(
@@ -2968,7 +3127,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
         key="a6_final_replay_days"
     )
 
-    if st.button("运行历史A/B：KD vs KD+RSI", use_container_width=True):
+    if st.button("⚡ 运行快速历史A/B：KD vs KD+RSI", use_container_width=True):
         try:
             p = st.progress(0)
             s = st.empty()
