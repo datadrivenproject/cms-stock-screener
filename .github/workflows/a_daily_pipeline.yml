@@ -1,28 +1,26 @@
-name: A Daily Production Pipeline
+name: A Daily Data Pipeline
 
 on:
   workflow_dispatch:
   schedule:
-    # 22:30 UTC = 18:30 EDT / 17:30 EST.
-    # Runs after regular US market close; one pipeline owns the whole A sequence.
+    # 22:30 UTC = 18:30 EDT / 17:30 EST
+    # Monday-Friday after US market close
     - cron: "30 22 * * 1-5"
 
 concurrency:
-  group: cms-a-daily-production
+  group: cms-a-daily-data
   cancel-in-progress: false
 
 jobs:
-  a-daily:
+  a-daily-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     env:
       TZ: America/New_York
       BUSINESSQUANT_API_KEY: ${{ secrets.BUSINESSQUANT_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
-      TRACKER_SHEET_NAME: ${{ secrets.TRACKER_SHEET_NAME }}
 
     steps:
       - name: Checkout repository
@@ -36,16 +34,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests gspread google-auth streamlit pandas-market-calendars
+          pip install pandas numpy requests
 
-      - name: 1 - Update 122 raw EOD
+      - name: 1 - Incrementally update 529 raw EOD
         run: |
-          python update_stock_daily_122.py
+          python load_stock_daily_529.py
 
-      - name: 2 - Rebuild adjusted OHLC for 122
+      - name: 2 - Rebuild adjusted OHLC for 529
         run: |
-          python adjust_stock_daily_122.py
-
-      - name: 3 - Run frozen A5.2R from production app.py
-        run: |
-          python a_daily_runner.py
+          python adjust_stock_daily_529.py
