@@ -2670,7 +2670,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         vol20 = volume.rolling(20).mean()
         volume_ratio = volume / vol20.replace(0, np.nan)
 
-        atr14 = calc_atr(d, 14)
+        atr14 = calc_atr(high, low, close, 14)
         atr_pct = atr14 / close.replace(0, np.nan)
 
         ret5 = close / close.shift(5) - 1
@@ -3393,6 +3393,7 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
         st.rerun()
 
     if run_hist_clicked:
+        st.session_state.pop("a_historical_replay_error", None)
         try:
             p = st.progress(0)
             s = st.empty()
