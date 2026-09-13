@@ -3657,6 +3657,154 @@ def render_triple_factor_validation(bt):
 
 
 
+
+def render_accumulation_threshold_validation(bt):
+    """
+    研究“资金积累分”能否成为 A 新核心的第4个条件。
+    固定入口：
+      KD20金叉 + 前5日跌>=3% + ATR>=4%
+    然后测试资金积累分阈值。
+    只做Research，不改变正式A选股。
+    """
+    if bt is None or bt.empty:
+        return
+
+    x = bt.copy()
+    needed = [
+        "KD低位金叉20", "前5日涨跌", "ATR%",
+        "Accumulation Score", "5D Max Gain", "5D Max Drawdown"
+    ]
+    missing = [c for c in needed if c not in x.columns]
+    if missing:
+        st.warning("资金积累验证缺少字段：" + "、".join(missing))
+        return
+
+    for c in [
+        "前5日涨跌", "ATR%", "Accumulation Score",
+        "5D Max Gain", "5D Max Drawdown"
+    ]:
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    base = x[
+        (x["KD低位金叉20"] == "是")
+        & (x["前5日涨跌"] <= -0.03)
+        & (x["ATR%"] >= 0.04)
+    ].copy()
+
+    st.header("💰 KD20：资金积累分阈值验证")
+    st.caption(
+        "固定A入口：KD20金叉 + 前5日跌≥3% + ATR≥4%。"
+        "只测试资金积累分是否能进一步提高5日爆发率；当前仍是Research，不改变正式买入条件。"
+    )
+
+    if base.empty:
+        st.info("当前窗口没有A正式优选历史样本。")
+        return
+
+    scored = base[base["Accumulation Score"].notna()].copy()
+    if scored.empty:
+        st.warning("当前窗口没有可用的历史资金积累评分。")
+        return
+
+    score_min = scored["Accumulation Score"].min()
+    score_max = scored["Accumulation Score"].max()
+    score_med = scored["Accumulation Score"].median()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("A正式优选样本", len(base))
+    c2.metric("资金积累评分样本", len(scored))
+    c3.metric("资金积累分范围", f"{score_min:.0f}–{score_max:.0f}")
+
+    st.caption(
+        f"资金积累分中位数：{score_med:.1f}。"
+        "下面同时看命中率和样本保留率，避免只追求高百分比而把样本筛得太少。"
+    )
+
+    rows = []
+
+    def add_row(label, y):
+        if y.empty:
+            return
+        g5 = pd.to_numeric(y["5D Max Gain"], errors="coerce").dropna()
+        dd = pd.to_numeric(y["5D Max Drawdown"], errors="coerce").dropna()
+        if g5.empty:
+            return
+        rows.append({
+            "资金积累条件": label,
+            "样本数": len(y),
+            "样本保留率": len(y) / len(scored),
+            "5D≥3%": (g5 >= .03).mean(),
+            "5D≥5%": (g5 >= .05).mean(),
+            "5D≥8%": (g5 >= .08).mean(),
+            "5D≥10%": (g5 >= .10).mean(),
+            "平均5D最大涨幅": g5.mean(),
+            "中位数5D最大涨幅": g5.median(),
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+        })
+
+    add_row("全部A正式优选", scored)
+
+    # 自动覆盖实际可见分数范围；至少测试常用 2/4/6/8/10/12/14/16
+    thresholds = [2, 4, 6, 8, 10, 12, 14, 16]
+    thresholds = [t for t in thresholds if t <= score_max]
+    for t in thresholds:
+        add_row(f"资金积累≥{t}", scored[scored["Accumulation Score"] >= t])
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        st.info("没有形成有效的资金积累阈值结果。")
+        return
+
+    base10 = out.iloc[0]["5D≥10%"]
+    base5 = out.iloc[0]["5D≥5%"]
+    out["10%相对提升"] = out["5D≥10%"] / base10 if base10 > 0 else np.nan
+    out["5%相对提升"] = out["5D≥5%"] / base5 if base5 > 0 else np.nan
+
+    st.dataframe(
+        out.style.format({
+            "样本保留率": "{:.1%}",
+            "5D≥3%": "{:.1%}",
+            "5D≥5%": "{:.1%}",
+            "5D≥8%": "{:.1%}",
+            "5D≥10%": "{:.1%}",
+            "平均5D最大涨幅": "{:+.2%}",
+            "中位数5D最大涨幅": "{:+.2%}",
+            "平均5D最大回撤": "{:+.2%}",
+            "10%相对提升": "{:.2f}x",
+            "5%相对提升": "{:.2f}x",
+        }, na_rep="—"),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # 候选阈值：至少10个样本、至少保留30%，并提高10%爆发率。
+    candidates = out[
+        (out["资金积累条件"] != "全部A正式优选")
+        & (out["样本数"] >= 10)
+        & (out["样本保留率"] >= 0.30)
+        & (out["5D≥10%"] > base10)
+    ].copy()
+
+    if not candidates.empty:
+        best = candidates.sort_values(
+            ["5D≥10%", "5D≥8%", "样本数"],
+            ascending=[False, False, False]
+        ).iloc[0]
+        st.success(
+            f"当前最值得继续验证：{best['资金积累条件']}；"
+            f"5D≥10%={best['5D≥10%']:.1%}，"
+            f"5D≥8%={best['5D≥8%']:.1%}，"
+            f"样本={int(best['样本数'])}，"
+            f"保留率={best['样本保留率']:.1%}。"
+            "暂不升级成硬门槛，先用更长窗口确认稳定性。"
+        )
+    else:
+        st.info(
+            "当前没有同时满足“样本≥10、保留率≥30%、且10%爆发率提高”的资金积累阈值。"
+            "继续作为研究/排序字段即可。"
+        )
+
+
 def render_early_v2_validation(bt):
     """
     验证 Early Engine V2 五维评分是否真的能改善 A 新核心候选的未来表现。
@@ -4278,6 +4426,8 @@ if "a_historical_replay" in st.session_state:
     render_washout_escape_research(st.session_state["a_historical_replay"])
     st.divider()
     render_triple_factor_validation(st.session_state["a_historical_replay"])
+    st.divider()
+    render_accumulation_threshold_validation(st.session_state["a_historical_replay"])
     st.divider()
     render_early_v2_validation(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
