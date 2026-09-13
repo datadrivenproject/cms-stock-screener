@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS A — KD20超跌反弹 + Early V2验证")
+st.title("📈 CMS A — KD20超跌反弹 + 可解释资金积累")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -1370,6 +1370,172 @@ def calc_volume_price_phase(df):
 # =========================================================
 # MODULE 3 — ACCUMULATION (MAX 20)
 # =========================================================
+
+def calc_explainable_accumulation(df):
+    """
+    可解释资金积累评分，满分20。
+    目的不是识别真正的“主力身份”，而是用OHLCV观察承接/卖压衰竭迹象。
+
+    四个分项，各0–5分：
+      1) OBV改善
+      2) 下跌缩量
+      3) 上涨放量
+      4) 量价背离 / 卖压衰竭
+    """
+    out = {
+        "资金积累总分": 0,
+        "OBV改善分": 0,
+        "下跌缩量分": 0,
+        "上涨放量分": 0,
+        "量价背离分": 0,
+        "资金积累解释": "",
+    }
+
+    try:
+        d = _norm_daily_index(df).copy()
+        if len(d) < 25:
+            out["资金积累解释"] = "历史不足25日"
+            return out
+
+        close = pd.to_numeric(d["Close"], errors="coerce")
+        volume = pd.to_numeric(d["Volume"], errors="coerce")
+        if close.isna().all() or volume.isna().all():
+            out["资金积累解释"] = "价格/成交量不足"
+            return out
+
+        # OBV
+        direction = np.sign(close.diff()).fillna(0)
+        obv = (direction * volume.fillna(0)).cumsum()
+
+        # ---------- 1) OBV改善 0–5 ----------
+        obv_score = 0
+        if len(obv) >= 6 and obv.iloc[-1] > obv.iloc[-6]:
+            obv_score += 2
+        if len(obv) >= 11 and obv.iloc[-1] > obv.iloc[-11]:
+            obv_score += 1
+        obv_ma5 = obv.rolling(5).mean()
+        if len(obv_ma5.dropna()) >= 2 and obv_ma5.iloc[-1] > obv_ma5.iloc[-2]:
+            obv_score += 1
+        # 价格5日仍弱，但OBV不弱：额外承接迹象
+        ret5 = pct_return(close, 5)
+        obv_ret5 = (
+            (obv.iloc[-1] - obv.iloc[-6]) / max(abs(obv.iloc[-6]), 1)
+            if len(obv) >= 6 else np.nan
+        )
+        if (not pd.isna(ret5)) and ret5 < 0 and (not pd.isna(obv_ret5)) and obv_ret5 >= 0:
+            obv_score += 1
+        obv_score = min(5, obv_score)
+
+        # ---------- 2) 下跌缩量 0–5 ----------
+        down_score = 0
+        ret1 = close.pct_change()
+        recent = pd.DataFrame({"ret": ret1, "vol": volume}).tail(10)
+        down_days = recent[recent["ret"] < 0]
+        vol_ma20 = volume.rolling(20).mean().iloc[-1]
+
+        if len(down_days) >= 2 and np.isfinite(vol_ma20) and vol_ma20 > 0:
+            down_avg = down_days["vol"].mean()
+            ratio = down_avg / vol_ma20
+            if ratio <= 0.75:
+                down_score += 3
+            elif ratio <= 0.90:
+                down_score += 2
+            elif ratio <= 1.00:
+                down_score += 1
+
+        # 最近下跌日量能逐渐减弱
+        if len(down_days) >= 3:
+            last3 = down_days["vol"].tail(3).values
+            if last3[-1] < last3[-2] < last3[-3]:
+                down_score += 2
+            elif last3[-1] < last3[-2]:
+                down_score += 1
+        down_score = min(5, down_score)
+
+        # ---------- 3) 上涨放量 0–5 ----------
+        up_score = 0
+        up_days = recent[recent["ret"] > 0]
+        if len(up_days) >= 2 and len(down_days) >= 2:
+            up_avg = up_days["vol"].mean()
+            down_avg = down_days["vol"].mean()
+            if down_avg > 0:
+                uv_ratio = up_avg / down_avg
+                if uv_ratio >= 1.40:
+                    up_score += 3
+                elif uv_ratio >= 1.20:
+                    up_score += 2
+                elif uv_ratio >= 1.05:
+                    up_score += 1
+
+        # 最近上涨日是否明显高于20日均量
+        if len(up_days) >= 1 and np.isfinite(vol_ma20) and vol_ma20 > 0:
+            last_up_vol = up_days["vol"].iloc[-1]
+            if last_up_vol >= 1.30 * vol_ma20:
+                up_score += 2
+            elif last_up_vol >= 1.10 * vol_ma20:
+                up_score += 1
+        up_score = min(5, up_score)
+
+        # ---------- 4) 量价背离 / 卖压衰竭 0–5 ----------
+        div_score = 0
+        if len(close) >= 11:
+            price_now = close.iloc[-1]
+            price_5 = close.iloc[-6]
+            price_10 = close.iloc[-11]
+            obv_now = obv.iloc[-1]
+            obv_5 = obv.iloc[-6]
+            obv_10 = obv.iloc[-11]
+
+            # 价格继续走弱，但OBV抬高
+            if price_now < price_5 and obv_now > obv_5:
+                div_score += 3
+            elif price_now <= price_5 and obv_now >= obv_5:
+                div_score += 2
+
+            if price_now < price_10 and obv_now > obv_10:
+                div_score += 1
+
+        # 最近5日平均量低于前5日，且价格仍处于下跌段：卖压衰竭
+        if len(volume) >= 11:
+            v_recent5 = volume.iloc[-5:].mean()
+            v_prev5 = volume.iloc[-10:-5].mean()
+            ret5_now = pct_return(close, 5)
+            if (
+                not pd.isna(ret5_now) and ret5_now < 0
+                and v_prev5 > 0 and v_recent5 <= 0.85 * v_prev5
+            ):
+                div_score += 1
+        div_score = min(5, div_score)
+
+        total = int(obv_score + down_score + up_score + div_score)
+
+        reasons = []
+        if obv_score:
+            reasons.append(f"OBV改善+{obv_score}")
+        if down_score:
+            reasons.append(f"下跌缩量+{down_score}")
+        if up_score:
+            reasons.append(f"上涨放量+{up_score}")
+        if div_score:
+            reasons.append(f"量价背离/卖压衰竭+{div_score}")
+        if not reasons:
+            reasons.append("暂无明显承接迹象")
+
+        out.update({
+            "资金积累总分": total,
+            "OBV改善分": obv_score,
+            "下跌缩量分": down_score,
+            "上涨放量分": up_score,
+            "量价背离分": div_score,
+            "资金积累解释": "；".join(reasons),
+        })
+        return out
+
+    except Exception as e:
+        out["资金积累解释"] = f"计算失败: {type(e).__name__}"
+        return out
+
+
 def score_accumulation(df):
     close = pd.to_numeric(df["Close"], errors="coerce")
     volume = pd.to_numeric(df["Volume"], errors="coerce")
@@ -1898,6 +2064,10 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["CMS Context"] = legacy_cms_context(row)
         row.update(calc_a5_resonance(df, row))
 
+        # 可解释资金积累评分：正式页面展示/研究使用
+        accumulation_detail = calc_explainable_accumulation(df)
+        row.update(accumulation_detail)
+
         # =====================================================
         # CMS A NEW CORE — validated tiering
         # Fixed trigger: strict KD20 golden cross.
@@ -2080,8 +2250,8 @@ def get_daily_worksheet():
 A_PRIMARY_COLS = [
     "Ticker", "Company", "Rank",
     "A候选等级", "A正式候选", "A动作", "A核心原因",
-    "Early V2 Score", "Structure Score", "Trend & Momentum Score",
-    "Accumulation Score", "Leadership Score", "Catalyst Score",
+    "资金积累总分", "OBV改善分", "下跌缩量分",
+    "上涨放量分", "量价背离分", "资金积累解释",
     "A5决策", "空间等级", "空间优先级",
     "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
@@ -2906,6 +3076,9 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 except Exception:
                     hist_early = None
 
+            # 独立可解释资金积累历史重建（严格as-of当天）
+            hist_acc_detail = calc_explainable_accumulation(d.iloc[:loc+1].copy())
+
             early_score = safe_num(
                 hist_early.get("Early V2 Score", np.nan)
                 if hist_early else np.nan
@@ -2969,6 +3142,12 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
                 "KD高位死叉80": "是" if sell else "否",
+                "资金积累总分": hist_acc_detail.get("资金积累总分", np.nan),
+                "OBV改善分": hist_acc_detail.get("OBV改善分", np.nan),
+                "下跌缩量分": hist_acc_detail.get("下跌缩量分", np.nan),
+                "上涨放量分": hist_acc_detail.get("上涨放量分", np.nan),
+                "量价背离分": hist_acc_detail.get("量价背离分", np.nan),
+                "资金积累解释": hist_acc_detail.get("资金积累解释", ""),
                 "Early V2 Score": early_score,
                 "Structure Score": structure_score,
                 "Trend & Momentum Score": trend_score,
@@ -3672,7 +3851,7 @@ def render_accumulation_threshold_validation(bt):
     x = bt.copy()
     needed = [
         "KD低位金叉20", "前5日涨跌", "ATR%",
-        "Accumulation Score", "5D Max Gain", "5D Max Drawdown"
+        "资金积累总分", "5D Max Gain", "5D Max Drawdown"
     ]
     missing = [c for c in needed if c not in x.columns]
     if missing:
@@ -3680,7 +3859,7 @@ def render_accumulation_threshold_validation(bt):
         return
 
     for c in [
-        "前5日涨跌", "ATR%", "Accumulation Score",
+        "前5日涨跌", "ATR%", "资金积累总分",
         "5D Max Gain", "5D Max Drawdown"
     ]:
         x[c] = pd.to_numeric(x[c], errors="coerce")
@@ -3701,14 +3880,14 @@ def render_accumulation_threshold_validation(bt):
         st.info("当前窗口没有A正式优选历史样本。")
         return
 
-    scored = base[base["Accumulation Score"].notna()].copy()
+    scored = base[base["资金积累总分"].notna()].copy()
     if scored.empty:
         st.warning("当前窗口没有可用的历史资金积累评分。")
         return
 
-    score_min = scored["Accumulation Score"].min()
-    score_max = scored["Accumulation Score"].max()
-    score_med = scored["Accumulation Score"].median()
+    score_min = scored["资金积累总分"].min()
+    score_max = scored["资金积累总分"].max()
+    score_med = scored["资金积累总分"].median()
 
     c1, c2, c3 = st.columns(3)
     c1.metric("A正式优选样本", len(base))
@@ -3748,7 +3927,7 @@ def render_accumulation_threshold_validation(bt):
     thresholds = [2, 4, 6, 8, 10, 12, 14, 16]
     thresholds = [t for t in thresholds if t <= score_max]
     for t in thresholds:
-        add_row(f"资金积累≥{t}", scored[scored["Accumulation Score"] >= t])
+        add_row(f"资金积累≥{t}", scored[scored["资金积累总分"] >= t])
 
     out = pd.DataFrame(rows)
     if out.empty:
@@ -4040,14 +4219,12 @@ with st.sidebar:
         "前5日跌≥5% = 强反弹候选"
     )
 
-    st.markdown("**Early Engine V2 二次排名（不硬过滤）**")
-    st.write("市场结构 25")
-    st.write("趋势动量 20")
-    st.write("资金积累 20")
-    st.write("领导力 20")
-    st.write("Catalyst 15")
-
-    st.caption("同一A等级内按这5项总分排序。")
+    st.markdown("**资金积累确认（0–20）**")
+    st.write("OBV改善 0–5")
+    st.write("下跌缩量 0–5")
+    st.write("上涨放量 0–5")
+    st.write("量价背离 / 卖压衰竭 0–5")
+    st.caption("目前先用于解释和研究；是否把≥4升级为正式第4条件，要等长窗口验证。")
     st.caption("RSI / 量价 / OBV 继续监控，不作为硬买入条件。")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
 
@@ -4146,46 +4323,19 @@ if scan_clicked:
         eligible.get("Dollar Volume"), errors="coerce"
     )
 
-    eligible["_Early排序"] = pd.to_numeric(
-        eligible.get("Early V2 Score"), errors="coerce"
-    ).fillna(-1)
-    eligible["_结构排序"] = pd.to_numeric(
-        eligible.get("Structure Score"), errors="coerce"
-    ).fillna(-1)
-    eligible["_动量排序"] = pd.to_numeric(
-        eligible.get("Trend & Momentum Score"), errors="coerce"
-    ).fillna(-1)
-    eligible["_积累排序"] = pd.to_numeric(
-        eligible.get("Accumulation Score"), errors="coerce"
-    ).fillna(-1)
-    eligible["_领导力排序"] = pd.to_numeric(
-        eligible.get("Leadership Score"), errors="coerce"
-    ).fillna(-1)
-    eligible["_催化排序"] = pd.to_numeric(
-        eligible.get("Catalyst Score"), errors="coerce"
+    eligible["_资金积累排序"] = pd.to_numeric(
+        eligible.get("资金积累总分"), errors="coerce"
     ).fillna(-1)
 
-    # 第一层：A核心决定候选等级
-    # 第二层：Early Engine V2 五维评分决定同等级内排序
+    # 正式A不再使用 Early Engine V2。
+    # A等级优先；同等级内优先显示资金积累迹象更强的股票。
     eligible = eligible.sort_values(
-        [
-            "_A优先级",
-            "_Early排序",
-            "_结构排序",
-            "_动量排序",
-            "_积累排序",
-            "_领导力排序",
-            "_催化排序",
-            "_跌幅排序",
-            "_ATR排序",
-            "_成交额排序",
-        ],
-        ascending=[True, False, False, False, False, False, False, True, False, False],
+        ["_A优先级", "_资金积累排序", "_跌幅排序", "_ATR排序", "_成交额排序"],
+        ascending=[True, False, True, False, False],
     ).drop(
         columns=[
-            "_A优先级","_Early排序","_结构排序","_动量排序",
-            "_积累排序","_领导力排序","_催化排序",
-            "_跌幅排序","_ATR排序","_成交额排序"
+            "_A优先级", "_资金积累排序",
+            "_跌幅排序", "_ATR排序", "_成交额排序"
         ],
         errors="ignore"
     ).reset_index(drop=True)
@@ -4230,15 +4380,15 @@ def render_results(top_df, all_df):
     st.caption(
         "A新核心：KD20金叉是入口；前5日跌≥3%且ATR≥4%进入正式优选；"
         "前5日跌≥5%且ATR≥4%标记为强反弹候选。"
-        "同一等级内再按市场结构/趋势动量/资金积累/领导力/Catalyst总分排序。"
+        "同一等级内优先显示资金积累迹象更强的股票。"
         "RSI、成交量、OBV继续监控，但不作为硬门槛。"
     )
 
     display_cols = [c for c in [
         'Rank','Ticker','Company','Price',
         'A候选等级','A动作','A核心原因',
-        'Early V2 Score','Structure Score','Trend & Momentum Score',
-        'Accumulation Score','Leadership Score','Catalyst Score',
+        '资金积累总分','OBV改善分','下跌缩量分',
+        '上涨放量分','量价背离分','资金积累解释',
         'KDJ_K','KDJ_D','KDJ_J',
         '5D Return','ATR%','ATR14',
         'RSI14_新','RVOL','Up/Down Volume Ratio','OBV Trend',
@@ -4248,12 +4398,12 @@ def render_results(top_df, all_df):
     rename = {
         'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格',
         'A候选等级':'A等级','A动作':'决定','A核心原因':'核心原因',
-        'Early V2 Score':'二次排名总分',
-        'Structure Score':'市场结构',
-        'Trend & Momentum Score':'趋势动量',
-        'Accumulation Score':'资金积累',
-        'Leadership Score':'领导力',
-        'Catalyst Score':'Catalyst',
+        '资金积累总分':'资金积累',
+        'OBV改善分':'OBV改善',
+        '下跌缩量分':'下跌缩量',
+        '上涨放量分':'上涨放量',
+        '量价背离分':'量价背离/卖压衰竭',
+        '资金积累解释':'资金积累明细',
         'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
         '5D Return':'前5日涨跌','ATR%':'ATR%','ATR14':'ATR14',
         'RSI14_新':'RSI14','RVOL':'量比',
@@ -4285,20 +4435,20 @@ def render_results(top_df, all_df):
         st.subheader('⭐ 今日 A 正式优选')
         fcols = [c for c in [
             'Ticker','Company','Price','A候选等级','A动作',
-            'Early V2 Score','Structure Score','Trend & Momentum Score',
-            'Accumulation Score','Leadership Score','Catalyst Score',
+            '资金积累总分','OBV改善分','下跌缩量分',
+            '上涨放量分','量价背离分','资金积累解释',
             '5D Return','ATR%','KDJ_K','KDJ_D','KDJ_J',
             'RVOL','OBV Trend'
         ] if c in formal.columns]
         fshow = formal[fcols].rename(columns={
             'Ticker':'股票代码','Company':'公司','Price':'当前价格',
             'A候选等级':'A等级','A动作':'决定',
-            'Early V2 Score':'二次排名总分',
-            'Structure Score':'市场结构',
-            'Trend & Momentum Score':'趋势动量',
-            'Accumulation Score':'资金积累',
-            'Leadership Score':'领导力',
-            'Catalyst Score':'Catalyst',
+            '资金积累总分':'资金积累',
+            'OBV改善分':'OBV改善',
+            '下跌缩量分':'下跌缩量',
+            '上涨放量分':'上涨放量',
+            '量价背离分':'量价背离/卖压衰竭',
+            '资金积累解释':'资金积累明细',
             '5D Return':'前5日涨跌','ATR%':'ATR%',
             'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
             'RVOL':'量比','OBV Trend':'OBV趋势'
