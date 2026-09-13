@@ -16,6 +16,7 @@ except ImportError:
 # =========================================================
 # PAGE
 # =========================================================
+
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
 st.title("📈 CMS A — KD20超跌反弹 + 恐慌释放排序")
@@ -4483,6 +4484,15 @@ if scan_clicked:
     ).reset_index(drop=True)
 
     eligible["Rank"] = eligible.index + 1
+
+    # Google Sheet 导出：只写入当前A候选，不改变选股逻辑
+    if st.button("📤 写入 Google Sheet", key="write_sheet_v4"):
+        try:
+            save_daily_candidates(eligible)
+            st.success(f"已写入 Google Sheet：A_Candidates（{len(eligible)}只）")
+        except Exception as e:
+            st.error(f"写入 Google Sheet 失败：{e}")
+
     # KD 信号有几只就显示几只，不强制凑数，也不因 top_n 截断。
     top_df = eligible.copy()
 
