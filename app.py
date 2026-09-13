@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS KD20 核心 + 三因子组合验证")
+st.title("📈 CMS A — KD20 超跌反弹核心")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -1803,6 +1803,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         volume = df["Volume"]
         price = float(close.iloc[-1])
         atr14 = safe_num(calc_atr(high, low, close, 14).iloc[-1])
+        atr_pct = (atr14 / price) if (price and not pd.isna(atr14)) else np.nan
         avgvol20 = safe_num(volume.rolling(20).mean().iloc[-1])
         rvol = float(volume.iloc[-1] / avgvol20) if avgvol20 > 0 else np.nan
         dollar_volume = price * avgvol20 if avgvol20 > 0 else 0
@@ -1827,6 +1828,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
             "Market Cap": market_cap,
             "Price": price,
             "ATR14": atr14,
+            "ATR%": atr_pct,
             "RVOL": rvol,
             "Dollar Volume": dollar_volume,
             "5D Return": ret5,
@@ -1895,6 +1897,63 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["质量原因"] = q_reason
         row["CMS Context"] = legacy_cms_context(row)
         row.update(calc_a5_resonance(df, row))
+
+        # =====================================================
+        # CMS A NEW CORE — validated tiering
+        # Fixed trigger: strict KD20 golden cross.
+        # Preferred filter: prior 5D return <= -3% and ATR% >= 4%.
+        # Strong rebound: prior 5D return <= -5% and ATR% >= 4%.
+        # RSI / volume / OBV remain monitoring fields only.
+        # =====================================================
+        kd20_now = (row.get("KD低位金叉20") == "是")
+        ret5_now = safe_num(row.get("5D Return", np.nan))
+        atr_pct_now = safe_num(row.get("ATR%", np.nan))
+
+        core_preferred = bool(
+            kd20_now
+            and (not pd.isna(ret5_now)) and ret5_now <= -0.03
+            and (not pd.isna(atr_pct_now)) and atr_pct_now >= 0.04
+        )
+        core_strong = bool(
+            kd20_now
+            and (not pd.isna(ret5_now)) and ret5_now <= -0.05
+            and (not pd.isna(atr_pct_now)) and atr_pct_now >= 0.04
+        )
+
+        if core_strong:
+            row["A候选等级"] = "🔥 强反弹候选"
+            row["A正式候选"] = "是"
+            row["A动作"] = "重点买入候选"
+            row["A核心原因"] = "KD20金叉 + 前5日跌≥5% + ATR≥4%"
+            row["A优先级"] = 1
+        elif core_preferred:
+            row["A候选等级"] = "✅ 优选候选"
+            row["A正式候选"] = "是"
+            row["A动作"] = "买入候选"
+            row["A核心原因"] = "KD20金叉 + 前5日跌≥3% + ATR≥4%"
+            row["A优先级"] = 2
+        elif kd20_now:
+            row["A候选等级"] = "🟡 普通KD20"
+            row["A正式候选"] = "否"
+            row["A动作"] = "观察"
+            row["A核心原因"] = "KD20金叉，但未同时满足跌≥3%与ATR≥4%"
+            row["A优先级"] = 3
+        else:
+            row["A候选等级"] = "无"
+            row["A正式候选"] = "否"
+            row["A动作"] = "无"
+            row["A核心原因"] = ""
+            row["A优先级"] = 9
+
+        # Early Engine V2：保留，但只负责同等级候选的二次排序。
+        # 不再作为是否进入 A 的硬过滤条件。
+        row["二次排名总分"] = safe_num(row.get("Early V2 Score", np.nan))
+        row["市场结构分"] = safe_num(row.get("Structure Score", np.nan))
+        row["趋势动量分"] = safe_num(row.get("Trend & Momentum Score", np.nan))
+        row["资金积累分"] = safe_num(row.get("Accumulation Score", np.nan))
+        row["领导力分"] = safe_num(row.get("Leadership Score", np.nan))
+        row["催化剂分"] = safe_num(row.get("Catalyst Score", np.nan))
+
         # A6 V3 research fields: calculated strictly as-of the replay date.
         row.update(calc_v3_pivot_room_fields(df))
         row["空间等级"], row["空间优先级"] = calc_room_quality(row)
@@ -1964,6 +2023,18 @@ DAILY_WORKSHEET = "A_Candidates"
 
 A_SHEET_CN_MAP = {'Scan Date': '扫描日期', 'Scan Time': '扫描时间', 'Ticker': '股票代码', 'Company': '公司', 'Sector': '板块', 'Market Cap': '市值', 'Price': '价格', 'ATR14': 'ATR14', 'RVOL': 'RVOL', 'Dollar Volume': '成交额', '5D Return': '5日涨跌幅', '20D Return': '20日涨跌幅', 'Rank': '排名', 'Early V2 Score': 'Early V2总分', 'Confidence': '信心等级', 'Fundamental Confirmation': '基本面确认', 'Fundamental Reason': '基本面依据', 'Quality Fundamental': '质量', 'FCF Fundamental': '现金流', 'Debt Fundamental': '负债', 'Valuation Fundamental': '估值', 'Growth Fundamental': '增长', 'ROE': 'ROE', 'Operating Margin': '营业利润率', 'Free Cash Flow': '自由现金流', 'Operating Cash Flow': '经营现金流', 'Debt to Equity': 'Debt/Equity', 'Forward PE': 'Forward P/E', 'PEG': 'PEG', 'EV/EBITDA': 'EV/EBITDA', 'Revenue Growth': '营收增长', 'Earnings Growth': '盈利增长', 'Structure Score': '市场结构分', 'Trend & Momentum Score': '趋势动量分', 'Accumulation Score': '资金积累分', 'Leadership Score': '相对强势分', 'Catalyst Score': '催化剂分', 'Major Resistance Zone': '主要压力区', 'Resistance Touches': '压力测试次数', 'Resistance Strength': '压力强度', 'Major Support Zone': '主要支撑区', 'Support Touches': '支撑测试次数', 'Short-term Breakout': '短期突破位', 'Distance to Major Resistance': '距主要压力', 'Distance to Short Breakout': '距短期突破', 'Compression Ratio': '压缩比', 'R→S Flip': 'R→S转换', 'R→S Flip Zone': 'R→S回踩区', 'R→S Flip Touches': 'R→S历史测试次数', 'MA20': 'MA20', 'MA50': 'MA50', 'MA200': 'MA200', 'MA20 Slope 5D': 'MA20 5日斜率', 'MACD': 'MACD', 'MACD Signal': 'MACD信号', 'MACD Histogram': 'MACD柱', 'MACD Phase': 'MACD阶段', 'RSI14': 'RSI14', 'Volume Build Ratio': '量能增强比', 'Up/Down Volume Ratio': '涨跌量比', 'OBV Trend': 'OBV趋势', 'OBV Positive Divergence': 'OBV正背离', 'Stock vs SPY 20D': '个股 vs SPY 20日', 'Sector vs SPY 20D': '板块 vs SPY 20日', 'Stock vs Sector 20D': '个股 vs 板块 20日', 'Stock vs SPY 5D': '个股 vs SPY 5日', 'RS Acceleration': 'RS加速度', 'Sector ETF': '板块ETF', 'Catalyst Label': '催化剂状态', 'Positive Catalyst': '正面催化剂', 'Negative Catalyst': '负面催化剂', 'Headlines': '相关新闻', 'Hard Filter': '硬筛选', 'Hard Filter Reason': '硬筛选原因', 'CMS Context': 'CMS参考', 'VP阶段':'量价阶段', 'VP分':'量价分', 'VP说明':'量价说明', 'VP量比20':'量比20', 'VP缩量比':'缩量比', 'VP前期缩量':'前期缩量', 'VP放量启动':'放量启动', 'VP派发风险':'派发风险'}
 A_SHEET_CN_MAP.update({
+    'A候选等级':'A等级',
+    'A正式候选':'A正式候选',
+    'A动作':'A决定',
+    'A核心原因':'A核心原因',
+    '二次排名总分':'二次排名总分',
+    '市场结构分':'市场结构分',
+    '趋势动量分':'趋势动量分',
+    '资金积累分':'资金积累分',
+    '领导力分':'领导力分',
+    '催化剂分':'催化剂分',
+    'ATR%':'ATR%',
+
     '空间等级':'空间等级', '空间优先级':'空间优先级',
     'A6优先级':'A6优先级', 'A6优先分':'A6优先分', 'A6优先原因':'A6优先原因',
     'Pivot Status V3':'Pivot状态', 'First Room Status V3':'First Room',
@@ -2007,7 +2078,11 @@ def get_daily_worksheet():
 
 
 A_PRIMARY_COLS = [
-    "Ticker", "Company", "Rank", "A5决策", "空间等级", "空间优先级",
+    "Ticker", "Company", "Rank",
+    "A候选等级", "A正式候选", "A动作", "A核心原因",
+    "Early V2 Score", "Structure Score", "Trend & Momentum Score",
+    "Accumulation Score", "Leadership Score", "Catalyst Score",
+    "A5决策", "空间等级", "空间优先级",
     "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
     "共振数", "MACD共振", "KDJ共振", "RSI共振", "量价共振", "RS共振", "空间共振",
@@ -3517,24 +3592,35 @@ def render_historical_a_replay(bt):
 # UI
 # =========================================================
 with st.sidebar:
-    st.header("CMS KD + RSI")
+    st.header("CMS A 新核心")
     top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
-    st.markdown("**Early Engine V2 权重**")
+
+    st.success(
+        "第一层：A选股核心\n\n"
+        "KD20低位金叉\n"
+        "+ 前5日跌≥3%\n"
+        "+ ATR≥4%\n\n"
+        "前5日跌≥5% = 强反弹候选"
+    )
+
+    st.markdown("**Early Engine V2 二次排名（不硬过滤）**")
     st.write("市场结构 25")
     st.write("趋势动量 20")
     st.write("资金积累 20")
     st.write("领导力 20")
     st.write("Catalyst 15")
-    st.markdown("**Fundamental Confirmation（不计入100分）**")
-    st.write("Quality / FCF / Debt / Valuation / Growth")
+
+    st.caption("同一A等级内按这5项总分排序。")
+    st.caption("RSI / 量价 / OBV 继续监控，不作为硬买入条件。")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("正式买入仍为纯KD20金叉；新增研究：前5日跌幅 + ATR% + 恐慌释放分的组合验证。")
 
 st.info(
-    "当前不急着把RSI变成硬门槛：先同时保留 A纯KD、B1超卖回升、B2上穿30，直接比较未来1/3/5日表现。"
+    "A采用两层架构：第一层用 KD20 + 前5日跌幅 + ATR% 选出候选；"
+    "第二层保留 Early Engine V2 的市场结构、趋势动量、资金积累、领导力、Catalyst 做优先级排序。"
+    "二次评分不会把第一层已经选出的股票硬性剔除。"
 )
 
-scan_clicked = st.button("🚀 运行 KD + RSI 盘后扫描", type="primary", use_container_width=True)
+scan_clicked = st.button("🚀 运行 CMS A 新核心扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
@@ -3599,29 +3685,71 @@ if scan_clicked:
         st.stop()
 
     all_df = pd.DataFrame(results)
-    # CMS KD 20/80 正式候选：只让 KD 低位金叉决定是否入选。
-    # 保留最基础的可交易性要求（价格和成交额），不再用旧 MACD/RSI/共振/Startup 门槛。
+    # CMS A 新核心：
+    # 先保留全部严格 KD20 金叉信号，便于观察；
+    # 再按经过长窗口验证的 A 候选等级排序。
+    # 正式优选 = KD20 + 前5日跌>=3% + ATR%>=4%
+    # 强反弹 = KD20 + 前5日跌>=5% + ATR%>=4%
     eligible = all_df[
         (pd.to_numeric(all_df["Price"], errors="coerce") >= 5)
         & (pd.to_numeric(all_df["Dollar Volume"], errors="coerce") >= 20_000_000)
         & (all_df["KD低位金叉20"] == "是")
     ].copy()
 
-    # RSI 当前只做研究分层，不先把股票过滤掉。
-    # 排序顺序：B2确认 > B1回升 > A纯KD，然后再看KD位置和成交额。
-    signal_priority = {
-        "B2 KD+RSI上穿30": 0,
-        "B1 KD+RSI超卖回升": 1,
-        "A 纯KD20金叉": 2,
-    }
-    eligible["_信号排序"] = eligible.get("信号分组", "").map(signal_priority).fillna(9)
-    eligible["_KD排序"] = pd.to_numeric(eligible.get("KD买入区值"), errors="coerce")
-    eligible["_成交额排序"] = pd.to_numeric(eligible.get("Dollar Volume"), errors="coerce")
+    eligible["_A优先级"] = pd.to_numeric(
+        eligible.get("A优先级", 9), errors="coerce"
+    ).fillna(9)
+    eligible["_跌幅排序"] = pd.to_numeric(
+        eligible.get("5D Return"), errors="coerce"
+    )
+    eligible["_ATR排序"] = pd.to_numeric(
+        eligible.get("ATR%"), errors="coerce"
+    )
+    eligible["_成交额排序"] = pd.to_numeric(
+        eligible.get("Dollar Volume"), errors="coerce"
+    )
+
+    eligible["_Early排序"] = pd.to_numeric(
+        eligible.get("Early V2 Score"), errors="coerce"
+    ).fillna(-1)
+    eligible["_结构排序"] = pd.to_numeric(
+        eligible.get("Structure Score"), errors="coerce"
+    ).fillna(-1)
+    eligible["_动量排序"] = pd.to_numeric(
+        eligible.get("Trend & Momentum Score"), errors="coerce"
+    ).fillna(-1)
+    eligible["_积累排序"] = pd.to_numeric(
+        eligible.get("Accumulation Score"), errors="coerce"
+    ).fillna(-1)
+    eligible["_领导力排序"] = pd.to_numeric(
+        eligible.get("Leadership Score"), errors="coerce"
+    ).fillna(-1)
+    eligible["_催化排序"] = pd.to_numeric(
+        eligible.get("Catalyst Score"), errors="coerce"
+    ).fillna(-1)
+
+    # 第一层：A核心决定候选等级
+    # 第二层：Early Engine V2 五维评分决定同等级内排序
     eligible = eligible.sort_values(
-        ["_信号排序", "_KD排序", "_成交额排序"],
-        ascending=[True, True, False],
+        [
+            "_A优先级",
+            "_Early排序",
+            "_结构排序",
+            "_动量排序",
+            "_积累排序",
+            "_领导力排序",
+            "_催化排序",
+            "_跌幅排序",
+            "_ATR排序",
+            "_成交额排序",
+        ],
+        ascending=[True, False, False, False, False, False, False, True, False, False],
     ).drop(
-        columns=["_信号排序", "_KD排序", "_成交额排序"],
+        columns=[
+            "_A优先级","_Early排序","_结构排序","_动量排序",
+            "_积累排序","_领导力排序","_催化排序",
+            "_跌幅排序","_ATR排序","_成交额排序"
+        ],
         errors="ignore"
     ).reset_index(drop=True)
 
@@ -3643,7 +3771,7 @@ if scan_clicked:
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
-        st.warning("今天没有出现 KD 低位20金叉买入信号。")
+        st.warning("今天没有出现严格 KD20 低位金叉信号。")
         # 即使没有买入，也显示全市场出现的高位80死叉，便于已有持仓检查卖点。
         if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
             sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
@@ -3654,30 +3782,101 @@ def render_results(top_df, all_df):
                 st.dataframe(show.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
         return
 
-    st.success(f"✅ 扫描完成：{len(top_df)}只 KD20 低位金叉候选，已标记 RSI 确认层")
-    st.caption('正式买入=A纯KD20低位金叉。RSI继续显示但不做硬过滤；历史区新增10%爆发因子研究。卖出仍为严格KD80高位死叉。')
+    formal_n = int((top_df.get("A正式候选") == "是").sum()) if "A正式候选" in top_df.columns else 0
+    strong_n = int((top_df.get("A候选等级") == "🔥 强反弹候选").sum()) if "A候选等级" in top_df.columns else 0
+    preferred_n = int((top_df.get("A候选等级") == "✅ 优选候选").sum()) if "A候选等级" in top_df.columns else 0
+
+    st.success(
+        f"✅ A扫描完成：KD20信号 {len(top_df)} 只；"
+        f"正式优选 {formal_n} 只（其中强反弹 {strong_n} 只）。"
+    )
+    st.caption(
+        "A新核心：KD20金叉是入口；前5日跌≥3%且ATR≥4%进入正式优选；"
+        "前5日跌≥5%且ATR≥4%标记为强反弹候选。"
+        "同一等级内再按市场结构/趋势动量/资金积累/领导力/Catalyst总分排序。"
+        "RSI、成交量、OBV继续监控，但不作为硬门槛。"
+    )
 
     display_cols = [c for c in [
-        'Rank','Ticker','Company','Price','信号分组','KD交易动作',
-        'KDJ_K','KDJ_D','KDJ_J','RSI14_新','RSI昨日',
-        'RSI超卖回升','RSI上穿30',
-        'KD低位20','KD当日金叉','KD买入区值',
-        'Dollar Volume','ATR14','5D Return','20D Return'
+        'Rank','Ticker','Company','Price',
+        'A候选等级','A动作','A核心原因',
+        'Early V2 Score','Structure Score','Trend & Momentum Score',
+        'Accumulation Score','Leadership Score','Catalyst Score',
+        'KDJ_K','KDJ_D','KDJ_J',
+        '5D Return','ATR%','ATR14',
+        'RSI14_新','RVOL','Up/Down Volume Ratio','OBV Trend',
+        'Dollar Volume'
     ] if c in top_df.columns]
+
     rename = {
-        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格','信号分组':'信号类型','KD交易动作':'动作',
-        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','RSI14_新':'RSI14','RSI昨日':'昨日RSI',
-        'RSI超卖回升':'RSI超卖回升','RSI上穿30':'RSI上穿30',
-        'KD低位20':'低位≤20','KD当日金叉':'今日金叉',
-        'KD买入区值':'交叉区值','Dollar Volume':'成交额','ATR14':'ATR14','5D Return':'5日涨跌幅','20D Return':'20日涨跌幅'
+        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格',
+        'A候选等级':'A等级','A动作':'决定','A核心原因':'核心原因',
+        'Early V2 Score':'二次排名总分',
+        'Structure Score':'市场结构',
+        'Trend & Momentum Score':'趋势动量',
+        'Accumulation Score':'资金积累',
+        'Leadership Score':'领导力',
+        'Catalyst Score':'Catalyst',
+        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
+        '5D Return':'前5日涨跌','ATR%':'ATR%','ATR14':'ATR14',
+        'RSI14_新':'RSI14','RVOL':'量比',
+        'Up/Down Volume Ratio':'上涨/下跌量比','OBV Trend':'OBV趋势',
+        'Dollar Volume':'成交额'
     }
+
     show = top_df[display_cols].rename(columns=rename)
-    st.subheader('🟢 KD20 金叉候选 — RSI确认层已标记')
-    st.dataframe(show.style.format({
-        '当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
-        'RSI14':'{:.1f}','昨日RSI':'{:.1f}','交叉区值':'{:.1f}',
-        '成交额':'{:,.0f}','ATR14':'{:.2f}','5日涨跌幅':'{:+.1%}','20日涨跌幅':'{:+.1%}'
-    }, na_rep=''), hide_index=True, use_container_width=True)
+
+    st.subheader('🟢 CMS A — KD20 超跌反弹候选')
+    st.dataframe(
+        show.style.format({
+            '当前价格':'{:.2f}',
+            'K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
+            '前5日涨跌':'{:+.1%}',
+            'ATR%':'{:.1%}',
+            'ATR14':'{:.2f}',
+            'RSI14':'{:.1f}',
+            '量比':'{:.2f}',
+            '上涨/下跌量比':'{:.2f}',
+            '成交额':'{:,.0f}',
+        }, na_rep=''),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    if formal_n > 0:
+        formal = top_df[top_df["A正式候选"].eq("是")].copy()
+        st.subheader('⭐ 今日 A 正式优选')
+        fcols = [c for c in [
+            'Ticker','Company','Price','A候选等级','A动作',
+            'Early V2 Score','Structure Score','Trend & Momentum Score',
+            'Accumulation Score','Leadership Score','Catalyst Score',
+            '5D Return','ATR%','KDJ_K','KDJ_D','KDJ_J',
+            'RVOL','OBV Trend'
+        ] if c in formal.columns]
+        fshow = formal[fcols].rename(columns={
+            'Ticker':'股票代码','Company':'公司','Price':'当前价格',
+            'A候选等级':'A等级','A动作':'决定',
+            'Early V2 Score':'二次排名总分',
+            'Structure Score':'市场结构',
+            'Trend & Momentum Score':'趋势动量',
+            'Accumulation Score':'资金积累',
+            'Leadership Score':'领导力',
+            'Catalyst Score':'Catalyst',
+            '5D Return':'前5日涨跌','ATR%':'ATR%',
+            'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
+            'RVOL':'量比','OBV Trend':'OBV趋势'
+        })
+        st.dataframe(
+            fshow.style.format({
+                '当前价格':'{:.2f}',
+                '前5日涨跌':'{:+.1%}',
+                'ATR%':'{:.1%}',
+                'K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
+                '量比':'{:.2f}',
+            }, na_rep=''),
+            hide_index=True,
+            use_container_width=True
+        )
 
     if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
         sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
@@ -3692,7 +3891,7 @@ def render_results(top_df, all_df):
 if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
-    st.caption("点击上方按钮运行 KD 20/80 盘后扫描。")
+    st.caption("点击上方按钮运行 CMS A：KD20 + 前5日跌幅 + ATR% 扫描。")
 
 st.divider()
 with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
