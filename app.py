@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS KD + RSI 超卖回升 — A/B 测试")
+st.title("📈 CMS KD20 核心 + 10%爆发因子研究")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -2665,6 +2665,24 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         kd_buy = cross_up & (k <= 20) & (kd <= 20)
         kd_sell = cross_down & (k >= 80) & (kd >= 80)
 
+        # ---------- 10%爆发因子研究 ----------
+        # 只作为研究字段，不参与当前正式买入条件。
+        vol20 = volume.rolling(20).mean()
+        volume_ratio = volume / vol20.replace(0, np.nan)
+
+        atr14 = calc_atr(d, 14)
+        atr_pct = atr14 / close.replace(0, np.nan)
+
+        ret5 = close / close.shift(5) - 1
+        ret10 = close / close.shift(10) - 1
+
+        # 金叉力度：今天 K-D 的正向扩张，以及相对昨日改善量
+        kd_spread = k - kd
+        kd_spread_accel = kd_spread - kd_spread.shift(1)
+
+        # J 值动能与当天RSI仅作辅助研究
+        j_slope = j - j.shift(1)
+
         # B1 = within the latest 3 bars RSI touched <=30, and today RSI rises.
         rsi_recent_min3 = rsi.rolling(3).min()
         rsi_turn_up = rsi > rsi.shift(1)
@@ -2721,6 +2739,14 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "KDJ_J": safe_num(j.iloc[loc]),
                 "RSI14_新": safe_num(rsi.iloc[loc]),
                 "RSI昨日": safe_num(rsi.shift(1).iloc[loc]),
+                "Volume Ratio20": safe_num(volume_ratio.iloc[loc]),
+                "ATR14": safe_num(atr14.iloc[loc]),
+                "ATR%": safe_num(atr_pct.iloc[loc]),
+                "前5日涨跌": safe_num(ret5.iloc[loc]),
+                "前10日涨跌": safe_num(ret10.iloc[loc]),
+                "KD Spread": safe_num(kd_spread.iloc[loc]),
+                "KD Spread Accel": safe_num(kd_spread_accel.iloc[loc]),
+                "J Slope": safe_num(j_slope.iloc[loc]),
                 "KD低位金叉20": "是" if buy_a else "否",
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
@@ -2923,6 +2949,228 @@ def render_kd_strategy_validation(bt):
     )
 
 
+
+def render_kd10_breakout_factor_research(bt):
+    """
+    在纯 KD20 金叉样本中，比较 5D>=10% 与 <10% 两组的共同特征。
+    只做研究，不自动改变正式选股规则。
+    """
+    if bt is None or bt.empty:
+        st.warning("没有历史回放样本，无法进行10%爆发因子研究。")
+        return
+
+    d = bt.copy()
+    if "KD低位金叉20" not in d.columns or "5D Max Gain" not in d.columns:
+        st.warning("历史回放缺少 KD20 或 5D收益字段。")
+        return
+
+    x = d[d["KD低位金叉20"].eq("是")].copy()
+    if x.empty:
+        st.warning("当前回放窗口没有 KD20 低位金叉样本。")
+        return
+
+    numeric_cols = [
+        "5D Max Gain","Volume Ratio20","ATR%","前5日涨跌","前10日涨跌",
+        "KDJ_K","KDJ_D","KDJ_J","KD Spread","KD Spread Accel","J Slope","RSI14_新"
+    ]
+    for c in numeric_cols:
+        if c in x.columns:
+            x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    x["10%爆发"] = np.where(x["5D Max Gain"] >= 0.10, "5D≥10%", "5D<10%")
+
+    st.header("🚀 KD20 金叉：10%爆发因子研究")
+    st.caption(
+        "只研究纯KD20金叉样本。把未来5个交易日最大涨幅≥10%的股票，与其余股票做特征对比。"
+        "这些字段目前只用于研究，不会改变正式买入条件。"
+    )
+
+    total_n = len(x)
+    hit_n = int((x["10%爆发"] == "5D≥10%").sum())
+    base_rate = hit_n / total_n if total_n else np.nan
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("KD20独立样本", f"{total_n}")
+    c2.metric("5D≥10%数量", f"{hit_n}")
+    c3.metric("基础命中率", f"{base_rate:.1%}" if pd.notna(base_rate) else "—")
+
+    features = [
+        ("Volume Ratio20", "成交量比20日均量"),
+        ("ATR%", "ATR%"),
+        ("前5日涨跌", "前5日涨跌"),
+        ("前10日涨跌", "前10日涨跌"),
+        ("KDJ_K", "K"),
+        ("KDJ_D", "D"),
+        ("KDJ_J", "J"),
+        ("KD Spread", "K-D"),
+        ("KD Spread Accel", "K-D扩张加速度"),
+        ("J Slope", "J斜率"),
+        ("RSI14_新", "RSI14"),
+    ]
+
+    rows = []
+    for col, label in features:
+        if col not in x.columns:
+            continue
+
+        a = x.loc[x["10%爆发"] == "5D≥10%", col].dropna()
+        b = x.loc[x["10%爆发"] == "5D<10%", col].dropna()
+
+        if len(a) == 0 or len(b) == 0:
+            continue
+
+        med_a = a.median()
+        med_b = b.median()
+        mean_a = a.mean()
+        mean_b = b.mean()
+
+        rows.append({
+            "因子": label,
+            "≥10%组均值": mean_a,
+            "<10%组均值": mean_b,
+            "≥10%组中位数": med_a,
+            "<10%组中位数": med_b,
+            "中位数差": med_a - med_b,
+        })
+
+    comp = pd.DataFrame(rows)
+
+    if not comp.empty:
+        st.subheader("① 爆发组 vs 非爆发组")
+        st.dataframe(
+            comp.style.format({
+                "≥10%组均值":"{:.3f}",
+                "<10%组均值":"{:.3f}",
+                "≥10%组中位数":"{:.3f}",
+                "<10%组中位数":"{:.3f}",
+                "中位数差":"{:+.3f}",
+            }, na_rep="—"),
+            hide_index=True,
+            use_container_width=True
+        )
+
+    # --------------------------------------------------------
+    # 规则扫描：尝试简单阈值，看哪些单因子能提高10%命中率
+    # --------------------------------------------------------
+    st.subheader("② 哪些单因子阈值能提高 5D≥10% 命中率")
+    candidates = []
+
+    def add_rule(name, mask):
+        y = x[mask.fillna(False)].copy()
+        n = len(y)
+        if n < 12:
+            return
+        hits = int((y["5D Max Gain"] >= .10).sum())
+        rate = hits / n if n else np.nan
+        lift = rate / base_rate if base_rate and base_rate > 0 else np.nan
+        candidates.append({
+            "条件": name,
+            "样本数": n,
+            "5D≥10%数量": hits,
+            "命中率": rate,
+            "相对基础提升": lift,
+            "样本保留率": n / total_n if total_n else np.nan,
+        })
+
+    if "Volume Ratio20" in x:
+        add_rule("量比≥1.2", x["Volume Ratio20"] >= 1.2)
+        add_rule("量比≥1.5", x["Volume Ratio20"] >= 1.5)
+        add_rule("量比≥2.0", x["Volume Ratio20"] >= 2.0)
+
+    if "ATR%" in x:
+        add_rule("ATR%≥3%", x["ATR%"] >= .03)
+        add_rule("ATR%≥4%", x["ATR%"] >= .04)
+        add_rule("ATR%≥5%", x["ATR%"] >= .05)
+
+    if "前5日涨跌" in x:
+        add_rule("前5日跌≤-3%", x["前5日涨跌"] <= -.03)
+        add_rule("前5日跌≤-5%", x["前5日涨跌"] <= -.05)
+        add_rule("前5日跌≤-8%", x["前5日涨跌"] <= -.08)
+
+    if "前10日涨跌" in x:
+        add_rule("前10日跌≤-5%", x["前10日涨跌"] <= -.05)
+        add_rule("前10日跌≤-10%", x["前10日涨跌"] <= -.10)
+
+    if "KD Spread Accel" in x:
+        add_rule("K-D扩张≥1", x["KD Spread Accel"] >= 1)
+        add_rule("K-D扩张≥2", x["KD Spread Accel"] >= 2)
+        add_rule("K-D扩张≥3", x["KD Spread Accel"] >= 3)
+
+    if "J Slope" in x:
+        add_rule("J单日上升≥5", x["J Slope"] >= 5)
+        add_rule("J单日上升≥10", x["J Slope"] >= 10)
+
+    if "KDJ_J" in x:
+        add_rule("J≤20", x["KDJ_J"] <= 20)
+        add_rule("J≤15", x["KDJ_J"] <= 15)
+
+    if "RSI14_新" in x:
+        add_rule("RSI≤35", x["RSI14_新"] <= 35)
+        add_rule("RSI≤30", x["RSI14_新"] <= 30)
+
+    rules_df = pd.DataFrame(candidates)
+    if not rules_df.empty:
+        rules_df = rules_df.sort_values(
+            ["命中率","样本数"],
+            ascending=[False,False]
+        ).reset_index(drop=True)
+
+        st.dataframe(
+            rules_df.style.format({
+                "命中率":"{:.1%}",
+                "相对基础提升":"{:.2f}x",
+                "样本保留率":"{:.1%}",
+            }, na_rep="—"),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        good = rules_df[
+            (rules_df["样本数"] >= 20) &
+            (rules_df["命中率"] > base_rate)
+        ].copy()
+
+        if not good.empty:
+            best = good.iloc[0]
+            st.info(
+                f"当前最值得继续研究的单因子：{best['条件']}；"
+                f"5D≥10%命中率 {best['命中率']:.1%}，"
+                f"基础为 {base_rate:.1%}，样本 {int(best['样本数'])} 个。"
+                "这还不是正式规则，下一步应做多因子组合和更长时间验证。"
+            )
+        else:
+            st.info("当前简单阈值没有找到既有足够样本、又明显提高10%命中率的单因子。")
+
+    # --------------------------------------------------------
+    # 明细
+    # --------------------------------------------------------
+    with st.expander("查看 KD20 金叉样本明细", expanded=False):
+        cols = [
+            "Replay Date","Ticker","Price","5D Max Gain",
+            "Volume Ratio20","ATR%","前5日涨跌","前10日涨跌",
+            "KDJ_K","KDJ_D","KDJ_J","KD Spread","KD Spread Accel",
+            "J Slope","RSI14_新","10%爆发"
+        ]
+        detail = x[[c for c in cols if c in x.columns]].sort_values(
+            ["5D Max Gain"], ascending=False
+        )
+        st.dataframe(
+            detail.style.format({
+                "Price":"{:.2f}",
+                "5D Max Gain":"{:+.2%}",
+                "Volume Ratio20":"{:.2f}",
+                "ATR%":"{:.2%}",
+                "前5日涨跌":"{:+.2%}",
+                "前10日涨跌":"{:+.2%}",
+                "KDJ_K":"{:.1f}","KDJ_D":"{:.1f}","KDJ_J":"{:.1f}",
+                "KD Spread":"{:.2f}","KD Spread Accel":"{:.2f}",
+                "J Slope":"{:.2f}","RSI14_新":"{:.1f}",
+            }, na_rep="—"),
+            hide_index=True,
+            use_container_width=True
+        )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -2951,7 +3199,7 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("基准A：KD20金叉；研究B1/B2：再加 RSI 超卖回升确认。卖出仍用KD80死叉。")
+    st.success("正式买入仍为纯KD20金叉；RSI不作为硬条件。新增研究：哪些KD20信号更容易在5天内涨≥10%。")
 
 st.info(
     "当前不急着把RSI变成硬门槛：先同时保留 A纯KD、B1超卖回升、B2上穿30，直接比较未来1/3/5日表现。"
@@ -3078,7 +3326,7 @@ def render_results(top_df, all_df):
         return
 
     st.success(f"✅ 扫描完成：{len(top_df)}只 KD20 低位金叉候选，已标记 RSI 确认层")
-    st.caption('A=纯KD20低位金叉；B1=A+RSI超卖后回升；B2=A+RSI重新上穿30。先比较，不让RSI提前成为硬过滤。卖出仍为严格KD80高位死叉。')
+    st.caption('正式买入=A纯KD20低位金叉。RSI继续显示但不做硬过滤；历史区新增10%爆发因子研究。卖出仍为严格KD80高位死叉。')
 
     display_cols = [c for c in [
         'Rank','Ticker','Company','Price','信号分组','KD交易动作',
@@ -3188,5 +3436,7 @@ if "a_historical_replay" in st.session_state:
         "结果放在 Research 折叠框外，运行完成后无需重新打开折叠框。"
     )
     render_historical_a_replay(st.session_state["a_historical_replay"])
+    st.divider()
+    render_kd10_breakout_factor_research(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
     st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
