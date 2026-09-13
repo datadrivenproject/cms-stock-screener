@@ -2526,107 +2526,105 @@ def calc_v3_pivot_room_fields(df):
 
 def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
     """
-    Historical reconstruction of Early Engine V2 without look-ahead.
+    独立重建 Early Engine V2 历史评分，不调用实时A6/A5旧链条。
 
-    当前 Catalyst 数据源已关闭，因此历史与实时保持一致：
-      Early V2 = 市场结构25 + 趋势动量20 + 资金积累20 + 领导力20 + Catalyst 0
+    只使用历史信号当天及以前的数据：
+      市场结构       0–25
+      趋势动量       0–20
+      资金积累       0–20
+      领导力         0–20
+      Catalyst       0（当前新闻源未启用）
 
-    至少使用50根历史日K即可开始重建；历史越长，市场结构模块越稳定。
+    Early V2 历史总分范围：0–85。
+
+    注意：
+    - 不要求210根历史K线；60根即可开始评分。
+    - MA200不足时只是该字段为NaN，不让整个评分失败。
+    - 不再运行 calc_a5_resonance / Pivot / Hard Filter / Quality Gate，
+      因为这些都不是本次 Early V2 有效性验证所需要的。
     """
     try:
-        if df_hist is None or len(df_hist) < 50:
-            return None
-        df = _norm_daily_index(df_hist)
-        for c in ['Open','High','Low','Close','Volume']:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-        df = df.dropna(subset=['High','Low','Close','Volume'])
-        if len(df) < 210:
+        if df_hist is None:
             return None
 
-        close, high, low, volume = df['Close'], df['High'], df['Low'], df['Volume']
+        df = _norm_daily_index(df_hist).copy()
+
+        required_cols = ["Open", "High", "Low", "Close", "Volume"]
+        for c in required_cols:
+            if c not in df.columns:
+                return None
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        df = df.dropna(subset=["High", "Low", "Close", "Volume"])
+
+        # KDJ/RSI/MACD/量价等至少需要一段预热。
+        if len(df) < 60:
+            return None
+
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+        volume = df["Volume"]
+
         price = float(close.iloc[-1])
-        atr14 = safe_num(calc_atr(high, low, close, 14).iloc[-1])
-        avgvol20 = safe_num(volume.rolling(20).mean().iloc[-1])
-        rvol = float(volume.iloc[-1] / avgvol20) if avgvol20 > 0 else np.nan
-        dollar_volume = price * avgvol20 if avgvol20 > 0 else 0
-        ret5, ret20 = pct_return(close, 5), pct_return(close, 20)
+        if not np.isfinite(price) or price <= 0:
+            return None
 
+        atr_series = calc_atr(high, low, close, 14)
+        atr14 = safe_num(atr_series.iloc[-1])
+        if pd.isna(atr14):
+            return None
+
+        ret5 = pct_return(close, 5)
+        ret20 = pct_return(close, 20)
+
+        # 1) 市场结构 25
         structure_raw = identify_market_structure(df, atr14, price)
         m1 = score_structure(df, price, atr14, structure_raw)
+
+        # 2) 趋势动量 20
         m2 = score_trend_momentum(df)
+
+        # 3) 资金积累 20
         m3 = score_accumulation(df)
-        m4 = score_leadership(ret5, ret20, sector, benchmarks)
 
-        replay85 = int(m1['score'] + m2['score'] + m3['score'] + m4['score'])
-        replay100 = float(replay85 / 85.0 * 100.0)
+        # 4) 领导力 20
+        # 当前公司Sector不可用，因此与实时程序一致使用 Unknown；
+        # 仍可完整计算 stock vs SPY 部分。
+        m4 = score_leadership(
+            stock_ret5=ret5,
+            stock_ret20=ret20,
+            sector=sector or "Unknown",
+            benchmarks=benchmarks or {},
+        )
 
-        # 当前实时 Catalyst=0，因此 Early V2 实际总分就是这四项之和。
-        early_v2_score = replay85
+        s1 = int(safe_num(m1.get("score", 0)) or 0)
+        s2 = int(safe_num(m2.get("score", 0)) or 0)
+        s3 = int(safe_num(m3.get("score", 0)) or 0)
+        s4 = int(safe_num(m4.get("score", 0)) or 0)
+
+        early_v2_score = int(min(85, max(0, s1 + s2 + s3 + s4)))
         history_bars = int(len(df))
-        score_quality = "完整历史" if history_bars >= 210 else "短历史重建"
 
-        row = {
-            'Ticker': ticker,
-            'Sector': sector,
-            'Price': price,
-            'ATR14': atr14,
-            'RVOL': rvol,
-            'Dollar Volume': dollar_volume,
-            '5D Return': ret5,
-            '20D Return': ret20,
-            'Structure Score': m1['score'],
-            'Trend & Momentum Score': m2['score'],
-            'Accumulation Score': m3['score'],
-            'Leadership Score': m4['score'],
-            'Catalyst Score': 0,
-            'Early V2 Score': early_v2_score,
-            'Replay Core Score 85': replay85,
-            'Replay Core Score 100': replay100,
-            'Early V2 History Bars': history_bars,
-            'Early V2 Score Quality': score_quality,
-            'Catalyst Label': '当前未启用',
-            'Major Resistance Zone': m1['Major Resistance Zone'],
-            'Major Support Zone': m1['Major Support Zone'],
-            'Short-term Breakout': m1['Short-term Breakout'],
-            'Distance to Major Resistance': m1['Distance to Major Resistance'],
-            'Distance to Short Breakout': m1['Distance to Short Breakout'],
-            'Compression Ratio': m1['Compression Ratio'],
-            'R→S Flip': m1['R→S Flip'],
-            'R→S Flip Zone': m1['R→S Flip Zone'],
-            'R→S Flip Touches': m1['R→S Flip Touches'],
-            'MA20': m2['MA20'], 'MA50': m2['MA50'], 'MA200': m2['MA200'],
-            'MA20 Slope 5D': m2['MA20 Slope 5D'],
-            'MACD Phase': m2['MACD Phase'], 'RSI14': m2['RSI14'],
-            'Volume Build Ratio': m3['Volume Build Ratio'],
-            'Up/Down Volume Ratio': m3['Up/Down Volume Ratio'],
-            'OBV Trend': m3['OBV Trend'],
-            'Stock vs SPY 20D': m4['Stock vs SPY 20D'],
-            'Sector vs SPY 20D': m4['Sector vs SPY 20D'],
-            'Stock vs Sector 20D': m4['Stock vs Sector 20D'],
-            'RS Acceleration': m4['RS Acceleration'],
+        # >=200根时MA200也完整；不足200根仍可使用其余指标评分。
+        score_quality = "完整历史" if history_bars >= 200 else "短历史重建"
+
+        return {
+            "Ticker": ticker,
+            "Sector": sector or "Unknown",
+            "Price": price,
+            "Early V2 Score": early_v2_score,
+            "Structure Score": s1,
+            "Trend & Momentum Score": s2,
+            "Accumulation Score": s3,
+            "Leadership Score": s4,
+            "Catalyst Score": 0,
+            "Early V2 History Bars": history_bars,
+            "Early V2 Score Quality": score_quality,
+            "Stock vs SPY 20D": m4.get("Stock vs SPY 20D", np.nan),
+            "Stock vs SPY 5D": m4.get("Stock vs SPY 5D", np.nan),
         }
 
-        row.update(calc_a5_resonance(df, row))
-
-        # A6 V3 FIX1:
-        # Historical replay must also generate Pivot / First Room / Breakout Room
-        # strictly from data available as of that replay date.
-        row.update(calc_v3_pivot_room_fields(df))
-
-        row["空间等级"], row["空间优先级"] = calc_room_quality(row)
-
-        hard_ok, hard_reason = passes_v43a_hard_filter(row)
-        row['Hard Filter'] = '通过' if hard_ok else '未通过'
-        row['Hard Filter Reason'] = hard_reason
-
-        stage, stage_quality, stage_reason = classify_structure_stage(row, structure_raw, atr14)
-        row['结构阶段'] = stage
-        row['结构质量'] = stage_quality
-        row['结构依据'] = stage_reason
-        q, qr = quality_gate(row)
-        row['质量检查'] = q
-        row['质量原因'] = qr
-        return row
     except Exception:
         return None
 
