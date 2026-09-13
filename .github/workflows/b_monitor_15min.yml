@@ -3,7 +3,7 @@ name: CMS B 15min Monitor
 on:
   workflow_dispatch:
   schedule:
-    # Every 15 minutes, Mon-Fri. The Python code itself checks NY regular market hours.
+    # Every 15 minutes, Mon-Fri. Python checks NY regular market hours.
     - cron: "*/15 * * * 1-5"
 
 jobs:
@@ -30,8 +30,14 @@ jobs:
           mkdir -p .streamlit
           printf '%s' "$STREAMLIT_SECRETS_TOML" > .streamlit/secrets.toml
 
-      - name: Run B/C once
+      - name: Run existing B/C once
         env:
           HEADLESS_B_RUN: "1"
           HEADLESS_MAX_NAMES: "20"
         run: python app.py
+
+      - name: Update B exit levels (display only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -u b_exit_levels.py
