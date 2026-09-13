@@ -33,18 +33,27 @@ jobs:
         with:
           python-version: "3.11"
 
+      # HARD SAFETY GATE — MUST RUN BEFORE ANY MARKET-DATA REQUEST.
+      # Blocks production if period=1y/history loading is reintroduced or if
+      # adjust_stock_daily_529.py ever contains BusinessQuant access again.
+      - name: 0 - Safety guard - forbid historical BusinessQuant fetch
+        run: |
+          python -u guard_no_historical_fetch.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy requests gspread google-auth
 
-      - name: 1 - Incrementally update 529 raw EOD
+      - name: 1 - TRUE incremental update of 529 raw EOD
         run: |
           python -u load_stock_daily_529.py
 
-      - name: 2 - Rebuild adjusted OHLC for 529
+      # IMPORTANT: this program must be Supabase-only.
+      # guard_no_historical_fetch.py blocks the pipeline if BQ access appears here.
+      - name: 2 - Supabase-only adjusted OHLC maintenance
         run: |
-          python adjust_stock_daily_529.py
+          python -u adjust_stock_daily_529.py
 
       - name: 3 - Run KD-Core daily selection
         run: |
