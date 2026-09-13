@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import requests
 import io
 import time
@@ -226,64 +225,20 @@ def split_chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def safe_batch_download(tickers_tuple, period="1y"):
-    tickers = list(tickers_tuple)
-    all_data = {}
-    for chunk in split_chunks(tickers, BATCH_SIZE):
-        for attempt in range(MAX_RETRIES):
-            try:
-                df = yf.download(
-                    tickers=chunk,
-                    period=period,
-                    interval="1d",
-                    auto_adjust=True,
-                    group_by="ticker",
-                    progress=False,
-                    threads=False,
-                    timeout=25,
-                )
-                if df is not None and not df.empty:
-                    if isinstance(df.columns, pd.MultiIndex):
-                        for t in chunk:
-                            try:
-                                sub = df[t].copy().dropna(how="all")
-                                if not sub.empty:
-                                    all_data[t] = sub
-                            except Exception:
-                                pass
-                    elif len(chunk) == 1:
-                        all_data[chunk[0]] = df.dropna(how="all")
-                    break
-            except Exception:
-                pass
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_WAIT[attempt])
-        time.sleep(BATCH_PAUSE)
-    return all_data
+    """
+    兼容旧调用名称，但数据源已经统一为 Supabase stock_daily。
+    period 参数仅为兼容旧代码保留，不再触发任何外部行情下载。
+    """
+    return supabase_batch_download(tuple(tickers_tuple))
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def safe_download_single(ticker, period="1y"):
-    for attempt in range(MAX_RETRIES):
-        try:
-            df = yf.download(
-                ticker,
-                period=period,
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-                threads=False,
-                timeout=25,
-            )
-            if df is not None and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                return df.dropna(how="all")
-        except Exception:
-            pass
-        if attempt < MAX_RETRIES - 1:
-            time.sleep(RETRY_WAIT[attempt])
-    return None
+    """
+    兼容旧调用名称，但数据源已经统一为 Supabase stock_daily。
+    """
+    return supabase_download_single(ticker)
 
 # =========================================================
 # SUPABASE DAILY OHLCV — production scan data source
@@ -1436,15 +1391,12 @@ def score_accumulation(df):
 # =========================================================
 @st.cache_data(ttl=21600)
 def get_company_info(ticker):
-    try:
-        info = yf.Ticker(ticker).info or {}
-        return (
-            info.get("shortName") or info.get("longName") or ticker,
-            info.get("sector") or "Unknown",
-            info.get("marketCap") or np.nan,
-        )
-    except Exception:
-        return ticker, "Unknown", np.nan
+    """
+    Supabase/本地数据 已完全移除。
+    当前核心选股只需要 ticker + Supabase 日线。
+    公司名/行业/市值若本地没有元数据，则返回安全默认值。
+    """
+    return str(ticker).upper(), "Unknown", np.nan
 
 # =========================================================
 # FUNDAMENTAL CONFIRMATION — V4.3A.3
@@ -1452,184 +1404,28 @@ def get_company_info(ticker):
 # =========================================================
 @st.cache_data(ttl=21600)
 def get_fundamental_confirmation(ticker):
-    """Return transparent fundamental checks using Yahoo Finance fields.
-
-    This layer is intentionally separate from the Early V2 technical score.
-    Missing fields are treated as '数据不足' rather than as an automatic fail.
     """
-    try:
-        info = yf.Ticker(ticker).info or {}
-    except Exception:
-        info = {}
-
-    def n(key):
-        return safe_num(info.get(key), np.nan)
-
-    roe = n("returnOnEquity")
-    op_margin = n("operatingMargins")
-    profit_margin = n("profitMargins")
-    fcf = n("freeCashflow")
-    ocf = n("operatingCashflow")
-    net_income = n("netIncomeToCommon")
-    debt_equity = n("debtToEquity")
-    total_debt = n("totalDebt")
-    total_cash = n("totalCash")
-    forward_pe = n("forwardPE")
-    peg = n("pegRatio")
-    ev_ebitda = n("enterpriseToEbitda")
-    revenue_growth = n("revenueGrowth")
-    earnings_growth = n("earningsGrowth")
-
-    # ----- 1) Quality -----
-    quality_pts = 0
-    quality_obs = 0
-    if not pd.isna(roe):
-        quality_obs += 1
-        quality_pts += 2 if roe >= 0.18 else (1 if roe >= 0.10 else 0)
-    if not pd.isna(op_margin):
-        quality_obs += 1
-        quality_pts += 2 if op_margin >= 0.18 else (1 if op_margin >= 0.08 else 0)
-    elif not pd.isna(profit_margin):
-        quality_obs += 1
-        quality_pts += 2 if profit_margin >= 0.15 else (1 if profit_margin >= 0.07 else 0)
-
-    if quality_obs == 0:
-        quality_status = "数据不足"
-    elif quality_pts >= 3:
-        quality_status = "Strong"
-    elif quality_pts >= 1:
-        quality_status = "Pass"
-    else:
-        quality_status = "Weak"
-
-    # ----- 2) Cash flow -----
-    cash_pts = 0
-    cash_obs = 0
-    if not pd.isna(fcf):
-        cash_obs += 1
-        cash_pts += 2 if fcf > 0 else 0
-    if not pd.isna(ocf):
-        cash_obs += 1
-        cash_pts += 1 if ocf > 0 else 0
-    if not pd.isna(ocf) and not pd.isna(net_income) and net_income > 0:
-        cash_obs += 1
-        cash_pts += 1 if ocf >= net_income * 0.8 else 0
-
-    if cash_obs == 0:
-        cash_status = "数据不足"
-    elif cash_pts >= 3:
-        cash_status = "Strong"
-    elif cash_pts >= 1:
-        cash_status = "Pass"
-    else:
-        cash_status = "Weak"
-
-    # ----- 3) Debt / balance-sheet risk -----
-    debt_obs = 0
-    debt_pts = 0
-    if not pd.isna(debt_equity):
-        debt_obs += 1
-        # Yahoo debtToEquity is commonly reported as a percentage (e.g. 50 = 50%).
-        debt_pts += 2 if debt_equity <= 80 else (1 if debt_equity <= 150 else 0)
-    if not pd.isna(total_debt) and not pd.isna(total_cash) and total_debt > 0:
-        debt_obs += 1
-        cash_debt = total_cash / total_debt
-        debt_pts += 2 if cash_debt >= 0.75 else (1 if cash_debt >= 0.30 else 0)
-
-    if debt_obs == 0:
-        debt_status = "数据不足"
-    elif debt_pts >= 3:
-        debt_status = "Strong"
-    elif debt_pts >= 1:
-        debt_status = "Pass"
-    else:
-        debt_status = "Weak"
-
-    # ----- 4) Valuation -----
-    # Sector-relative valuation will be a later database/backtest enhancement.
-    # V4.3A.3 only flags clearly stretched or reasonable absolute valuation.
-    val_pts = 0
-    val_obs = 0
-    if not pd.isna(forward_pe) and forward_pe > 0:
-        val_obs += 1
-        val_pts += 2 if forward_pe <= 25 else (1 if forward_pe <= 45 else 0)
-    if not pd.isna(peg) and peg > 0:
-        val_obs += 1
-        val_pts += 2 if peg <= 1.8 else (1 if peg <= 3.0 else 0)
-    elif not pd.isna(ev_ebitda) and ev_ebitda > 0:
-        val_obs += 1
-        val_pts += 2 if ev_ebitda <= 18 else (1 if ev_ebitda <= 30 else 0)
-
-    if val_obs == 0:
-        valuation_status = "数据不足"
-    elif val_pts >= 3:
-        valuation_status = "Strong"
-    elif val_pts >= 1:
-        valuation_status = "Pass"
-    else:
-        valuation_status = "Weak"
-
-    # ----- 5) Growth -----
-    growth_pts = 0
-    growth_obs = 0
-    if not pd.isna(revenue_growth):
-        growth_obs += 1
-        growth_pts += 2 if revenue_growth >= 0.12 else (1 if revenue_growth >= 0.03 else 0)
-    if not pd.isna(earnings_growth):
-        growth_obs += 1
-        growth_pts += 2 if earnings_growth >= 0.12 else (1 if earnings_growth >= 0.03 else 0)
-
-    if growth_obs == 0:
-        growth_status = "数据不足"
-    elif growth_pts >= 3:
-        growth_status = "Strong"
-    elif growth_pts >= 1:
-        growth_status = "Pass"
-    else:
-        growth_status = "Weak"
-
-    statuses = [quality_status, cash_status, debt_status, valuation_status, growth_status]
-    known = [x for x in statuses if x != "数据不足"]
-    strong_n = sum(x == "Strong" for x in known)
-    pass_n = sum(x == "Pass" for x in known)
-    weak_n = sum(x == "Weak" for x in known)
-
-    if len(known) < 3:
-        overall = "数据不足"
-    elif weak_n >= 2:
-        overall = "Weak"
-    elif strong_n >= 3 and weak_n == 0:
-        overall = "Strong"
-    elif strong_n + pass_n >= 3 and weak_n <= 1:
-        overall = "Pass"
-    else:
-        overall = "Weak"
-
-    reasons = []
-    for label, status in [
-        ("Quality", quality_status), ("FCF", cash_status), ("Debt", debt_status),
-        ("Valuation", valuation_status), ("Growth", growth_status)
-    ]:
-        reasons.append(f"{label}:{status}")
-
+    Supabase/本地数据 基本面数据源已移除。
+    此模块不参与当前 KD/RSI 核心选股，因此返回“数据不足”，
+    不作为买入/卖出过滤条件。
+    """
     return {
-        "Fundamental Confirmation": overall,
-        "Fundamental Reason": " | ".join(reasons),
-        "Quality Fundamental": quality_status,
-        "FCF Fundamental": cash_status,
-        "Debt Fundamental": debt_status,
-        "Valuation Fundamental": valuation_status,
-        "Growth Fundamental": growth_status,
-        "ROE": roe,
-        "Operating Margin": op_margin,
-        "Free Cash Flow": fcf,
-        "Operating Cash Flow": ocf,
-        "Debt to Equity": debt_equity,
-        "Forward PE": forward_pe,
-        "PEG": peg,
-        "EV/EBITDA": ev_ebitda,
-        "Revenue Growth": revenue_growth,
-        "Earnings Growth": earnings_growth,
+        "Fundamental Confirmation": "数据不足",
+        "Fundamental Score": np.nan,
+        "Quality Check": "数据不足",
+        "Valuation Check": "数据不足",
+        "Growth Check": "数据不足",
+        "ROE": np.nan,
+        "Operating Margin": np.nan,
+        "Profit Margin": np.nan,
+        "Free Cash Flow": np.nan,
+        "Operating Cash Flow": np.nan,
+        "Debt to Equity": np.nan,
+        "Forward PE": np.nan,
+        "PEG": np.nan,
+        "EV/EBITDA": np.nan,
+        "Revenue Growth": np.nan,
+        "Earnings Growth": np.nan,
     }
 
 
@@ -1654,60 +1450,11 @@ def final_confidence(row):
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_catalyst_v2(ticker):
-    try:
-        news = yf.Ticker(ticker).news or []
-    except Exception:
-        return 0, "无明显催化", [], [], []
-
-    now = datetime.now(timezone.utc).timestamp()
-    max_age = 21 * 86400
-    titles = []
-
-    for item in news:
-        try:
-            title = item.get("title", "") if isinstance(item, dict) else ""
-            ts = item.get("providerPublishTime") if isinstance(item, dict) else None
-            content = item.get("content") if isinstance(item, dict) else None
-            if not title and isinstance(content, dict):
-                title = content.get("title", "") or ""
-                pub = content.get("pubDate")
-                if pub:
-                    try:
-                        ts = pd.Timestamp(pub).timestamp()
-                    except Exception:
-                        ts = None
-            if title and (ts is None or now - ts <= max_age):
-                titles.append(title)
-        except Exception:
-            continue
-
-    text = " ".join(titles).lower()
-    pos_cats = []
-    neg_cats = []
-    for cat, kws in POSITIVE_CATALYST.items():
-        if any(kw in text for kw in kws):
-            pos_cats.append(cat)
-    for cat, kws in NEGATIVE_CATALYST.items():
-        if any(kw in text for kw in kws):
-            neg_cats.append(cat)
-
-    # Positive categories are rewarded, negatives penalize harder.
-    raw = min(15, len(pos_cats) * 4 + min(3, len(titles) // 3))
-    raw -= min(15, len(neg_cats) * 6)
-    score = int(np.clip(raw, 0, 15))
-
-    if neg_cats and score <= 4:
-        label = "负面催化风险"
-    elif score >= 11:
-        label = "强催化"
-    elif score >= 6:
-        label = "中等催化"
-    elif score > 0:
-        label = "轻度催化"
-    else:
-        label = "无明显催化"
-
-    return score, label, pos_cats, neg_cats, titles[:6]
+    """
+    Supabase/本地数据 新闻接口已移除。
+    催化模块不参与当前 KD/RSI 核心买入条件。
+    """
+    return 0, "未启用新闻数据", [], [], []
 
 # =========================================================
 # BENCHMARKS + MODULE 4 LEADERSHIP (MAX 20)
@@ -2375,7 +2122,8 @@ def load_all_scan_history():
 
 @st.cache_data(ttl=1800)
 def download_backtest_daily(tickers_tuple):
-    return safe_batch_download(tuple(tickers_tuple), "2y")
+    """历史回测统一使用 Supabase stock_daily。"""
+    return supabase_batch_download(tuple(tickers_tuple))
 
 def evaluate_scan_history(hist, max_rows=1500):
     """Forward 1/3/5-trading-day outcome from scan close. No look-ahead in labels."""
@@ -2446,7 +2194,7 @@ def render_strong_stock_backtest(bt):
 # =========================================================
 # HISTORICAL A REPLAY — V4.3A.3C
 # Re-runs the historical-price-reconstructable A core on old dates.
-# IMPORTANT: Yahoo's current news feed cannot reconstruct historical Catalyst
+# IMPORTANT: Supabase/本地数据's current news feed cannot reconstruct historical Catalyst
 # point-in-time without look-ahead, so Catalyst is EXCLUDED from replay ranking.
 # Fundamental Confirmation never entered the 100-point Early V2 score, so it is
 # also not needed for replay ranking.  The replay core is therefore 85 points:
@@ -2483,7 +2231,7 @@ def _historical_benchmark_snapshot(benchmark_data, asof_date):
 
 
 def _get_replay_sector_map(tickers):
-    """Prefer sectors already obtained by the LIVE scan; otherwise use cached Yahoo info."""
+    """Prefer sectors already obtained by the LIVE scan; otherwise use cached Supabase/本地数据 info."""
     sector_map = {}
     live = st.session_state.get('v43a_all_df')
     if isinstance(live, pd.DataFrame) and not live.empty and {'Ticker','Sector'}.issubset(live.columns):
@@ -3087,7 +2835,7 @@ if scan_clicked:
         st.warning(
             "股票池已经扩大，但以下股票目前 Supabase 还没有复权日K，因此本次先跳过："
             + preview + more +
-            "。KD 20/80 正式扫描不会改用 Yahoo 日K混跑。"
+            "。KD 20/80 正式扫描不会改用 Supabase/本地数据 日K混跑。"
         )
 
     if not available_tickers:
@@ -3097,7 +2845,7 @@ if scan_clicked:
     results = []
     for i, ticker in enumerate(available_tickers, start=1):
         status.write(f"正在分析 {ticker}（{i}/{len(available_tickers)}）")
-        # Production scan intentionally does not fall back to Yahoo daily OHLCV.
+        # Production scan intentionally does not fall back to Supabase/本地数据 daily OHLCV.
         # Missing Supabase data is skipped so the daily-price provider stays consistent.
         df = data.get(ticker)
         row = analyze_daily_candidate(ticker, df, benchmarks)
@@ -3210,7 +2958,7 @@ st.divider()
 with st.expander("🧪 历史验证 / Research（平时无需打开）", expanded=False):
     st.caption(
         "这里用于比较 A纯KD、B1 KD+RSI超卖回升、B2 KD+RSI上穿30，不参与盘中执行。"
-        "历史 Replay 暂使用 Yahoo 约2年日K；正式盘后扫描继续使用 Supabase 复权日线。"
+        "历史 Replay 与正式盘后扫描统一使用 Supabase stock_daily 复权日线。"
     )
 
     replay_days = st.selectbox(
