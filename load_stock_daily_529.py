@@ -24,7 +24,24 @@ from datetime import date, datetime, timedelta
 
 BQ_URL = "https://data.businessquant.com/quotes"
 
-REQUEST_BATCH = 10
+# ============================================================
+# CMS / BUSINESS QUANT API DESIGN NOTE — DO NOT REMOVE
+# ============================================================
+# IMPORTANT:
+# 1) REQUEST_BATCH is the number of tickers packed into ONE BQ API request.
+#    It is NOT the daily API request quota/rate limit.
+# 2) CMS previously designed BQ multi-ticker requests around up to 100
+#    tickers/request when the /quotes endpoint supports it.
+# 3) Always minimize API calls: group tickers that share the same missing
+#    date window, then request the largest provider-supported ticker batch.
+# 4) TRUE INCREMENTAL remains mandatory:
+#       existing ticker -> fetch ONLY latest_trade_date + 1 through till_date
+#       new/no-history ticker -> SKIP here; use separate bootstrap loader
+# 5) Before changing this value in the future, verify the CURRENT BQ /quotes
+#    per-request ticker limit. Do NOT confuse it with daily/monthly quota.
+#
+# Current CMS intended batch size: 100 tickers per request.
+REQUEST_BATCH = 100
 DB_BATCH = 500
 
 # Be deliberately gentle with Business Quant.
