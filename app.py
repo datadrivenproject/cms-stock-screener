@@ -2600,15 +2600,35 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
     spy_dates = list(spy.index)
 
     # Need warm-up for KDJ/RSI/20D dollar volume plus forward 5 days.
-    min_required = max(80, int(replay_days) + 35)
-    if len(spy_dates) < min_required:
+    # 自动使用“最大可完整验证窗口”：
+    # 需要预留至少 30 个交易日作为 KDJ/RSI/ATR/成交量等指标预热，
+    # 还要预留未来 5 个交易日用于计算 5D 最大涨幅/回撤。
+    warmup_days = 30
+    forward_days = 5
+
+    max_replay_days = max(0, len(spy_dates) - warmup_days - forward_days)
+    requested_days = int(replay_days)
+    actual_replay_days = min(requested_days, max_replay_days)
+
+    if actual_replay_days <= 0:
         raise RuntimeError(
-            f"Supabase 历史数据不足：SPY只有 {len(spy_dates)} 个交易日。"
+            f"Supabase 历史数据不足：SPY只有 {len(spy_dates)} 个交易日，"
+            f"不足以完成指标预热和未来5日验证。"
         )
 
-    mature_dates = spy_dates[:-5]
-    replay_dates = mature_dates[-int(replay_days):]
+    mature_dates = spy_dates[warmup_days:-forward_days]
+    replay_dates = mature_dates[-actual_replay_days:]
     replay_set = set(pd.Timestamp(x) for x in replay_dates)
+
+    # 记录实际使用的验证天数，供页面展示
+    st.session_state["a_historical_requested_days"] = requested_days
+    st.session_state["a_historical_actual_days"] = actual_replay_days
+
+    if status_box is not None and actual_replay_days < requested_days:
+        status_box.write(
+            f"⚠️ 你选择了 {requested_days} 个交易日，但当前数据库只能完整验证 "
+            f"{actual_replay_days} 个交易日；程序已自动使用最大可用窗口。"
+        )
 
     if status_box is not None:
         status_box.write(
@@ -3464,7 +3484,10 @@ def render_triple_factor_validation(bt):
         )
 
     # Highlight long-window interpretation
-    replay_days_now = st.session_state.get("a_historical_replay_days", None)
+    replay_days_now = st.session_state.get(
+        "a_historical_actual_days",
+        st.session_state.get("a_historical_replay_days", None)
+    )
     if replay_days_now in (30, 60):
         st.warning(
             "当前仍属于短窗口筛选。先用30/60日找候选组合，"
@@ -3694,6 +3717,8 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
     if clear_hist_clicked:
         st.session_state.pop("a_historical_replay", None)
         st.session_state.pop("a_historical_replay_days", None)
+        st.session_state.pop("a_historical_requested_days", None)
+        st.session_state.pop("a_historical_actual_days", None)
         st.session_state.pop("a_historical_replay_done", None)
         st.session_state.pop("a_historical_replay_error", None)
         st.rerun()
@@ -3709,7 +3734,9 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
                 status_box=s
             )
             st.session_state["a_historical_replay"] = bt
-            st.session_state["a_historical_replay_days"] = int(replay_days)
+            st.session_state["a_historical_replay_days"] = int(
+                st.session_state.get("a_historical_actual_days", replay_days)
+            )
             st.session_state["a_historical_replay_done"] = True
         except Exception as e:
             st.session_state["a_historical_replay_error"] = str(e)
@@ -3738,10 +3765,24 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
 if "a_historical_replay" in st.session_state:
     st.divider()
     st.header("📊 KD vs KD+RSI 历史A/B结果")
-    st.caption(
-        f"最近运行：{st.session_state.get('a_historical_replay_days', '—')} 个交易日。"
-        "结果放在 Research 折叠框外，运行完成后无需重新打开折叠框。"
+    requested_days = st.session_state.get(
+        "a_historical_requested_days",
+        st.session_state.get("a_historical_replay_days", "—")
     )
+    actual_days = st.session_state.get(
+        "a_historical_actual_days",
+        st.session_state.get("a_historical_replay_days", "—")
+    )
+    if requested_days != actual_days:
+        st.caption(
+            f"最近运行：请求 {requested_days} 个交易日；实际完整验证 {actual_days} 个交易日。"
+            "程序已自动使用当前数据库允许的最大完整窗口。"
+        )
+    else:
+        st.caption(
+            f"最近运行：{actual_days} 个交易日。"
+            "结果放在 Research 折叠框外，运行完成后无需重新打开折叠框。"
+        )
     render_historical_a_replay(st.session_state["a_historical_replay"])
     st.divider()
     render_kd10_breakout_factor_research(st.session_state["a_historical_replay"])
