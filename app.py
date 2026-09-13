@@ -1794,7 +1794,7 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         for c in ["Open", "High", "Low", "Close", "Volume"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         df = df.dropna(subset=["High", "Low", "Close", "Volume"])
-        if len(df) < 210:
+        if len(df) < 50:
             return None
 
         close = df["Close"]
@@ -2525,9 +2525,16 @@ def calc_v3_pivot_room_fields(df):
 
 
 def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
-    """Historical replay of A components that can be reconstructed without future data."""
+    """
+    Historical reconstruction of Early Engine V2 without look-ahead.
+
+    当前 Catalyst 数据源已关闭，因此历史与实时保持一致：
+      Early V2 = 市场结构25 + 趋势动量20 + 资金积累20 + 领导力20 + Catalyst 0
+
+    至少使用50根历史日K即可开始重建；历史越长，市场结构模块越稳定。
+    """
     try:
-        if df_hist is None or len(df_hist) < 210:
+        if df_hist is None or len(df_hist) < 50:
             return None
         df = _norm_daily_index(df_hist)
         for c in ['Open','High','Low','Close','Volume']:
@@ -2553,6 +2560,11 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
         replay85 = int(m1['score'] + m2['score'] + m3['score'] + m4['score'])
         replay100 = float(replay85 / 85.0 * 100.0)
 
+        # 当前实时 Catalyst=0，因此 Early V2 实际总分就是这四项之和。
+        early_v2_score = replay85
+        history_bars = int(len(df))
+        score_quality = "完整历史" if history_bars >= 210 else "短历史重建"
+
         row = {
             'Ticker': ticker,
             'Sector': sector,
@@ -2566,10 +2578,13 @@ def analyze_historical_a_core(ticker, df_hist, sector, benchmarks):
             'Trend & Momentum Score': m2['score'],
             'Accumulation Score': m3['score'],
             'Leadership Score': m4['score'],
+            'Catalyst Score': 0,
+            'Early V2 Score': early_v2_score,
             'Replay Core Score 85': replay85,
             'Replay Core Score 100': replay100,
-            'Catalyst Score': np.nan,
-            'Catalyst Label': '历史回放未使用',
+            'Early V2 History Bars': history_bars,
+            'Early V2 Score Quality': score_quality,
+            'Catalyst Label': '当前未启用',
             'Major Resistance Zone': m1['Major Resistance Zone'],
             'Major Support Zone': m1['Major Support Zone'],
             'Short-term Breakout': m1['Short-term Breakout'],
@@ -2866,6 +2881,66 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
             buy_b2 = bool(b2.iloc[loc]) if not pd.isna(b2.iloc[loc]) else False
             sell = bool(kd_sell.iloc[loc]) if not pd.isna(kd_sell.iloc[loc]) else False
 
+            # -------------------------------------------------
+            # Early V2 历史重建（严格只使用 as-of 当天及之前数据）
+            # -------------------------------------------------
+            hist_early = None
+            if buy_a:
+                try:
+                    spy_hist = spy[spy.index <= asof].copy()
+                    spy_close_hist = pd.to_numeric(
+                        spy_hist["Close"], errors="coerce"
+                    ).dropna()
+
+                    hist_benchmarks = {
+                        "SPY": {
+                            "5D": pct_return(spy_close_hist, 5),
+                            "20D": pct_return(spy_close_hist, 20),
+                        }
+                    }
+
+                    hist_early = analyze_historical_a_core(
+                        ticker=ticker,
+                        df_hist=d.iloc[:loc+1].copy(),
+                        sector="Unknown",
+                        benchmarks=hist_benchmarks,
+                    )
+                except Exception:
+                    hist_early = None
+
+            early_score = safe_num(
+                hist_early.get("Early V2 Score", np.nan)
+                if hist_early else np.nan
+            )
+            structure_score = safe_num(
+                hist_early.get("Structure Score", np.nan)
+                if hist_early else np.nan
+            )
+            trend_score = safe_num(
+                hist_early.get("Trend & Momentum Score", np.nan)
+                if hist_early else np.nan
+            )
+            accumulation_score = safe_num(
+                hist_early.get("Accumulation Score", np.nan)
+                if hist_early else np.nan
+            )
+            leadership_score = safe_num(
+                hist_early.get("Leadership Score", np.nan)
+                if hist_early else np.nan
+            )
+            catalyst_score = safe_num(
+                hist_early.get("Catalyst Score", 0)
+                if hist_early else np.nan
+            )
+            early_history_bars = (
+                hist_early.get("Early V2 History Bars", np.nan)
+                if hist_early else np.nan
+            )
+            early_score_quality = (
+                hist_early.get("Early V2 Score Quality", "无评分")
+                if hist_early else "无评分"
+            )
+
             # Store all basic-liquidity rows so the validation denominator/date
             # structure remains correct. This is only ~500 x replay_days rows.
             all_out.append({
@@ -2896,42 +2971,14 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
                 "KD高位死叉80": "是" if sell else "否",
-                "Early V2 Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Early V2 Score", np.nan)
-                ),
-                "Structure Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Structure Score", np.nan)
-                ),
-                "Trend & Momentum Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Trend & Momentum Score", np.nan)
-                ),
-                "Accumulation Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Accumulation Score", np.nan)
-                ),
-                "Leadership Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Leadership Score", np.nan)
-                ),
-                "Catalyst Score": safe_num(
-                    calc_a5_resonance(
-                        d.iloc[:loc+1].copy(),
-                        {"Price": price}
-                    ).get("Catalyst Score", np.nan)
-                ),
+                "Early V2 Score": early_score,
+                "Structure Score": structure_score,
+                "Trend & Momentum Score": trend_score,
+                "Accumulation Score": accumulation_score,
+                "Leadership Score": leadership_score,
+                "Catalyst Score": catalyst_score,
+                "Early V2 History Bars": early_history_bars,
+                "Early V2 Score Quality": early_score_quality,
                 "1D Max Gain": g1,
                 "3D Max Gain": g3,
                 "5D Max Gain": g5,
@@ -3431,6 +3478,13 @@ def render_washout_escape_research(bt):
     out = out.sort_values(["5D≥10%","样本数"], ascending=[False,False]).reset_index(drop=True)
 
     st.write(f"当前 KD20 基础 5D≥10% 命中率：**{base:.1%}**")
+    score_series = pd.to_numeric(base["Early V2 Score"], errors="coerce").dropna()
+    if len(score_series):
+        st.caption(
+            f"Early V2历史总分范围：{score_series.min():.0f}–{score_series.max():.0f}；"
+            f"中位数 {score_series.median():.1f}；平均 {score_series.mean():.1f}。"
+        )
+
     st.dataframe(
         out.style.format({
             "样本保留率":"{:.1%}",
@@ -3652,13 +3706,29 @@ def render_early_v2_validation(bt):
     st.header("🧭 Early Engine V2 分数有效性验证")
     st.caption(
         "先固定 A 新核心：KD20金叉 + 前5日跌≥3% + ATR≥4%。"
-        "然后只测试 Early V2 总分是否能进一步提高5日表现。"
+        "Early V2 会按每个历史信号当天重新计算，严格不使用未来数据。"
+        "然后测试总分门槛是否能进一步提高5日表现。"
         "这一步只做历史验证，不改变当前正式选股。"
     )
 
     if base.empty:
         st.info("当前历史窗口没有满足 A 新核心的样本。")
         return
+
+    scored_base = base[pd.to_numeric(base["Early V2 Score"], errors="coerce").notna()].copy()
+    score_coverage = len(scored_base) / len(base) if len(base) else 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("A正式优选样本", len(base))
+    c2.metric("成功重建Early V2", len(scored_base))
+    c3.metric("评分覆盖率", f"{score_coverage:.1%}")
+
+    if len(scored_base) == 0:
+        st.warning("当前窗口没有成功重建任何 Early V2 历史评分。")
+        return
+
+    # 后续门槛验证只使用已经成功重建评分的样本。
+    base = scored_base
 
     rows = []
 
@@ -3694,6 +3764,13 @@ def render_early_v2_validation(bt):
     if out.empty:
         st.info("Early V2 分数验证没有形成有效样本。")
         return
+
+    if "Early V2 Score Quality" in base.columns:
+        q_counts = base["Early V2 Score Quality"].value_counts(dropna=False).to_dict()
+        st.caption(
+            "历史评分质量：" +
+            "；".join(f"{k} {v}个" for k, v in q_counts.items())
+        )
 
     base_hit10 = out.iloc[0]["5D≥10%"]
     base_hit5 = out.iloc[0]["5D≥5%"]
