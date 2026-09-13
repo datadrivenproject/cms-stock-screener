@@ -1,12 +1,7 @@
-name: Daily CMS Stock Data Update
+name: Daily CMS Stock Data Update (Manual Only)
 
 on:
   workflow_dispatch:
-
-  schedule:
-    # 美股周一到周五收盘后运行
-    # 00:30 UTC = 多伦多前一天晚上 8:30 EDT / 7:30 EST
-    - cron: "30 0 * * 2-6"
 
 jobs:
   update-stock-data:
