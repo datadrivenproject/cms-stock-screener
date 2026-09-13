@@ -18,7 +18,7 @@ except ImportError:
 # =========================================================
 st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
 
-st.title("📈 CMS KD20 核心 + 10%爆发因子研究")
+st.title("📈 CMS KD20 核心 + 三因子组合验证")
 st.caption(
     "盘后正式候选：强势资格 + Startup Transition V3（至少2个新鲜触发 + 启动分≥5 + 位置确认）。"
     "Pivot / Room 只用于候选优先级；盘中真正买点和退出由 B/C 负责。"
@@ -2586,7 +2586,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
 
     # 650 calendar days is comfortably enough for 60 replay days +
     # indicator warm-up + five forward trading days.
-    calendar_days = max(140, int(replay_days) * 2 + 90)
+    calendar_days = max(160, int(replay_days) * 2 + 120)
     data_all = supabase_batch_download_recent(
         all_tickers,
         calendar_days=calendar_days
@@ -2683,7 +2683,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
         # J 值动能与当天RSI仅作辅助研究
         j_slope = j - j.shift(1)
 
-        # ---------- 洗盘 vs 出逃：量价研究 ----------
+        # ---------- 洗盘 vs 恐慌释放：量价研究 ----------
         # 这些字段只做研究，不参与当前正式KD20买入。
         ret1 = close.pct_change()
 
@@ -2796,7 +2796,7 @@ def run_historical_a_replay(replay_days=30, progress_bar=None, status_box=None):
                 "下跌量比20": safe_num(down_volume_ratio5.iloc[loc]),
                 "金叉日量比20": safe_num(cross_day_volume_ratio.iloc[loc]),
                 "洗盘分": safe_num(washout_score.iloc[loc]),
-                "出逃分": safe_num(escape_score.iloc[loc]),
+                "恐慌释放分": safe_num(escape_score.iloc[loc]),
                 "KD低位金叉20": "是" if buy_a else "否",
                 "KD+RSI超卖回升": "是" if buy_b1 else "否",
                 "KD+RSI上穿30": "是" if buy_b2 else "否",
@@ -3233,7 +3233,7 @@ def render_washout_escape_research(bt):
 
     cols = [
         "5D Max Gain","前5日涨跌","Volume Ratio20","OBV Slope5",
-        "上涨/下跌量比5","下跌量比20","金叉日量比20","洗盘分","出逃分"
+        "上涨/下跌量比5","下跌量比20","金叉日量比20","洗盘分","恐慌释放分"
     ]
     for c in cols:
         if c in x.columns:
@@ -3241,10 +3241,10 @@ def render_washout_escape_research(bt):
 
     base = (x["5D Max Gain"] >= .10).mean()
 
-    st.header("🌊 KD20：洗盘 vs 出逃量价研究")
+    st.header("🌊 KD20：洗盘 vs 恐慌释放量价研究")
     st.caption(
         "目的不是判断真实“主力身份”，而是用可量化的成交量、OBV和价格行为，"
-        "区分更像抛压衰竭/反弹准备的形态，与更像持续资金流出的形态。当前只研究，不改变正式买入。"
+        "区分更像抛压衰竭/反弹准备的形态，与更像恐慌性资金流出的形态。当前只研究，不改变正式买入。"
     )
 
     rules = []
@@ -3290,7 +3290,7 @@ def render_washout_escape_research(bt):
     # 综合研究分
     test_rule("疑似洗盘分≥2", x["洗盘分"] >= 2)
     test_rule("疑似洗盘分≥3", x["洗盘分"] >= 3)
-    test_rule("疑似出逃分≥2", x["出逃分"] >= 2)
+    test_rule("恐慌释放分≥2", x["恐慌释放分"] >= 2)
 
     out = pd.DataFrame(rules)
     if out.empty:
@@ -3324,6 +3324,159 @@ def render_washout_escape_research(bt):
         )
 
 
+
+def render_triple_factor_validation(bt):
+    """
+    KD20固定入口 + 前5日跌幅 + ATR% + 恐慌释放分
+    组合验证。只研究，不改变正式买入。
+    """
+    if bt is None or bt.empty:
+        return
+
+    x = bt[bt["KD低位金叉20"].eq("是")].copy()
+    if x.empty:
+        st.warning("当前没有KD20金叉样本，无法做三因子组合验证。")
+        return
+
+    numeric_cols = [
+        "5D Max Gain","5D Max Drawdown","前5日涨跌","ATR%",
+        "恐慌释放分","金叉日量比20","下跌量比20","OBV Slope5"
+    ]
+    for c in numeric_cols:
+        if c in x.columns:
+            x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    base_rate = (x["5D Max Gain"] >= .10).mean()
+    total_n = len(x)
+
+    st.header("🧪 KD20 三因子组合验证")
+    st.caption(
+        "固定入口仍然是纯KD20金叉。这里仅测试：前5日跌幅 + ATR% + 恐慌释放分。"
+        "重点看样本量、5D≥5%/8%/10%、平均最大涨幅和平均最大回撤。"
+    )
+
+    combos = []
+
+    def add_combo(name, mask):
+        y = x[mask.fillna(False)].copy()
+        n = len(y)
+        if n < 8:
+            return
+
+        g5 = pd.to_numeric(y["5D Max Gain"], errors="coerce").dropna()
+        dd = pd.to_numeric(y["5D Max Drawdown"], errors="coerce").dropna()
+
+        combos.append({
+            "组合": name,
+            "样本数": n,
+            "样本保留率": n / total_n if total_n else np.nan,
+            "5D≥5%": (g5 >= .05).mean() if len(g5) else np.nan,
+            "5D≥8%": (g5 >= .08).mean() if len(g5) else np.nan,
+            "5D≥10%": (g5 >= .10).mean() if len(g5) else np.nan,
+            "相对基础提升": ((g5 >= .10).mean() / base_rate) if len(g5) and base_rate > 0 else np.nan,
+            "平均5D最大涨幅": g5.mean() if len(g5) else np.nan,
+            "中位数5D最大涨幅": g5.median() if len(g5) else np.nan,
+            "平均5D最大回撤": dd.mean() if len(dd) else np.nan,
+        })
+
+    down3 = x["前5日涨跌"] <= -.03
+    down5 = x["前5日涨跌"] <= -.05
+    atr3 = x["ATR%"] >= .03
+    atr4 = x["ATR%"] >= .04
+    panic2 = x["恐慌释放分"] >= 2
+
+    # two-factor combinations
+    add_combo("跌≥3% + ATR≥3%", down3 & atr3)
+    add_combo("跌≥3% + ATR≥4%", down3 & atr4)
+    add_combo("跌≥5% + ATR≥3%", down5 & atr3)
+    add_combo("跌≥5% + ATR≥4%", down5 & atr4)
+
+    add_combo("跌≥3% + 恐慌释放≥2", down3 & panic2)
+    add_combo("跌≥5% + 恐慌释放≥2", down5 & panic2)
+
+    add_combo("ATR≥3% + 恐慌释放≥2", atr3 & panic2)
+    add_combo("ATR≥4% + 恐慌释放≥2", atr4 & panic2)
+
+    # three-factor combinations
+    add_combo("跌≥3% + ATR≥3% + 恐慌释放≥2", down3 & atr3 & panic2)
+    add_combo("跌≥3% + ATR≥4% + 恐慌释放≥2", down3 & atr4 & panic2)
+    add_combo("跌≥5% + ATR≥3% + 恐慌释放≥2", down5 & atr3 & panic2)
+    add_combo("跌≥5% + ATR≥4% + 恐慌释放≥2", down5 & atr4 & panic2)
+
+    out = pd.DataFrame(combos)
+
+    c1, c2 = st.columns(2)
+    c1.metric("KD20基础样本", total_n)
+    c2.metric("KD20基础 5D≥10%", f"{base_rate:.1%}")
+
+    if out.empty:
+        st.info("当前回放窗口的组合样本太少，暂时无法比较。")
+        return
+
+    out = out.sort_values(
+        ["5D≥10%","样本数"],
+        ascending=[False,False]
+    ).reset_index(drop=True)
+
+    st.dataframe(
+        out.style.format({
+            "样本保留率":"{:.1%}",
+            "5D≥5%":"{:.1%}",
+            "5D≥8%":"{:.1%}",
+            "5D≥10%":"{:.1%}",
+            "相对基础提升":"{:.2f}x",
+            "平均5D最大涨幅":"{:+.2%}",
+            "中位数5D最大涨幅":"{:+.2%}",
+            "平均5D最大回撤":"{:+.2%}",
+        }, na_rep="—"),
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # Balanced recommendation: require enough sample + lift
+    robust = out[
+        (out["样本数"] >= 20) &
+        (out["5D≥10%"] > base_rate)
+    ].copy()
+
+    if not robust.empty:
+        # score balances hit-rate and retained sample
+        robust["研究评分"] = (
+            robust["5D≥10%"] * 0.7 +
+            robust["样本保留率"] * 0.3
+        )
+        best = robust.sort_values(
+            ["研究评分","样本数"],
+            ascending=[False,False]
+        ).iloc[0]
+
+        st.success(
+            f"当前较平衡的候选组合：{best['组合']}；"
+            f"5D≥10%={best['5D≥10%']:.1%}，"
+            f"样本={int(best['样本数'])}，"
+            f"保留率={best['样本保留率']:.1%}，"
+            f"相对基础={best['相对基础提升']:.2f}x。"
+        )
+    else:
+        st.info(
+            "当前没有同时满足“样本≥20且10%命中率高于基础”的组合。"
+            "建议扩大到120/250交易日再判断。"
+        )
+
+    # Highlight long-window interpretation
+    replay_days_now = st.session_state.get("a_historical_replay_days", None)
+    if replay_days_now in (30, 60):
+        st.warning(
+            "当前仍属于短窗口筛选。先用30/60日找候选组合，"
+            "再切到120/250日看是否还能保持优势，才能考虑进入正式核心。"
+        )
+    elif replay_days_now in (120, 250):
+        st.info(
+            f"当前是 {replay_days_now} 日验证窗口。"
+            "如果同一组合在30/60/120/250日方向一致，可信度会明显更高。"
+        )
+
+
 def render_historical_a_replay(bt):
     if bt is None or bt.empty:
         st.warning('历史回放没有得到有效样本。')
@@ -3352,7 +3505,7 @@ with st.sidebar:
     st.markdown("**Fundamental Confirmation（不计入100分）**")
     st.write("Quality / FCF / Debt / Valuation / Growth")
     st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-    st.success("正式买入仍为纯KD20金叉；RSI不作为硬条件。新增研究：哪些KD20信号更容易在5天内涨≥10%。")
+    st.success("正式买入仍为纯KD20金叉；新增研究：前5日跌幅 + ATR% + 恐慌释放分的组合验证。")
 
 st.info(
     "当前不急着把RSI变成硬门槛：先同时保留 A纯KD、B1超卖回升、B2上穿30，直接比较未来1/3/5日表现。"
@@ -3527,8 +3680,8 @@ with st.expander("🧪 历史验证 / Research（平时无需打开）", expande
 
     replay_days = st.selectbox(
         "历史回放交易日",
-        [20, 30, 60],
-        index=1,
+        [30, 60, 120, 250],
+        index=0,
         key="a6_final_replay_days"
     )
 
@@ -3594,5 +3747,7 @@ if "a_historical_replay" in st.session_state:
     render_kd10_breakout_factor_research(st.session_state["a_historical_replay"])
     st.divider()
     render_washout_escape_research(st.session_state["a_historical_replay"])
+    st.divider()
+    render_triple_factor_validation(st.session_state["a_historical_replay"])
 elif "a_historical_replay_error" in st.session_state:
     st.error("最近一次历史A/B运行失败：" + st.session_state["a_historical_replay_error"])
