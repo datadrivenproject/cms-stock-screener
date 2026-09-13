@@ -3837,6 +3837,78 @@ def render_triple_factor_validation(bt):
 
 
 
+
+def render_accumulation_4factor_validation(bt):
+    """资金积累四因子独立验证，不改变正式A条件。"""
+    st.markdown("---")
+    st.subheader("🧪 KD20：资金积累四因子独立验证")
+    st.caption("固定A入口：KD20金叉 + 前5日跌≥3% + ATR≥4%。这里只做Research。")
+    if bt is None or len(bt)==0:
+        return
+    d=bt.copy()
+    factors={"OBV改善":"OBV改善分","下跌缩量":"下跌缩量分",
+             "上涨放量":"上涨放量分","量价背离/卖压衰竭":"量价背离分"}
+    if any(c not in d.columns for c in factors.values()):
+        st.info("请重新运行历史Replay，以生成四个资金积累分项。")
+        return
+
+    # 与现有资金积累阈值验证保持同一A正式样本口径
+    if "A正式候选" in d.columns:
+        f=d["A正式候选"]
+        if f.dtype==bool:
+            d=d[f].copy()
+        else:
+            d=d[f.astype(str).str.upper().isin(["TRUE","1","YES","Y"])].copy()
+    if len(d)==0:
+        st.info("当前没有A正式样本。")
+        return
+
+    def pick(names):
+        for c in names:
+            if c in d.columns: return c
+        return None
+    c5=pick(["5D>=5%","5D≥5%"])
+    c8=pick(["5D>=8%","5D≥8%"])
+    c10=pick(["5D>=10%","5D≥10%"])
+    cg=pick(["5D最大涨幅","5D Max Gain"])
+    cd=pick(["5D最大回撤","5D Max Drawdown"])
+
+    def rate(frame,col):
+        if col is None or len(frame)==0: return np.nan
+        s=frame[col]
+        if s.dtype==bool: return float(s.mean())
+        x=pd.to_numeric(s,errors="coerce")
+        return float(x.mean()) if x.notna().any() else np.nan
+    def avg(frame,col):
+        if col is None: return np.nan
+        x=pd.to_numeric(frame[col],errors="coerce")
+        return float(x.mean()) if x.notna().any() else np.nan
+    def pf(x):
+        return "" if pd.isna(x) else f"{x*100:.1f}%"
+
+    n0=len(d); b5=rate(d,c5); b10=rate(d,c10)
+    def mk(name,x):
+        r5,r8,r10=rate(x,c5),rate(x,c8),rate(x,c10)
+        g,dd=avg(x,cg),avg(x,cd)
+        return {"独立条件":name,"样本数":len(x),"样本保留率":f"{len(x)/n0*100:.1f}%",
+                "5D≥5%":pf(r5),"5D≥8%":pf(r8),"5D≥10%":pf(r10),
+                "平均5D最大涨幅":"" if pd.isna(g) else f"{g:+.2f}%",
+                "平均5D最大回撤":"" if pd.isna(dd) else f"{dd:+.2f}%",
+                "10%相对提升":"" if pd.isna(r10) or pd.isna(b10) or b10==0 else f"{r10/b10:.2f}x",
+                "5%相对提升":"" if pd.isna(r5) or pd.isna(b5) or b5==0 else f"{r5/b5:.2f}x",
+                "_r10":r10}
+    rows=[mk("全部A正式优选",d)]
+    for label,col in factors.items():
+        s=pd.to_numeric(d[col],errors="coerce")
+        for cut in (1,2,3):
+            sub=d[s>=cut].copy()
+            if len(sub): rows.append(mk(f"{label}≥{cut}",sub))
+    res=pd.DataFrame(rows)
+    show=["独立条件","样本数","样本保留率","5D≥5%","5D≥8%","5D≥10%",
+          "平均5D最大涨幅","平均5D最大回撤","10%相对提升","5%相对提升"]
+    st.dataframe(res[show],use_container_width=True,hide_index=True)
+    st.caption("先找真正有效的1–2个分项；小样本100%不作为正式结论。")
+
 def render_accumulation_threshold_validation(bt):
     """
     研究“资金积累分”能否成为 A 新核心的第4个条件。
@@ -4577,6 +4649,7 @@ if "a_historical_replay" in st.session_state:
     st.divider()
     render_triple_factor_validation(st.session_state["a_historical_replay"])
     st.divider()
+    render_accumulation_4factor_validation(st.session_state["a_historical_replay"])
     render_accumulation_threshold_validation(st.session_state["a_historical_replay"])
     st.divider()
     render_early_v2_validation(st.session_state["a_historical_replay"])
