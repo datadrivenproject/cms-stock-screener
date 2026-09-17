@@ -99,7 +99,6 @@ def _fmt(x):
 
 
 def _is_market_hours():
-    # Manual override is useful for workflow_dispatch testing.
     if os.getenv("FORCE_B_EXIT_LEVELS", "0").strip() == "1":
         return True
     now = datetime.now(MARKET_TZ)
@@ -110,14 +109,9 @@ def _google_book(secrets):
     svc = secrets.get("gcp_service_account")
     tracker = secrets.get("tracker", {})
     sheet_name = tracker.get("sheet_name") if isinstance(tracker, dict) else None
-
     if not isinstance(svc, dict) or not sheet_name:
         raise RuntimeError("Missing [gcp_service_account] or [tracker].sheet_name in Streamlit secrets")
-
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(dict(svc), scopes=scopes)
     client = gspread.authorize(creds)
     return client.open(str(sheet_name))
@@ -137,24 +131,14 @@ def _supabase_config(secrets):
 def _fetch_daily(ticker, secrets):
     base, key = _supabase_config(secrets)
     endpoint = f"{base}/rest/v1/stock_daily"
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Accept": "application/json",
-    }
-    params = {
-        "select": "trade_date,adj_open,adj_high,adj_low,adj_close,volume",
-        "ticker": f"eq.{ticker}",
-        "order": "trade_date.desc",
-        "limit": str(LOOKBACK_ROWS),
-    }
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}
+    params = {"select": "trade_date,adj_open,adj_high,adj_low,adj_close,volume", "ticker": f"eq.{ticker}", "order": "trade_date.desc", "limit": str(LOOKBACK_ROWS)}
     r = requests.get(endpoint, headers=headers, params=params, timeout=30)
     if not r.ok:
         raise RuntimeError(f"Supabase {ticker} HTTP {r.status_code}: {r.text[:200]}")
     rows = r.json()
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
     df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
     for c in ["adj_open", "adj_high", "adj_low", "adj_close", "volume"]:
@@ -165,31 +149,15 @@ def _fetch_daily(ticker, secrets):
 
 def _add_daily_indicators(df):
     x = df.copy()
-    high = x["adj_high"]
-    low = x["adj_low"]
-    close = x["adj_close"]
-
-    # Same ATR14 definition as app.py: TR rolling(14).mean().
+    high, low, close = x["adj_high"], x["adj_low"], x["adj_close"]
     prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
     x["ATR14"] = tr.rolling(14).mean()
-
-    # Same KDJ (9,3,3) convention as app.py.
-    ll9 = low.rolling(9).min()
-    hh9 = high.rolling(9).max()
+    ll9, hh9 = low.rolling(9).min(), high.rolling(9).max()
     rsv = (close - ll9) / (hh9 - ll9).replace(0, np.nan) * 100.0
     k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
     d = k.ewm(alpha=1 / 3, adjust=False).mean()
-    x["K"] = k
-    x["D"] = d
-
+    x["K"], x["D"] = k, d
     diff = k - d
     x["KD_CROSS_UP"] = (diff > 0) & (diff.shift(1) <= 0)
     x["KD_CROSS_DOWN"] = (diff < 0) & (diff.shift(1) >= 0)
@@ -203,56 +171,29 @@ def _latest_kd20_signal_idx(x):
         return None
     start = max(0, len(x) - KD_SIGNAL_LOOKBACK)
     idx = x.index[(x.index >= start) & x["KD20_BUY"].fillna(False)]
-    if len(idx) == 0:
-        return None
-    return int(idx[-1])
+    return None if len(idx) == 0 else int(idx[-1])
 
 
 def _system_levels(df, entry):
     if df.empty or len(df) < 15 or not np.isfinite(entry) or entry <= 0:
         return None
-
     x = _add_daily_indicators(df)
     atr = _safe_float(x.iloc[-1]["ATR14"])
     if not np.isfinite(atr) or atr <= 0:
         return None
-
     sig_idx = _latest_kd20_signal_idx(x)
     if sig_idx is None:
-        return {
-            "entry": entry,
-            "atr": atr,
-            "swing_low": np.nan,
-            "stop": np.nan,
-            "tp1": entry + atr,
-            "tp2": entry + 2 * atr,
-            "kd80_sell": bool(x.iloc[-1]["KD80_SELL"]),
-        }
-
-    # Transparent, no-look-ahead swing-low definition:
-    # lowest Low on the KD20 signal day and the previous 5 sessions.
+        return {"entry": entry, "atr": atr, "swing_low": np.nan, "stop": np.nan, "tp1": entry + atr, "tp2": entry + 2 * atr, "kd80_sell": bool(x.iloc[-1]["KD80_SELL"])}
     left = max(0, sig_idx - 5)
     swing_low = _safe_float(x.loc[left:sig_idx, "adj_low"].min())
     stop = swing_low - 0.5 * atr if np.isfinite(swing_low) else np.nan
-
-    return {
-        "entry": entry,
-        "atr": atr,
-        "swing_low": swing_low,
-        "stop": stop,
-        "tp1": entry + atr,
-        "tp2": entry + 2 * atr,
-        "kd80_sell": bool(x.iloc[-1]["KD80_SELL"]),
-    }
+    return {"entry": entry, "atr": atr, "swing_low": swing_low, "stop": stop, "tp1": entry + atr, "tp2": entry + 2 * atr, "kd80_sell": bool(x.iloc[-1]["KD80_SELL"])}
 
 
 def _pick_entry(row):
-    # Once actually bought, actual entry is the source of truth.
     actual = _safe_float(row.get("实际买入价"))
     if np.isfinite(actual) and actual > 0:
         return actual
-
-    # Before purchase, use existing reference entry if available; otherwise last price.
     for col in ["参考入场", "最后价格", "价格", "Price"]:
         v = _safe_float(row.get(col))
         if np.isfinite(v) and v > 0:
@@ -263,20 +204,16 @@ def _pick_entry(row):
 def _status(row, levels):
     if not levels:
         return "数据不足"
-
     price = np.nan
     for col in ["最后价格", "价格", "Price"]:
         v = _safe_float(row.get(col))
         if np.isfinite(v) and v > 0:
             price = v
             break
-
     if levels.get("kd80_sell"):
         return "SELL高位死叉（仅显示）"
     if np.isfinite(price):
-        stop = levels.get("stop", np.nan)
-        tp1 = levels.get("tp1", np.nan)
-        tp2 = levels.get("tp2", np.nan)
+        stop, tp1, tp2 = levels.get("stop", np.nan), levels.get("tp1", np.nan), levels.get("tp2", np.nan)
         if np.isfinite(stop) and price <= stop:
             return "STOP触发（仅显示）"
         if np.isfinite(tp2) and price >= tp2:
@@ -287,7 +224,6 @@ def _status(row, levels):
 
 
 def _column_letter(n):
-    # 1-based Excel/Sheets column number -> A, B, ..., AA...
     s = ""
     while n:
         n, rem = divmod(n - 1, 26)
@@ -299,16 +235,13 @@ def main():
     if not _is_market_hours():
         print("Outside NY regular market hours; B exit-level display update skipped.")
         return
-
     secrets = _load_secrets()
     book = _google_book(secrets)
     ws = book.worksheet(MASTER_SHEET)
-
     records = ws.get_all_records()
     if not records:
         print("B_MasterList is empty; nothing to update.")
         return
-
     df = pd.DataFrame(records)
     if "股票代码" in df.columns and "Ticker" not in df.columns:
         df["Ticker"] = df["股票代码"]
@@ -317,54 +250,21 @@ def main():
 
     now_text = datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M:%S ET")
     output = {c: [] for c in OUTPUT_COLUMNS}
-
     cache = {}
     for _, row in df.iterrows():
         ticker = str(row.get("Ticker", "")).strip().upper()
         entry = _pick_entry(row)
-
         if not ticker or not np.isfinite(entry) or entry <= 0:
-            vals = {
-                "系统Entry": "",
-                "ATR14参考": "",
-                "Swing Low": "",
-                "系统止损": "",
-                "系统TP1": "",
-                "系统TP2": "",
-                "退出状态": "未有Entry",
-                "KD80死叉(日线)": "",
-                "退出计算时间": now_text,
-            }
+            vals = {"系统Entry": "", "ATR14参考": "", "Swing Low": "", "系统止损": "", "系统TP1": "", "系统TP2": "", "退出状态": "未有Entry", "KD80死叉(日线)": "", "退出计算时间": now_text}
         else:
             try:
                 if ticker not in cache:
                     cache[ticker] = _fetch_daily(ticker, secrets)
                 levels = _system_levels(cache[ticker], entry)
-                vals = {
-                    "系统Entry": _fmt(entry),
-                    "ATR14参考": _fmt(levels.get("atr", np.nan)) if levels else "",
-                    "Swing Low": _fmt(levels.get("swing_low", np.nan)) if levels else "",
-                    "系统止损": _fmt(levels.get("stop", np.nan)) if levels else "",
-                    "系统TP1": _fmt(levels.get("tp1", np.nan)) if levels else "",
-                    "系统TP2": _fmt(levels.get("tp2", np.nan)) if levels else "",
-                    "退出状态": _status(row, levels),
-                    "KD80死叉(日线)": "是" if levels and levels.get("kd80_sell") else "否",
-                    "退出计算时间": now_text,
-                }
+                vals = {"系统Entry": _fmt(entry), "ATR14参考": _fmt(levels.get("atr", np.nan)) if levels else "", "Swing Low": _fmt(levels.get("swing_low", np.nan)) if levels else "", "系统止损": _fmt(levels.get("stop", np.nan)) if levels else "", "系统TP1": _fmt(levels.get("tp1", np.nan)) if levels else "", "系统TP2": _fmt(levels.get("tp2", np.nan)) if levels else "", "退出状态": _status(row, levels), "KD80死叉(日线)": "是" if levels and levels.get("kd80_sell") else "否", "退出计算时间": now_text}
             except Exception as exc:
                 print(f"WARNING {ticker}: {exc}")
-                vals = {
-                    "系统Entry": _fmt(entry),
-                    "ATR14参考": "",
-                    "Swing Low": "",
-                    "系统止损": "",
-                    "系统TP1": "",
-                    "系统TP2": "",
-                    "退出状态": "计算失败",
-                    "KD80死叉(日线)": "",
-                    "退出计算时间": now_text,
-                }
-
+                vals = {"系统Entry": _fmt(entry), "ATR14参考": "", "Swing Low": "", "系统止损": "", "系统TP1": "", "系统TP2": "", "退出状态": "计算失败", "KD80死叉(日线)": "", "退出计算时间": now_text}
         for c in OUTPUT_COLUMNS:
             output[c].append(vals[c])
 
@@ -372,13 +272,19 @@ def main():
     missing_columns = [c for c in OUTPUT_COLUMNS if c not in headers]
     if missing_columns:
         required_cols = len(headers) + len(missing_columns)
+        # Resize explicitly to the final width before writing any new header.
+        # This avoids stale worksheet col_count/add_cols behavior that caused
+        # "Range FS1 exceeds grid limits" on B_MasterList.
         if required_cols > ws.col_count:
-            ws.add_cols(required_cols - ws.col_count)
-        for c in missing_columns:
-            headers.append(c)
-            ws.update_cell(1, len(headers), c)
+            ws.resize(cols=required_cols)
+            ws = book.worksheet(MASTER_SHEET)  # refresh grid metadata
+        new_headers = headers + missing_columns
+        start_col = len(headers) + 1
+        start_letter = _column_letter(start_col)
+        end_letter = _column_letter(required_cols)
+        ws.update(values=[missing_columns], range_name=f"{start_letter}1:{end_letter}1")
+        headers = new_headers
 
-    # Update only our own columns; never clear or overwrite the rest of B_MasterList.
     for c in OUTPUT_COLUMNS:
         col_num = headers.index(c) + 1
         letter = _column_letter(col_num)
