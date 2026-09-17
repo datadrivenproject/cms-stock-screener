@@ -591,8 +591,7 @@ def main():
                 continue
 
             result = normalize_multi_ticker_result(result, batch)
-            print("🔎 BQ response keys:", list(result.keys())[:20])
-
+            
             for t in batch:
                 block = result.get(t)
                 rows = clean(t, block)
