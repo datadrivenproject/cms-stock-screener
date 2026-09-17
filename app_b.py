@@ -666,7 +666,7 @@ def load_latest_a_candidates():
     if "Ticker" not in df.columns:
         raise RuntimeError("A_Candidates 缺少‘股票代码’列。")
 
-    date_col = next((c for c in ["Scan Date","Date","日期","扫描日期"] if c in df.columns), None)
+    date_col = next((c for c in ["Scan Date","Date","日期","扫描日期","最后数据日期"] if c in df.columns), None)
     if date_col is None:
         raise RuntimeError("A_Candidates 缺少‘扫描日期’列。")
 
