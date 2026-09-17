@@ -1,0 +1,34 @@
+name: B Log Weekly Housekeeping
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Sunday 14:00 UTC; housekeeping is independent of market hours.
+    - cron: "0 14 * * 0"
+
+jobs:
+  clean-b-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Streamlit secrets
+        env:
+          STREAMLIT_SECRETS_TOML: ${{ secrets.STREAMLIT_SECRETS_TOML }}
+        run: |
+          mkdir -p .streamlit
+          printf '%s' "$STREAMLIT_SECRETS_TOML" > .streamlit/secrets.toml
+
+      - name: Delete old routine B_Log rows
+        run: python -u b_log_housekeeping.py
