@@ -369,8 +369,12 @@ def main():
             output[c].append(vals[c])
 
     headers = ws.row_values(1)
-    for c in OUTPUT_COLUMNS:
-        if c not in headers:
+    missing_columns = [c for c in OUTPUT_COLUMNS if c not in headers]
+    if missing_columns:
+        required_cols = len(headers) + len(missing_columns)
+        if required_cols > ws.col_count:
+            ws.add_cols(required_cols - ws.col_count)
+        for c in missing_columns:
             headers.append(c)
             ws.update_cell(1, len(headers), c)
 
