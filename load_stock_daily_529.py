@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
+from universe_1500 import build_universe as build_composite_universe
 
 # =========================================================
 # CMS DAILY DATA ENGINE — TRUE INCREMENTAL ONLY
@@ -339,7 +340,10 @@ def normalize_multi_ticker_result(result, batch):
         return {t: result}
 
     if isinstance(result, dict):
-        return result
+        return {
+            str(ticker).upper().strip().replace(".", "-"): block
+            for ticker, block in result.items()
+        }
 
     return {}
 
@@ -498,7 +502,7 @@ def main():
     if "/rest/v1" in sb_url:
         fail("SUPABASE_URL 必须是项目基础 URL，不能包含 /rest/v1")
 
-    tickers = build_universe()
+    tickers = build_composite_universe(verbose=True)
 
     print("\n🔎 检查 Supabase 当前最后日期...")
     counts, latest = get_existing_status(sb_url, sb_key, tickers)

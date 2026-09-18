@@ -5,6 +5,7 @@ import requests
 import io
 import time
 from datetime import datetime, timezone
+from universe_1500 import build_universe as build_composite_universe
 
 try:
     import gspread
@@ -273,23 +274,10 @@ def get_sp500_tickers():
 
     return []
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def get_universe():
-    sp500 = get_sp500_tickers()
-
-    # Important: do not silently pretend the 110-stock fallback is a 500-stock pool.
-    if len(sp500) < 450:
-        raise RuntimeError(
-            "未能读取 S&P 500 股票名单。A6 FINAL 已停止本次扫描，"
-            "不会自动退回原110只股票池。请稍后重试或检查 Streamlit Cloud 网络访问。"
-        )
-
-    # 当前 S&P500 + 原自选成长/热门股，去重。
-    # 所以目标池通常会略高于500，而不是固定正好500。
-    combined = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
-    return combined
-    # S&P500 + 原自选池，去重。这样不会因为扩池把 PATH/TEM/RKLB 等原来关注股删掉。
-    combined = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
-    return combined if combined else CORE_UNIVERSE.copy()
+    """Current S&P Composite 1500 plus the preserved CMS core/watchlist."""
+    return build_composite_universe(verbose=False)
 
 # =========================================================
 # DOWNLOAD HELPERS

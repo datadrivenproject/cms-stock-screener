@@ -23,7 +23,9 @@ from telegram_notify import send_telegram
 
 APP_FILE = Path(__file__).with_name("app.py")
 MAX_CANDIDATES = 20
-MAX_MISSING_TICKERS = 5
+# Roughly 2% of the 1500-stock universe may be temporarily unavailable
+# without blocking every healthy ticker. A missing bootstrap still blocks.
+MAX_MISSING_TICKERS = 30
 
 
 def env(name):
