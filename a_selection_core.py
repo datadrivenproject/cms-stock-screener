@@ -91,9 +91,11 @@ def rank_current_a(df, max_candidates=20):
     if df is None or df.empty:
         return df
     out = df.copy()
-    out["_a_priority"] = out["A优先级"].apply(_finite_number).fillna(9)
-    out["_accum"] = out["资金积累总分"].apply(_finite_number).fillna(0)
-    out["_panic"] = out["恐慌释放分"].apply(_finite_number).fillna(0)
+    # Match the old runner's pd.to_numeric(..., errors="coerce") behavior.
+    import pandas as pd
+    out["_a_priority"] = pd.to_numeric(out.get("A优先级"), errors="coerce").fillna(9)
+    out["_accum"] = pd.to_numeric(out.get("资金积累总分"), errors="coerce").fillna(0)
+    out["_panic"] = pd.to_numeric(out.get("恐慌释放分"), errors="coerce").fillna(0)
     out = out.sort_values(
         ["_a_priority", "_accum", "_panic"],
         ascending=[True, False, False],
