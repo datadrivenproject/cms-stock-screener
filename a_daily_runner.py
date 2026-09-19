@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 from telegram_notify import send_telegram
+from a_selection_core import rank_current_a
 
 APP_FILE = Path(__file__).with_name("app.py")
 MAX_CANDIDATES = 20
@@ -170,11 +171,8 @@ def main():
     if not rows: raise RuntimeError("A scan produced no valid rows")
     all_df=pd.DataFrame(rows); formal=all_df[all_df.get("A正式候选","否").astype(str).eq("是")].copy()
     if not formal.empty:
-        formal["_a_priority"]=pd.to_numeric(formal.get("A优先级"),errors="coerce").fillna(9)
-        formal["_accum"]=pd.to_numeric(formal.get("资金积累总分"),errors="coerce").fillna(0)
-        formal["_panic"]=pd.to_numeric(formal.get("恐慌释放分"),errors="coerce").fillna(0)
-        formal=formal.sort_values(["_a_priority","_accum","_panic"],ascending=[True,False,False]).drop(columns=["_a_priority","_accum","_panic"])
-        formal=formal.head(MAX_CANDIDATES).reset_index(drop=True); formal["Rank"]=formal.index+1
+        # Exact existing production ordering, now centralized with the locked A rule.
+        formal=rank_current_a(formal, MAX_CANDIDATES)
     result=ns["save_daily_candidates"](formal)
     print("\n"+"="*88,flush=True); print("KD-CORE DAILY SUMMARY",flush=True)
     print(f"Requested universe: {len(tickers)}",flush=True); print(f"Freshest date: {freshest_date.isoformat()}",flush=True)
