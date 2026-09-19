@@ -12,8 +12,8 @@ import time
 
 import requests
 
-from universe_1500 import build_universe
-from load_stock_daily_529 import (
+from universe import build_universe
+from data_update import (
     BQ_URL,
     MIN_VALID_DAYS,
     chunks,

@@ -7,7 +7,7 @@ import requests
 import pandas as pd
 from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
-from universe_1500 import build_universe as build_composite_universe
+from universe import build_universe as build_composite_universe
 
 # =========================================================
 # CMS DAILY DATA ENGINE — TRUE INCREMENTAL ONLY

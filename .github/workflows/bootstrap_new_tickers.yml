@@ -1,4 +1,4 @@
-name: Bootstrap New Tickers 1500
+name: Bootstrap New Tickers
 
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
         run: python -u guard_no_historical_fetch.py
 
       - name: Bootstrap history for new universe members only
-        run: python -u bootstrap_new_tickers_1500.py
+        run: python -u bootstrap_new_tickers.py
 
       - name: Fill adjusted OHLC from Supabase only
-        run: python -u adjust_stock_daily_529.py
+        run: python -u data_adjust.py
