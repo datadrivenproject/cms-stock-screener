@@ -3,7 +3,7 @@
 No network, Supabase, Google Sheets, or market-data calls.
 Run: python test_a_selection_core.py
 """
-from a_selection_core import classify_current_a
+from a_selection_core import classify_current_a, current_a_trigger_from_history
 
 
 def old_rule(kd20_now, ret5, atr_pct):
@@ -43,3 +43,16 @@ if __name__ == "__main__":
         new = new_tuple(*case)
         assert old == new, f"Mismatch {case}: old={old}, new={new}"
     print(f"PASS: {len(CASES)} current-A parity cases matched.")
+
+
+KD_CASES = [
+    ([10, 12], [11, 11], True),   # strict cross, both <=20
+    ([10, 12], [9, 11], False),   # yesterday K already above D
+    ([10, 21], [11, 19], False),  # K above low zone
+    ([10, 19], [11, 21], False),  # D above low zone
+    ([10, 10], [11, 10], False),  # no strict K>D today
+]
+
+for k, d, expected in KD_CASES:
+    got = current_a_trigger_from_history(k, d)
+    assert got == expected, f"KD20 mismatch K={k}, D={d}: expected={expected}, got={got}"
