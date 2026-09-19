@@ -59,4 +59,4 @@ jobs:
 
       - name: 3 - Run KD-Core daily selection and Telegram summary
         run: |
-          python -u a_daily_runner.py
+          python -u A.py
