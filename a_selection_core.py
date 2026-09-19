@@ -78,3 +78,26 @@ def classify_current_a(kd20_now, ret5, atr_pct):
         "A核心原因": "",
         "A优先级": 9,
     }
+
+
+def rank_current_a(df, max_candidates=20):
+    """Apply the existing production A ordering without changing eligibility.
+
+    Existing order:
+      1) A优先级 ascending
+      2) 资金积累总分 descending
+      3) 恐慌释放分 descending
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    out["_a_priority"] = out["A优先级"].apply(_finite_number).fillna(9)
+    out["_accum"] = out["资金积累总分"].apply(_finite_number).fillna(0)
+    out["_panic"] = out["恐慌释放分"].apply(_finite_number).fillna(0)
+    out = out.sort_values(
+        ["_a_priority", "_accum", "_panic"],
+        ascending=[True, False, False],
+    ).drop(columns=["_a_priority", "_accum", "_panic"])
+    out = out.head(max_candidates).reset_index(drop=True)
+    out["Rank"] = out.index + 1
+    return out
