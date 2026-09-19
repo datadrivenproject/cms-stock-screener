@@ -86,7 +86,10 @@ def load_production_namespace():
             kept = [a for a in node.names if a.name != "streamlit"]
             if kept: selected.append(ast.Import(names=kept))
             continue
-        if isinstance(node, ast.ImportFrom): selected.append(node); continue
+        if isinstance(node, ast.ImportFrom):
+            # Imports from app.py are resolved normally; the locked A rule now
+            # lives in a_selection_core.py instead of being duplicated inline.
+            selected.append(node); continue
         if isinstance(node, ast.Try): selected.append(node); continue
         if isinstance(node, ast.Expr) and lineno == 1826: selected.append(node)
 

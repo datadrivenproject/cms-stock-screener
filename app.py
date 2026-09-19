@@ -6,6 +6,7 @@ import io
 import time
 from datetime import datetime, timezone
 from universe_1500 import build_universe as build_composite_universe
+from a_selection_core import classify_current_a
 
 try:
     import gspread
@@ -2212,41 +2213,9 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         ret5_now = safe_num(row.get("5D Return", np.nan))
         atr_pct_now = safe_num(row.get("ATR%", np.nan))
 
-        core_preferred = bool(
-            kd20_now
-            and (not pd.isna(ret5_now)) and ret5_now <= -0.03
-            and (not pd.isna(atr_pct_now)) and atr_pct_now >= 0.04
-        )
-        core_strong = bool(
-            kd20_now
-            and (not pd.isna(ret5_now)) and ret5_now <= -0.05
-            and (not pd.isna(atr_pct_now)) and atr_pct_now >= 0.04
-        )
-
-        if core_strong:
-            row["A候选等级"] = "🔥 强反弹候选"
-            row["A正式候选"] = "是"
-            row["A动作"] = "重点买入候选"
-            row["A核心原因"] = "KD20金叉 + 前5日跌≥5% + ATR≥4%"
-            row["A优先级"] = 1
-        elif core_preferred:
-            row["A候选等级"] = "✅ 优选候选"
-            row["A正式候选"] = "是"
-            row["A动作"] = "买入候选"
-            row["A核心原因"] = "KD20金叉 + 前5日跌≥3% + ATR≥4%"
-            row["A优先级"] = 2
-        elif kd20_now:
-            row["A候选等级"] = "🟡 普通KD20"
-            row["A正式候选"] = "否"
-            row["A动作"] = "观察"
-            row["A核心原因"] = "KD20金叉，但未同时满足跌≥3%与ATR≥4%"
-            row["A优先级"] = 3
-        else:
-            row["A候选等级"] = "无"
-            row["A正式候选"] = "否"
-            row["A动作"] = "无"
-            row["A核心原因"] = ""
-            row["A优先级"] = 9
+        # Locked current-A eligibility/tiering lives in one small module.
+        # This is a behavior-preserving extraction of the exact rules above.
+        row.update(classify_current_a(kd20_now, ret5_now, atr_pct_now))
 
         # Early Engine V2：保留，但只负责同等级候选的二次排序。
         # 不再作为是否进入 A 的硬过滤条件。
