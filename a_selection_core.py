@@ -101,3 +101,18 @@ def rank_current_a(df, max_candidates=20):
     out = out.head(max_candidates).reset_index(drop=True)
     out["Rank"] = out.index + 1
     return out
+
+
+def current_a_trigger_from_history(k_values, d_values):
+    """Exact strict KD20 trigger used by current A.
+
+    Yesterday K <= D; today K > D; today K and D are both <= 20.
+    """
+    try:
+        k_prev, k_now = _finite_number(k_values[-2]), _finite_number(k_values[-1])
+        d_prev, d_now = _finite_number(d_values[-2]), _finite_number(d_values[-1])
+    except (TypeError, IndexError, KeyError):
+        return False
+    if None in (k_prev, k_now, d_prev, d_now):
+        return False
+    return bool(k_prev <= d_prev and k_now > d_now and k_now <= 20 and d_now <= 20)
