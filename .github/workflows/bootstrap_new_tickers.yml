@@ -1,0 +1,40 @@
+name: Bootstrap New Tickers
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cms-history-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      TZ: America/New_York
+      BUSINESSQUANT_API_KEY: ${{ secrets.BUSINESSQUANT_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests lxml
+
+      - name: Safety guard daily production
+        run: python -u guard_no_historical_fetch.py
+
+      - name: Bootstrap history for new universe members only
+        run: python -u bootstrap_new_tickers.py
+
+      - name: Fill adjusted OHLC from Supabase only
+        run: python -u data_adjust.py
