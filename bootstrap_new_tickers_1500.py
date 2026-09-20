@@ -30,6 +30,7 @@ from load_stock_daily_529 import (
 HISTORY_PERIOD = "1y"
 REQUEST_BATCH = 100
 MAX_TICKERS_PER_RUN = 200
+AUTO_MAX_BATCHES = 5
 REQUEST_PAUSE_SECONDS = 4.0
 MAX_RETRIES = 3
 
@@ -64,7 +65,7 @@ def fetch_history_batch(api_key, batch):
 def main():
     print("=" * 88)
     print("CMS ONE-TIME HISTORY BOOTSTRAP — EXPANDED 2500 UNIVERSE")
-    print("This is NOT the daily updater. Existing complete tickers are skipped.")
+    print("Auto mode: up to 200 incomplete tickers per batch; repeats until complete.")
     print("=" * 88)
 
     bq_key = env("BUSINESSQUANT_API_KEY")
@@ -74,67 +75,67 @@ def main():
         fail("SUPABASE_URL must be the project base URL, without /rest/v1")
 
     tickers = build_universe(verbose=True)
-    counts, _ = get_existing_status(sb_url, sb_key, tickers)
-    complete = [t for t in tickers if counts.get(t, 0) >= MIN_VALID_DAYS]
-    all_need_history = [t for t in tickers if counts.get(t, 0) < MIN_VALID_DAYS]
-    need_history = all_need_history[:MAX_TICKERS_PER_RUN]
 
-    print("\n========== BOOTSTRAP PLAN ==========")
-    print(f"Target universe: {len(tickers)}")
-    print(f"Already complete (>={MIN_VALID_DAYS} days): {len(complete)}")
-    print(f"All tickers still needing history: {len(all_need_history)}")
-    print(f"This run is capped at: {len(need_history)}/{MAX_TICKERS_PER_RUN}")
+    for auto_batch in range(1, AUTO_MAX_BATCHES + 1):
+        counts, _ = get_existing_status(sb_url, sb_key, tickers)
+        complete = [t for t in tickers if counts.get(t, 0) >= MIN_VALID_DAYS]
+        all_need_history = [t for t in tickers if counts.get(t, 0) < MIN_VALID_DAYS]
+        need_history = all_need_history[:MAX_TICKERS_PER_RUN]
 
-    if not need_history:
-        print("All universe tickers already have sufficient history. Nothing fetched.")
-        return
+        print(f"\n========== AUTO BATCH {auto_batch}/{AUTO_MAX_BATCHES} ==========")
+        print(f"Target universe: {len(tickers)}")
+        print(f"Already complete (>={MIN_VALID_DAYS} days): {len(complete)}")
+        print(f"Still needing history: {len(all_need_history)}")
+        print(f"This batch: {len(need_history)}/{MAX_TICKERS_PER_RUN}")
 
-    failed = []
-    batches = list(chunks(need_history, REQUEST_BATCH))
-    for batch_number, batch in enumerate(batches, 1):
-        print(
-            f"\nHistory batch {batch_number}/{len(batches)} "
-            f"({len(batch)} tickers): {', '.join(batch)}"
-        )
-        try:
-            result = fetch_history_batch(bq_key, batch)
-        except Exception as exc:
-            print(f"ERROR: history batch failed: {exc}")
-            failed.extend(batch)
-            continue
+        if not need_history:
+            print("All universe tickers already have sufficient history. Nothing fetched.")
+            break
 
-        result = normalize_multi_ticker_result(result, batch)
-        batch_rows = []
-        for ticker in batch:
-            rows = clean(ticker, result.get(ticker))
-            if rows:
-                batch_rows.extend(rows)
-            else:
-                failed.append(ticker)
-                print(f"    WARNING: {ticker}: no valid history returned")
+        failed = []
+        batches = list(chunks(need_history, REQUEST_BATCH))
+        for batch_number, batch in enumerate(batches, 1):
+            print(f"\nHistory request {batch_number}/{len(batches)} ({len(batch)} tickers): {', '.join(batch)}")
+            try:
+                result = fetch_history_batch(bq_key, batch)
+            except Exception as exc:
+                print(f"ERROR: history request failed: {exc}")
+                failed.extend(batch)
+                continue
 
-        keys = [(row["ticker"], row["trade_date"]) for row in batch_rows]
-        if len(keys) != len(set(keys)):
-            fail("Duplicate ticker + trade_date generated during bootstrap")
+            result = normalize_multi_ticker_result(result, batch)
+            batch_rows = []
+            for ticker in batch:
+                rows = clean(ticker, result.get(ticker))
+                if rows:
+                    batch_rows.extend(rows)
+                else:
+                    failed.append(ticker)
+                    print(f"    WARNING: {ticker}: no valid history returned")
 
-        if batch_rows:
-            print(f"Writing {len(batch_rows)} history rows for this batch...")
-            upsert(sb_url, sb_key, batch_rows)
+            keys = [(row["ticker"], row["trade_date"]) for row in batch_rows]
+            if len(keys) != len(set(keys)):
+                fail("Duplicate ticker + trade_date generated during bootstrap")
+            if batch_rows:
+                print(f"Writing {len(batch_rows)} history rows for this request...")
+                upsert(sb_url, sb_key, batch_rows)
+            if batch_number < len(batches):
+                time.sleep(REQUEST_PAUSE_SECONDS)
 
-        if batch_number < len(batches):
-            time.sleep(REQUEST_PAUSE_SECONDS)
+        if failed:
+            print(f"No data/request failure in auto batch {auto_batch} ({len(set(failed))}):")
+            print(", ".join(sorted(set(failed))))
 
-    final_counts, _, _ = verify(sb_url, sb_key, tickers)
-    sufficient = sum(final_counts.get(t, 0) >= MIN_VALID_DAYS for t in tickers)
+        # Re-check Supabase before selecting the next 200. Completed names are never fetched again.
+        final_counts, _, _ = verify(sb_url, sb_key, tickers)
+        sufficient = sum(final_counts.get(t, 0) >= MIN_VALID_DAYS for t in tickers)
+        print(f"After auto batch {auto_batch}: sufficient history {sufficient}/{len(tickers)}")
+        if sufficient >= len(tickers):
+            print("Expanded universe bootstrap complete.")
+            break
+        time.sleep(REQUEST_PAUSE_SECONDS)
 
-    print("\n========== BOOTSTRAP RESULT ==========")
-    print(f"Sufficient history: {sufficient}/{len(tickers)}")
-    if failed:
-        print(f"No data/request failure ({len(set(failed))}):")
-        print(", ".join(sorted(set(failed))))
-    print("Rerunning this manual bootstrap skips all completed tickers.")
-    remaining = max(0, len(all_need_history) - len(need_history))
-    print(f"Estimated pending after this run (before failures): {remaining}")
+    print("\nBootstrap auto-run finished. Daily updater remains true-incremental only.")
 
 
 if __name__ == "__main__":
