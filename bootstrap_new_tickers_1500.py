@@ -12,7 +12,7 @@ import time
 
 import requests
 
-from universe_1500 import build_universe
+from universe_2500 import build_universe
 from load_stock_daily_529 import (
     BQ_URL,
     MIN_VALID_DAYS,
@@ -63,7 +63,7 @@ def fetch_history_batch(api_key, batch):
 
 def main():
     print("=" * 88)
-    print("CMS ONE-TIME HISTORY BOOTSTRAP — S&P COMPOSITE 1500 + CMS CORE")
+    print("CMS ONE-TIME HISTORY BOOTSTRAP — EXPANDED 2500 UNIVERSE")
     print("This is NOT the daily updater. Existing complete tickers are skipped.")
     print("=" * 88)
 
