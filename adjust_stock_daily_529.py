@@ -88,62 +88,55 @@ def get_schema_columns(base, key):
     return set(rows[0].keys())
 
 
-def get_all_tickers(base, key):
-    """Get distinct ticker names from Supabase only."""
-    # PostgREST distinct is not guaranteed in all deployments, so page through
-    # ticker only and deduplicate locally.
-    found = set()
-    start = 0
-    while True:
-        headers = dict(sb_headers(key))
-        headers["Range"] = f"{start}-{start + READ_PAGE - 1}"
-        r = requests.get(
-            table_url(base),
-            params={"select": "ticker", "order": "ticker.asc"},
-            headers=headers,
-            timeout=120,
-        )
-        if not r.ok:
-            print(r.text[:1500])
-            r.raise_for_status()
-        page = r.json()
-        for row in page:
-            t = str(row.get("ticker", "")).upper().strip()
-            if t:
-                found.add(t)
-        if len(page) < READ_PAGE:
-            break
-        start += READ_PAGE
-    return sorted(found)
-
-
-def read_ticker_rows(base, key, ticker):
-    """Read full raw + adjusted history for one ticker from Supabase."""
+def read_missing_adjusted_rows(base, key):
+    """Read ONLY rows that still need adjusted OHLC; do not scan full history."""
     cols = "ticker,trade_date,open,high,low,close,adj_open,adj_high,adj_low,adj_close"
     rows = []
     start = 0
+    null_filter = "(adj_open.is.null,adj_high.is.null,adj_low.is.null,adj_close.is.null)"
     while True:
         headers = dict(sb_headers(key))
         headers["Range"] = f"{start}-{start + READ_PAGE - 1}"
         r = requests.get(
             table_url(base),
-            params={
-                "select": cols,
-                "ticker": f"eq.{ticker}",
-                "order": "trade_date.asc",
-            },
+            params={"select": cols, "or": null_filter, "order": "ticker.asc,trade_date.asc"},
             headers=headers,
             timeout=120,
         )
         if not r.ok:
-            print(r.text[:1500])
-            r.raise_for_status()
-        page = r.json()
-        rows.extend(page)
-        if len(page) < READ_PAGE:
-            break
+            print(r.text[:1500]); r.raise_for_status()
+        page = r.json(); rows.extend(page)
+        if len(page) < READ_PAGE: break
         start += READ_PAGE
     return rows
+
+
+def read_latest_factor(base, key, ticker):
+    """Fetch one latest usable adjusted row for an affected ticker only."""
+    r = requests.get(
+        table_url(base),
+        params={
+            "select": "trade_date,close,adj_close",
+            "ticker": f"eq.{ticker}",
+            "close": "gt.0",
+            "adj_close": "gt.0",
+            "order": "trade_date.desc",
+            "limit": 1,
+        },
+        headers=sb_headers(key),
+        timeout=60,
+    )
+    if not r.ok:
+        print(r.text[:1500]); r.raise_for_status()
+    page = r.json()
+    if not page: return 1.0, None
+    row = page[0]
+    close = fnum(row.get("close")); adj_close = fnum(row.get("adj_close"))
+    if close and adj_close:
+        factor = adj_close / close
+        if math.isfinite(factor) and factor > 0:
+            return factor, str(row.get("trade_date", ""))
+    return 1.0, None
 
 
 def fnum(v):
@@ -167,43 +160,17 @@ def raw_valid(row):
     return all(v is not None and v > 0 for v in vals)
 
 
-def infer_latest_factor(rows):
-    """
-    Return the latest valid adj_close/close factor already stored.
-    Existing adjusted history is the authoritative source.
-    """
-    for row in reversed(rows):
-        close = fnum(row.get("close"))
-        adj_close = fnum(row.get("adj_close"))
-        if close and adj_close and close > 0 and adj_close > 0:
-            factor = adj_close / close
-            if math.isfinite(factor) and factor > 0:
-                return factor, str(row.get("trade_date", ""))
-    return 1.0, None
-
-
-def build_missing_adjusted_rows(ticker, rows):
-    """Create update payload ONLY for rows whose adj_* values are missing."""
-    factor, factor_date = infer_latest_factor(rows)
+def build_missing_adjusted_rows(ticker, rows, factor, factor_date):
+    """Create payload from the already server-filtered missing rows."""
     updates = []
-
     for row in rows:
-        if has_all_adjusted(row):
+        if has_all_adjusted(row) or not raw_valid(row):
             continue
-        if not raw_valid(row):
-            continue
-
-        out = {
-            "ticker": ticker,
-            "trade_date": row.get("trade_date"),
-        }
+        out = {"ticker": ticker, "trade_date": row.get("trade_date")}
         for raw_col, adj_col in zip(RAW_COLS, ADJ_COLS):
-            raw = fnum(row.get(raw_col))
-            out[adj_col] = raw * factor
-
+            out[adj_col] = fnum(row.get(raw_col)) * factor
         updates.append(out)
-
-    return updates, factor, factor_date
+    return updates
 
 
 def upsert_adjusted(base, key, rows):
@@ -233,17 +200,9 @@ def upsert_adjusted(base, key, rows):
     return total
 
 
-def verify_missing(base, key, tickers):
-    """Count rows still missing any adjusted OHLC after maintenance."""
-    missing_by_ticker = defaultdict(int)
-    for idx, ticker in enumerate(tickers, 1):
-        rows = read_ticker_rows(base, key, ticker)
-        for row in rows:
-            if raw_valid(row) and not has_all_adjusted(row):
-                missing_by_ticker[ticker] += 1
-        if idx % 50 == 0 or idx == len(tickers):
-            print(f"验证进度 {idx}/{len(tickers)}")
-    return dict(missing_by_ticker)
+def verify_missing(base, key):
+    """Server-side verification: fetch only rows still missing adjusted values."""
+    return read_missing_adjusted_rows(base, key)
 
 
 def main():
@@ -262,47 +221,46 @@ def main():
     if missing_cols:
         fail("stock_daily 缺少必要字段: " + ", ".join(missing_cols))
 
-    tickers = get_all_tickers(base, key)
-    if not tickers:
-        fail("Supabase 中没有 ticker")
+    missing_rows = read_missing_adjusted_rows(base, key)
+    if not missing_rows:
+        print("No missing adjusted rows — fast exit.")
+        print("✅ Supabase adjusted OHLC maintenance complete")
+        print("✅ 0 BusinessQuant requests")
+        print("✅ 0 historical external-data requests")
+        return
 
-    print(f"Supabase tickers: {len(tickers)}")
+    grouped = defaultdict(list)
+    for row in missing_rows:
+        ticker = str(row.get("ticker", "")).upper().strip()
+        if ticker:
+            grouped[ticker].append(row)
+
+    tickers = sorted(grouped)
+    print(f"Missing adjusted rows: {len(missing_rows)} across {len(tickers)} affected tickers")
+    print("FAST MODE: only affected tickers are processed; full-history scan is skipped.")
 
     total_updates = 0
     no_prior_adjustment = []
-
     for i, ticker in enumerate(tickers, 1):
-        rows = read_ticker_rows(base, key, ticker)
-        updates, factor, factor_date = build_missing_adjusted_rows(ticker, rows)
-
+        factor, factor_date = read_latest_factor(base, key, ticker)
+        updates = build_missing_adjusted_rows(ticker, grouped[ticker], factor, factor_date)
         if factor_date is None and updates:
             no_prior_adjustment.append(ticker)
-
         written = upsert_adjusted(base, key, updates)
         total_updates += written
-
-        if updates:
-            src = factor_date if factor_date else "无历史factor→1.0"
-            print(
-                f"[{i:03d}/{len(tickers)}] {ticker}: "
-                f"补 {written} rows | factor={factor:.8f} | source={src}"
-            )
-        elif i % 50 == 0 or i == len(tickers):
-            print(f"[{i:03d}/{len(tickers)}] {ticker}: 无需补 adjusted")
+        src = factor_date if factor_date else "无历史factor→1.0"
+        print(f"[{i:03d}/{len(tickers)}] {ticker}: 补 {written} rows | factor={factor:.8f} | source={src}")
 
     print("\n========== ADJUSTED MAINTENANCE SUMMARY ==========")
     print(f"写入/补齐 adjusted rows: {total_updates}")
     if no_prior_adjustment:
-        print(
-            "⚠️ 无既有 adjusted history、因此使用 factor=1.0 的 ticker: "
-            + ", ".join(no_prior_adjustment[:80])
-        )
-        if len(no_prior_adjustment) > 80:
-            print(f"... 另有 {len(no_prior_adjustment) - 80} 只")
+        print("⚠️ 无既有 adjusted history、因此使用 factor=1.0 的 ticker: " + ", ".join(no_prior_adjustment[:80]))
 
-    remaining = verify_missing(base, key, tickers)
+    remaining = [r for r in verify_missing(base, key) if raw_valid(r)]
     if remaining:
-        sample = ", ".join(f"{t}:{n}" for t, n in list(remaining.items())[:50])
+        counts = defaultdict(int)
+        for row in remaining: counts[str(row.get("ticker",""))] += 1
+        sample = ", ".join(f"{t}:{n}" for t,n in list(counts.items())[:50])
         fail("仍有 raw 有效但 adj_* 缺失的 rows: " + sample)
 
     print("✅ Supabase adjusted OHLC maintenance complete")
