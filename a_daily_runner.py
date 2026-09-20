@@ -132,12 +132,33 @@ def build_telegram_summary(formal, freshest_date, universe_count, stale_count):
         grade = str(row.get("A候选等级", ""))
         accum = row.get("资金积累总分", "")
         atr = row.get("ATR%", "")
+        drawdown = row.get("APEX近期回撤%", "")
+        stop_confirm = str(row.get("APEX止跌确认", ""))
+        vol_confirm = str(row.get("APEX放量转强", ""))
+        vol_ratio = row.get("APEX量比20", "")
+        ret5 = row.get("5D Return", "")
+        k = row.get("KDJ_K", "")
+        d = row.get("KDJ_D", "")
+
         parts = [f"{i}. {ticker}"]
-        if str(price) not in ("", "nan"): parts.append(f"Price {price}")
+        if str(price) not in ("", "nan"): parts.append(f"Price {float(price):.2f}")
         if grade and grade != "nan": parts.append(grade)
-        if str(atr) not in ("", "nan"): parts.append(f"ATR {atr}")
-        if str(accum) not in ("", "nan"): parts.append(f"Accum {accum}")
         lines.append(" | ".join(parts))
+
+        core = []
+        if str(ret5) not in ("", "nan"): core.append(f"5D {float(ret5):+.1%}")
+        if str(atr) not in ("", "nan"): core.append(f"ATR {float(atr):.1%}")
+        if str(k) not in ("", "nan") and str(d) not in ("", "nan"):
+            core.append(f"KD {float(k):.1f}/{float(d):.1f}")
+        if str(accum) not in ("", "nan"): core.append(f"积累 {accum}")
+        if core: lines.append("   A核心: " + " | ".join(core))
+
+        apex = []
+        if str(drawdown) not in ("", "nan"): apex.append(f"20D回撤 {float(drawdown):.1%}")
+        if stop_confirm: apex.append(f"止跌{'✓' if stop_confirm == '是' else '✗'}")
+        if vol_confirm: apex.append(f"放量转强{'✓' if vol_confirm == '是' else '✗'}")
+        if str(vol_ratio) not in ("", "nan"): apex.append(f"量比 {float(vol_ratio):.2f}x")
+        if apex: lines.append("   APEX: " + " | ".join(apex))
     if len(formal) > 10: lines.append(f"... plus {len(formal)-10} more")
     return "\n".join(lines)
 
