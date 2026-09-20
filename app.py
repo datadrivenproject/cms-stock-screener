@@ -2083,6 +2083,40 @@ def calc_panic_release_label(df):
         return out
 
 
+def calc_apex_research_fields(df):
+    """APEX-style confirmation research only; never changes A eligibility/ranking."""
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    volume = pd.to_numeric(df["Volume"], errors="coerce")
+
+    # 1) Recent drawdown: current close versus highest close in prior 20 sessions.
+    prior = close.iloc[-21:-1] if len(close) >= 21 else close.iloc[:-1]
+    peak = float(prior.max()) if len(prior) and pd.notna(prior.max()) else np.nan
+    drawdown = (float(close.iloc[-1]) / peak - 1.0) if peak and peak > 0 else np.nan
+
+    # 2) Stabilization: no fresh 3-day low today AND today's low is not below yesterday's low.
+    stop_confirm = False
+    if len(low) >= 4:
+        prior3_low = float(low.iloc[-4:-1].min())
+        stop_confirm = bool(low.iloc[-1] >= low.iloc[-2] and low.iloc[-1] >= prior3_low)
+
+    # 3) Volume-strength confirmation: positive day with volume >= 1.3x prior-20D average.
+    vol_confirm = False
+    vol_ratio = np.nan
+    if len(close) >= 21 and len(volume) >= 21:
+        avg20_prior = float(volume.iloc[-21:-1].mean())
+        if avg20_prior > 0:
+            vol_ratio = float(volume.iloc[-1] / avg20_prior)
+            vol_confirm = bool(close.iloc[-1] > close.iloc[-2] and vol_ratio >= 1.30)
+
+    return {
+        "APEX近期回撤%": drawdown,
+        "APEX止跌确认": "是" if stop_confirm else "否",
+        "APEX放量转强": "是" if vol_confirm else "否",
+        "APEX量比20": vol_ratio,
+    }
+
+
 def analyze_daily_candidate(ticker, df, benchmarks):
     try:
         if df is None or len(df) < 210:
@@ -2306,6 +2340,10 @@ A_SHEET_CN_MAP.update({
     '领导力分':'领导力分',
     '催化剂分':'催化剂分',
     'ATR%':'ATR%',
+    'APEX近期回撤%':'APEX近期回撤%',
+    'APEX止跌确认':'APEX止跌确认',
+    'APEX放量转强':'APEX放量转强',
+    'APEX量比20':'APEX量比20',
 
     '空间等级':'空间等级', '空间优先级':'空间优先级',
     'A6优先级':'A6优先级', 'A6优先分':'A6优先分', 'A6优先原因':'A6优先原因',
@@ -2353,6 +2391,7 @@ A_PRIMARY_COLS = [
     "Ticker", "Company", "Rank",
     "A候选等级", "A正式候选", "A动作", "A核心原因",
     "恐慌释放强弱", "恐慌释放分", "恐慌释放解释",
+    "APEX近期回撤%", "APEX止跌确认", "APEX放量转强", "APEX量比20",
     "A5决策", "空间等级", "空间优先级",
     "次日决策", "Early V2 Score", "Confidence",
     "Fundamental Confirmation", "Price", "结构阶段", "质量检查",
