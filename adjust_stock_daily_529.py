@@ -89,7 +89,7 @@ def get_schema_columns(base, key):
 
 
 def read_missing_adjusted_rows(base, key):
-    """Read ONLY rows that still need adjusted OHLC; do not scan full history."""
+    """Read ONLY rows that still need adjusted OHLC. No server-side ORDER BY: on a large table that sort can exceed Supabase statement timeout."""
     cols = "ticker,trade_date,open,high,low,close,adj_open,adj_high,adj_low,adj_close"
     rows = []
     start = 0
@@ -99,7 +99,7 @@ def read_missing_adjusted_rows(base, key):
         headers["Range"] = f"{start}-{start + READ_PAGE - 1}"
         r = requests.get(
             table_url(base),
-            params={"select": cols, "or": null_filter, "order": "ticker.asc,trade_date.asc"},
+            params={"select": cols, "or": null_filter},
             headers=headers,
             timeout=120,
         )
