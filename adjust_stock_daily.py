@@ -183,7 +183,10 @@ def build_missing_adjusted_rows(ticker, rows, factor, factor_date):
         for raw_col, adj_col in zip(RAW_COLS, ADJ_COLS):
             out[adj_col] = fnum(row.get(raw_col)) * factor
         updates.append(out)
-    return updates
+    deduped = {}
+    for item in updates:
+        deduped[(item["ticker"], item["trade_date"])] = item
+    return list(deduped.values())
 
 
 def upsert_adjusted(base, key, rows):
