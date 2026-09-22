@@ -2150,83 +2150,40 @@ def load_sheet_tab(tab_name):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def load_marketbeat_signals():
-    """读取 MarketBeat tracker 的公开结果 CSV；只取最近一次抓取。"""
-    try:
-        url = "https://raw.githubusercontent.com/datadrivenproject/stock-signal-tracker/main/data/signals.csv"
-        d = pd.read_csv(url)
-        if d.empty:
-            return d
-        d["first_seen_utc"] = pd.to_datetime(d["first_seen_utc"], errors="coerce", utc=True)
-        latest_day = d["first_seen_utc"].dt.date.max()
-        d = d[d["first_seen_utc"].dt.date.eq(latest_day)].copy()
-        d["price"] = pd.to_numeric(d["price"], errors="coerce")
-        d["target_price"] = pd.to_numeric(d["target_price"], errors="coerce")
-        d["潜在空间"] = d["target_price"] / d["price"] - 1
-        return d[d["潜在空间"].ge(0.10)].sort_values("潜在空间", ascending=False).head(5)
-    except Exception:
-        return pd.DataFrame()
-
 
 def render_three_systems():
+    """首页只读取同一个 Google Sheet 的三张结果表；不运行任何选股。"""
     st.subheader("📋 三套选股结果")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    cms = load_saved_candidates()
-    q = load_sheet_tab("Q_Candidates")
-    mb = load_marketbeat_signals()
+    def show_latest(tab, title, date_col, cols, rename):
+        st.markdown(title)
+        d = load_sheet_tab(tab)
+        if d.empty:
+            st.caption("暂无已保存结果")
+            return
+        latest = ""
+        if date_col in d.columns:
+            dates = d[date_col].astype(str).str[:10]
+            valid = dates[dates.str.strip().ne("")]
+            if not valid.empty:
+                latest = valid.max()
+                d = d[dates.eq(latest)].copy()
+        if latest:
+            st.caption(("今日结果 · " if latest == today else "最近结果 · ") + latest)
+        use = [c for c in cols if c in d.columns]
+        if use:
+            st.dataframe(d[use].rename(columns=rename).head(10), hide_index=True, use_container_width=True)
+        else:
+            st.caption("结果表字段暂不可识别")
 
-    # CMS/CRM：A_Candidates 是当前最近一次正式扫描结果。
-    st.markdown("#### 🟢 CMS/CRM")
-    if cms.empty:
-        st.caption("暂无已保存结果")
-    else:
-        cms_date = ""
-        for dc in ["最后数据日期", "记录日期", "Date", "date"]:
-            if dc in cms.columns and cms[dc].astype(str).str.strip().ne("").any():
-                cms_date = cms.loc[cms[dc].astype(str).str.strip().ne(""), dc].astype(str).max()[:10]
-                break
-        if cms_date:
-            st.caption(("今日结果 · " if cms_date == today else "最近结果 · ") + cms_date)
-        t = "Ticker" if "Ticker" in cms.columns else ("股票代码" if "股票代码" in cms.columns else None)
-        p = "Price" if "Price" in cms.columns else ("价格" if "价格" in cms.columns else None)
-        lv = "A候选等级" if "A候选等级" in cms.columns else ("A等级" if "A等级" in cms.columns else None)
-        cols = [c for c in [t,p,lv] if c]
-        show = cms[cols].head(10).rename(columns={t:"股票",p:"价格",lv:"信号"})
-        st.dataframe(show, hide_index=True, use_container_width=True)
-
-    # Quant：只显示 Q_Candidates 中最新一个交易日。
-    st.markdown("#### 🔵 Quant")
-    if q.empty:
-        st.caption("暂无已保存结果")
-    else:
-        q_date = ""
-        if "记录日期" in q.columns:
-            q_dates = q["记录日期"].astype(str).str[:10]
-            q_date = q_dates.max()
-            q = q[q_dates.eq(q_date)].copy()
-        if q_date:
-            st.caption(("今日结果 · " if q_date == today else "最近结果 · ") + q_date)
-        cols = [c for c in ["股票","收盘价","交易说明"] if c in q.columns]
-        st.dataframe(q[cols].head(10), hide_index=True, use_container_width=True)
-
-    # MarketBeat：signals.csv 只显示最新抓取日，并保留潜在空间 >=10% 的重点信号。
-    st.markdown("#### 🟠 MarketBeat")
-    if mb.empty:
-        st.caption("最新抓取日暂无符合条件的新信号")
-    else:
-        mb_date = ""
-        if "first_seen_utc" in mb.columns:
-            dates = pd.to_datetime(mb["first_seen_utc"], errors="coerce", utc=True)
-            if dates.notna().any():
-                mb_date = str(dates.dt.date.max())
-        if mb_date:
-            st.caption(("今日结果 · " if mb_date == today else "最近结果 · ") + mb_date)
-        show = mb[["ticker","price","target_price","潜在空间"]].rename(columns={
-            "ticker":"股票","price":"价格","target_price":"目标价","潜在空间":"潜在空间"
-        })
-        st.dataframe(show.style.format({"价格":"{:.2f}","目标价":"{:.2f}","潜在空间":"{:+.1%}"}), hide_index=True, use_container_width=True)
+    show_latest("A_Candidates","#### 🟢 CMS/CRM","最后数据日期",
+                ["Ticker","Price","A候选等级"],
+                {"Ticker":"股票","Price":"价格","A候选等级":"信号"})
+    show_latest("Q_Candidates","#### 🔵 Quant","记录日期",
+                ["股票","收盘价","交易说明"],{})
+    show_latest("M_Candidates","#### 🟠 MarketBeat","记录日期",
+                ["股票","当前价","信号","目标价","潜在空间"],{})
 
 
 def save_daily_candidates(df):
@@ -2304,35 +2261,6 @@ def save_daily_candidates(df):
 # =========================================================
 # PRODUCTION UI — lightweight mobile-first dashboard
 # =========================================================
-st.subheader("🔥 今日重点")
-st.caption("打开网站先看最近一次正式结果；需要时再手动重新扫描。")
-
-_saved = load_saved_candidates()
-if not _saved.empty:
-    _ticker_col = "Ticker" if "Ticker" in _saved.columns else ("股票代码" if "股票代码" in _saved.columns else None)
-    _price_col = "Price" if "Price" in _saved.columns else ("价格" if "价格" in _saved.columns else None)
-    _level_col = "A候选等级" if "A候选等级" in _saved.columns else ("A等级" if "A等级" in _saved.columns else None)
-    _date_col = "最后数据日期" if "最后数据日期" in _saved.columns else None
-    _formal_col = "A正式候选" if "A正式候选" in _saved.columns else None
-
-    _focus = _saved.copy()
-    if _formal_col:
-        _formal = _focus[_focus[_formal_col].astype(str).eq("是")].copy()
-        if not _formal.empty:
-            _focus = _formal
-    _focus = _focus.head(5)
-
-    if _date_col and len(_focus):
-        st.caption(f"最近结果数据日期：{_focus[_date_col].iloc[0]}")
-
-    _cols = [c for c in [_ticker_col, _price_col, _level_col] if c]
-    if _cols:
-        _show = _focus[_cols].copy()
-        _show = _show.rename(columns={_ticker_col:"股票", _price_col:"价格", _level_col:"等级"})
-        st.dataframe(_show, hide_index=True, use_container_width=True)
-else:
-    st.info("暂未读取到已保存候选，可运行一次扫描。")
-
 with st.expander("🔄 重新运行扫描", expanded=False):
     scan_clicked = st.button("运行今日扫描", type="primary", use_container_width=True)
 
