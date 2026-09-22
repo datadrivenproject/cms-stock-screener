@@ -417,8 +417,6 @@ def supabase_batch_download(tickers_tuple):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def supabase_download_single(ticker):
-    return supabase_batch_download((str(ticker).upper(),)).get(str(ticker).upper())
 
 # =========================================================
 # BASIC HELPERS
