@@ -248,7 +248,7 @@ def today_iso():
     d = date.today()
     while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
         d -= timedelta(days=1)
-    return d.isoformat()
+    return (d + timedelta(days=1)).isoformat()
 
 
 def fetch_batch_incremental(api_key, batch, from_date, till_date):
