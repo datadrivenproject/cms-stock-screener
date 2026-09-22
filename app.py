@@ -211,69 +211,7 @@ NEGATIVE_CATALYST = {
 # 保留原来的自选成长/热门股，同时自动加入 S&P 500。
 # S&P 500 成分会变化，因此不在程序里硬编码 500 个代码。
 # 若网络临时无法读取成分表，会自动退回原自选池，不影响 App 启动。
-CORE_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "AMD", "NFLX", "ORCL", "IBM", "DELL", "HPE", "SMCI",
-    "CRM", "ADBE", "NOW", "PLTR", "PATH", "CRWD", "PANW", "FTNT", "DDOG", "NET", "SNOW", "MDB", "ZS", "OKTA", "TEAM",
-    "QCOM", "MU", "INTC", "ARM", "MRVL", "AMAT", "LRCX", "KLAC", "ON", "MCHP",
-    "JPM", "BAC", "WFC", "GS", "MS", "V", "MA", "AXP", "PYPL", "COIN", "HOOD", "SOFI", "XYZ", "NU", "IBKR",
-    "LLY", "UNH", "ABBV", "MRK", "AMGN", "JNJ", "PFE", "GILD", "ISRG", "TMO", "TEM", "VEEV", "REGN", "VRTX", "DXCM",
-    "XOM", "CVX", "COP", "CAT", "GE", "BA", "RTX", "LMT", "ETN", "VRT", "PLUG", "FCX", "SLB", "FSLR", "CEG",
-    "WMT", "COST", "HD", "DIS", "UBER", "ABNB", "DASH", "BKNG", "SHOP", "MELI", "RBLX", "SPOT", "ROKU", "DUOL", "RDDT",
-    "CRCL", "APP", "RKLB", "ASTS", "IONQ", "RGTI", "SOUN", "HIMS", "CAVA", "CVNA"
-]
 
-@st.cache_data(ttl=21600, show_spinner=False)
-def get_sp500_tickers():
-    """
-    A6 FINAL 500池：
-    优先从 GitHub Raw 读取当前 S&P 500 成分。
-    不再依赖 pd.read_html(Wikipedia)，避免 Streamlit Cloud 上网页表格读取失败。
-    """
-    sources = [
-        "https://raw.githubusercontent.com/chinobing/historical_sp500_constituents/refs/heads/main/sp500_constituents.csv",
-        "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv",
-    ]
-
-    for url in sources:
-        try:
-            r = requests.get(
-                url,
-                timeout=20,
-                headers={"User-Agent": "Mozilla/5.0 CMS-A6-FINAL"}
-            )
-            if not r.ok or not r.text.strip():
-                continue
-
-            df = pd.read_csv(io.StringIO(r.text))
-            symbol_col = None
-            for c in df.columns:
-                if str(c).strip().lower() in {"symbol", "ticker", "tickers"}:
-                    symbol_col = c
-                    break
-            if symbol_col is None:
-                continue
-
-            tickers = (
-                df[symbol_col]
-                .astype(str)
-                .str.upper()
-                .str.strip()
-                .str.replace(".", "-", regex=False)
-                .tolist()
-            )
-            tickers = list(dict.fromkeys(
-                t for t in tickers
-                if t and t != "NAN"
-            ))
-
-            # S&P 500 usually has just over 500 listed securities because of share classes.
-            # Fewer than 450 means the source was not read correctly; do not silently fall back to 110.
-            if len(tickers) >= 450:
-                return tickers
-        except Exception:
-            continue
-
-    return []
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_universe():
@@ -287,20 +225,7 @@ def split_chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def safe_batch_download(tickers_tuple, period="1y"):
-    """
-    兼容旧调用名称，但数据源已经统一为 Supabase stock_daily。
-    period 参数仅为兼容旧代码保留，不再触发任何外部行情下载。
-    """
-    return supabase_batch_download(tuple(tickers_tuple))
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def safe_download_single(ticker, period="1y"):
-    """
-    兼容旧调用名称，但数据源已经统一为 Supabase stock_daily。
-    """
-    return supabase_download_single(ticker)
 
 # =========================================================
 # SUPABASE DAILY OHLCV — production scan data source
@@ -489,60 +414,6 @@ def supabase_batch_download(tickers_tuple):
     return out
 
 
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def supabase_batch_download_recent(tickers_tuple, calendar_days=650):
-    """
-    历史KD/RSI回测专用：
-    只读取最近 calendar_days 天的 Supabase stock_daily，
-    避免把500+股票的全部历史数据全部拉下来。
-    """
-    tickers = [str(t).upper().strip() for t in tickers_tuple if str(t).strip()]
-    if not tickers:
-        return {}
-
-    base_url, api_key = _get_supabase_runtime_config()
-    endpoint = f"{base_url}/rest/v1/stock_daily"
-    headers = _supabase_headers(api_key)
-    rows_by_ticker = {t: [] for t in tickers}
-
-    start_date = (pd.Timestamp.today().normalize() - pd.Timedelta(days=int(calendar_days))).strftime("%Y-%m-%d")
-
-    for chunk in split_chunks(tickers, 20):
-        ticker_filter = "in.(" + ",".join(chunk) + ")"
-        start = 0
-        page_size = 1000
-        while True:
-            params = {
-                "select": "ticker,trade_date,adj_open,adj_high,adj_low,adj_close,volume",
-                "ticker": ticker_filter,
-                "trade_date": f"gte.{start_date}",
-                "order": "ticker.asc,trade_date.asc",
-            }
-            h = dict(headers)
-            h["Range"] = f"{start}-{start + page_size - 1}"
-            r = requests.get(endpoint, params=params, headers=h, timeout=60)
-            if not r.ok:
-                raise RuntimeError(
-                    f"Supabase stock_daily 读取失败 HTTP {r.status_code}: {r.text[:500]}"
-                )
-
-            page = r.json()
-            for row in page:
-                t = str(row.get("ticker", "")).upper()
-                if t in rows_by_ticker:
-                    rows_by_ticker[t].append(row)
-
-            if len(page) < page_size:
-                break
-            start += page_size
-
-    out = {}
-    for t, rows in rows_by_ticker.items():
-        df = _daily_rows_to_df(rows)
-        if df is not None and not df.empty:
-            out[t] = df
-    return out
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -1323,111 +1194,6 @@ def calc_a5_resonance(df, row=None):
 # =========================================================
 # VP1 — VOLUME-PRICE PHASE (TEST LAYER; DOES NOT CHANGE FIX3 DECISION)
 # =========================================================
-def calc_volume_price_phase(df):
-    """Classify volume-price behavior into A/B/C/N using only data available as-of the bar.
-
-    A = 缩量蓄势: healthy dry-up/compression near recent highs.
-    B = 放量启动: volume expansion + breakout/strong close; strongest when preceded by dry-up.
-    C = 派发/衰竭风险: abnormal volume with stall, upper wick, or heavy down day.
-    N = 普通: no clear phase.
-
-    This is a diagnostic/test layer only. It does NOT alter A5.2R FIX3 买/不买.
-    """
-    out = {
-        'VP阶段': 'N 普通', 'VP分': 0, 'VP说明': '暂无明显量价阶段',
-        'VP量比20': np.nan, 'VP缩量比': np.nan,
-        'VP前期缩量': '否', 'VP放量启动': '否', 'VP派发风险': '否'
-    }
-    try:
-        if df is None or len(df) < 30:
-            out['VP说明'] = '数据不足'
-            return out
-        d = df.copy()
-        for c in ['Open','High','Low','Close','Volume']:
-            d[c] = pd.to_numeric(d[c], errors='coerce')
-        d = d.dropna(subset=['Open','High','Low','Close','Volume'])
-        if len(d) < 30:
-            out['VP说明'] = '有效数据不足'
-            return out
-
-        o,h,l,c,v = d['Open'],d['High'],d['Low'],d['Close'],d['Volume']
-        px = float(c.iloc[-1]); prev = float(c.iloc[-2])
-        vol20_prev = safe_num(v.iloc[-21:-1].mean())
-        vol5_prev = safe_num(v.iloc[-6:-1].mean())
-        if not (vol20_prev > 0 and px > 0 and prev > 0):
-            out['VP说明'] = '成交量基准不足'
-            return out
-
-        rvol = float(v.iloc[-1] / vol20_prev)
-        dry_ratio = float(vol5_prev / vol20_prev)
-        ret1 = float(px / prev - 1)
-        high10_prev = safe_num(h.iloc[-11:-1].max())
-        high20_prev = safe_num(h.iloc[-21:-1].max())
-        close20_prev = safe_num(c.iloc[-21:-1].max())
-
-        # Recent price compression measured BEFORE current bar, avoiding current breakout contamination.
-        pre5h = safe_num(h.iloc[-6:-1].max())
-        pre5l = safe_num(l.iloc[-6:-1].min())
-        compression5 = (pre5h - pre5l) / px if px > 0 and not pd.isna(pre5h) and not pd.isna(pre5l) else np.nan
-
-        rng = float(h.iloc[-1] - l.iloc[-1])
-        if rng > 0:
-            close_loc = float((px - l.iloc[-1]) / rng)
-            upper_wick = float((h.iloc[-1] - max(o.iloc[-1], px)) / rng)
-        else:
-            close_loc, upper_wick = 0.5, 0.0
-
-        # Prior dry-up: either the immediate prior 5 bars or the preceding 5-bar block dried up.
-        prior_block5 = safe_num(v.iloc[-11:-6].mean())
-        prior_block_ratio = prior_block5 / vol20_prev if vol20_prev > 0 and not pd.isna(prior_block5) else np.nan
-        prior_dryup = bool(
-            dry_ratio <= 0.82 or
-            (not pd.isna(prior_block_ratio) and prior_block_ratio <= 0.82)
-        )
-
-        near_high = bool(not pd.isna(high20_prev) and px >= high20_prev * 0.88)
-        compressed = bool(not pd.isna(compression5) and compression5 <= 0.08)
-        accumulation_phase = bool(dry_ratio <= 0.80 and near_high and compressed)
-
-        breakout_price = bool(
-            (not pd.isna(high10_prev) and px > high10_prev) or
-            (not pd.isna(close20_prev) and px > close20_prev)
-        )
-        expansion = bool(rvol >= 1.30 and ret1 > 0 and close_loc >= 0.65 and breakout_price)
-
-        huge_volume = rvol >= 1.80
-        stall = bool(huge_volume and ret1 < 0.01)
-        wick_risk = bool(rvol >= 1.50 and upper_wick >= 0.35)
-        heavy_down = bool(rvol >= 1.50 and ret1 <= -0.025)
-        distribution = bool(stall or wick_risk or heavy_down)
-
-        if distribution:
-            reasons=[]
-            if stall: reasons.append('巨量但价格滞涨')
-            if wick_risk: reasons.append('放量长上影')
-            if heavy_down: reasons.append('放量下跌')
-            phase, score, reason = 'C 派发风险', -3, '；'.join(reasons)
-        elif expansion:
-            if prior_dryup:
-                phase, score, reason = 'B 放量启动', 3, '缩量整理后放量突破'
-            else:
-                phase, score, reason = 'B 放量启动', 2, '放量突破，但前期缩量不明显'
-        elif accumulation_phase:
-            phase, score, reason = 'A 缩量蓄势', 1, '缩量+波动收窄，等待重新放量'
-        else:
-            phase, score, reason = 'N 普通', 0, '暂无明显量价阶段'
-
-        out.update({
-            'VP阶段': phase, 'VP分': score, 'VP说明': reason,
-            'VP量比20': round(rvol, 3), 'VP缩量比': round(dry_ratio, 3),
-            'VP前期缩量': '是' if prior_dryup else '否',
-            'VP放量启动': '是' if expansion else '否',
-            'VP派发风险': '是' if distribution else '否',
-        })
-        return out
-    except Exception:
-        out['VP说明'] = '计算异常'
-        return out
 
 # =========================================================
 # MODULE 3 — ACCUMULATION (MAX 20)
@@ -2083,39 +1849,6 @@ def calc_panic_release_label(df):
         return out
 
 
-def calc_apex_research_fields(df):
-    """APEX-style confirmation research only; never changes A eligibility/ranking."""
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    low = pd.to_numeric(df["Low"], errors="coerce")
-    volume = pd.to_numeric(df["Volume"], errors="coerce")
-
-    # 1) Recent drawdown: current close versus highest close in prior 20 sessions.
-    prior = close.iloc[-21:-1] if len(close) >= 21 else close.iloc[:-1]
-    peak = float(prior.max()) if len(prior) and pd.notna(prior.max()) else np.nan
-    drawdown = (float(close.iloc[-1]) / peak - 1.0) if peak and peak > 0 else np.nan
-
-    # 2) Stabilization: no fresh 3-day low today AND today's low is not below yesterday's low.
-    stop_confirm = False
-    if len(low) >= 4:
-        prior3_low = float(low.iloc[-4:-1].min())
-        stop_confirm = bool(low.iloc[-1] >= low.iloc[-2] and low.iloc[-1] >= prior3_low)
-
-    # 3) Volume-strength confirmation: positive day with volume >= 1.3x prior-20D average.
-    vol_confirm = False
-    vol_ratio = np.nan
-    if len(close) >= 21 and len(volume) >= 21:
-        avg20_prior = float(volume.iloc[-21:-1].mean())
-        if avg20_prior > 0:
-            vol_ratio = float(volume.iloc[-1] / avg20_prior)
-            vol_confirm = bool(close.iloc[-1] > close.iloc[-2] and vol_ratio >= 1.30)
-
-    return {
-        "APEX近期回撤%": drawdown,
-        "APEX止跌确认": "是" if stop_confirm else "否",
-        "APEX放量转强": "是" if vol_confirm else "否",
-        "APEX量比20": vol_ratio,
-    }
-
 
 def analyze_daily_candidate(ticker, df, benchmarks):
     try:
@@ -2351,20 +2084,6 @@ A_SHEET_CN_MAP.update({
     'Breakout Room Status V3':'Breakout Room'
 })
 
-def _cell(v):
-    if v is None:
-        return ""
-    try:
-        if pd.isna(v):
-            return ""
-    except Exception:
-        pass
-    if isinstance(v, (np.integer,)):
-        return int(v)
-    if isinstance(v, (np.floating,)):
-        return float(v)
-    return v
-
 
 def get_daily_worksheet():
     if gspread is None or Credentials is None:
@@ -2402,12 +2121,6 @@ A_PRIMARY_COLS = [
     "Leadership Score", "Catalyst Score", "Catalyst Label",
 ]
 
-
-def reorder_a_columns(df):
-    """Put decision-useful A columns first without dropping any original fields."""
-    first = [c for c in A_PRIMARY_COLS if c in df.columns]
-    rest = [c for c in df.columns if c not in first]
-    return df[first + rest].copy()
 
 
 def save_daily_candidates(df):
