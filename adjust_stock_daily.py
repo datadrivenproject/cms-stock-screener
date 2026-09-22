@@ -193,6 +193,15 @@ def upsert_adjusted(base, key, rows):
     if not rows:
         return 0
 
+    # Final write-boundary de-duplication. This guarantees that one POST
+    # never contains the same unique (ticker, trade_date) key twice.
+    unique_rows = {}
+    for row in rows:
+        key_pair = (str(row.get("ticker", "")).upper().strip(), str(row.get("trade_date", "")))
+        if key_pair[0] and key_pair[1]:
+            unique_rows[key_pair] = row
+    rows = list(unique_rows.values())
+
     headers = {
         "apikey": key,
         "Authorization": f"Bearer {key}",
