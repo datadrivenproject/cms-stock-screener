@@ -21,7 +21,7 @@ This script is intentionally compatible with the production safety guard.
 import math
 import os
 import sys
-from collections import defaultdict
+from collections import defaultdict\nfrom datetime import date, timedelta
 
 import requests
 
@@ -89,24 +89,37 @@ def get_schema_columns(base, key):
 
 
 def read_missing_adjusted_rows(base, key):
-    """Read ONLY rows that still need adjusted OHLC. No server-side ORDER BY: on a large table that sort can exceed Supabase statement timeout."""
+    """Read recent rows in small date-scoped pages, then filter missing adj_* locally.
+
+    Avoids the expensive table-wide PostgREST OR-null scan that can hit the
+    Supabase statement timeout. Daily maintenance only needs recent rows.
+    """
     cols = "ticker,trade_date,open,high,low,close,adj_open,adj_high,adj_low,adj_close"
     rows = []
+    cutoff = (date.today() - timedelta(days=14)).isoformat()
     start = 0
-    null_filter = "(adj_open.is.null,adj_high.is.null,adj_low.is.null,adj_close.is.null)"
     while True:
         headers = dict(sb_headers(key))
         headers["Range"] = f"{start}-{start + READ_PAGE - 1}"
         r = requests.get(
             table_url(base),
-            params={"select": cols, "or": null_filter},
+            params={
+                "select": cols,
+                "trade_date": f"gte.{cutoff}",
+                "order": "trade_date.asc,ticker.asc",
+            },
             headers=headers,
             timeout=120,
         )
         if not r.ok:
             print(r.text[:1500]); r.raise_for_status()
-        page = r.json(); rows.extend(page)
-        if len(page) < READ_PAGE: break
+        page = r.json()
+        rows.extend(
+            row for row in page
+            if any(fnum(row.get(col)) is None for col in ADJ_COLS)
+        )
+        if len(page) < READ_PAGE:
+            break
         start += READ_PAGE
     return rows
 
