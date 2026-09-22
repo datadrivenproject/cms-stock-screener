@@ -2122,6 +2122,19 @@ A_PRIMARY_COLS = [
 
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_saved_candidates():
+    """读取最近一次已写入 Google Sheet 的 A 候选，页面打开即可看到结果。"""
+    try:
+        ws = get_daily_worksheet()
+        rows = ws.get_all_records()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
 def save_daily_candidates(df):
     """
     安全写入 A_Candidates：
@@ -2197,9 +2210,37 @@ def save_daily_candidates(df):
 # =========================================================
 # PRODUCTION UI — lightweight mobile-first dashboard
 # =========================================================
-st.subheader("🔥 今日扫描")
-st.caption("正式选股规则保持不变；网站只负责把结果显示得更简单。")
-scan_clicked = st.button("🚀 运行今日扫描", type="primary", use_container_width=True)
+st.subheader("🔥 今日重点")
+st.caption("打开网站先看最近一次正式结果；需要时再手动重新扫描。")
+
+_saved = load_saved_candidates()
+if not _saved.empty:
+    _ticker_col = "Ticker" if "Ticker" in _saved.columns else ("股票代码" if "股票代码" in _saved.columns else None)
+    _price_col = "Price" if "Price" in _saved.columns else ("价格" if "价格" in _saved.columns else None)
+    _level_col = "A候选等级" if "A候选等级" in _saved.columns else ("A等级" if "A等级" in _saved.columns else None)
+    _date_col = "最后数据日期" if "最后数据日期" in _saved.columns else None
+    _formal_col = "A正式候选" if "A正式候选" in _saved.columns else None
+
+    _focus = _saved.copy()
+    if _formal_col:
+        _formal = _focus[_focus[_formal_col].astype(str).eq("是")].copy()
+        if not _formal.empty:
+            _focus = _formal
+    _focus = _focus.head(5)
+
+    if _date_col and len(_focus):
+        st.caption(f"最近结果数据日期：{_focus[_date_col].iloc[0]}")
+
+    _cols = [c for c in [_ticker_col, _price_col, _level_col] if c]
+    if _cols:
+        _show = _focus[_cols].copy()
+        _show = _show.rename(columns={_ticker_col:"股票", _price_col:"价格", _level_col:"等级"})
+        st.dataframe(_show, hide_index=True, use_container_width=True)
+else:
+    st.info("暂未读取到已保存候选，可运行一次扫描。")
+
+with st.expander("🔄 重新运行扫描", expanded=False):
+    scan_clicked = st.button("运行今日扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
