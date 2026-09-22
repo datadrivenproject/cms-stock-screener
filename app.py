@@ -19,9 +19,10 @@ except ImportError:
 # PAGE
 # =========================================================
 
-st.set_page_config(page_title="CMS KD + RSI 超卖回升 — A/B", page_icon="📈", layout="wide")
+st.set_page_config(page_title="CMS 股票控制台", page_icon="📈", layout="wide")
 
-st.title("📈 CMS A — KD20超跌反弹 + 恐慌释放排序")
+st.title("📈 CMS 股票控制台")
+st.caption("轻量版 · 今日候选 / 正式优选 / 卖出检查")
 
 # ===== 页面显示：Supabase 最后数据日期 =====
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2194,33 +2195,11 @@ def save_daily_candidates(df):
 
 
 # =========================================================
-# PRODUCTION UI — research/backtest modules removed
+# PRODUCTION UI — lightweight mobile-first dashboard
 # =========================================================
-    st.header("CMS A 核心扫描")
-    top_n = st.slider("次日重点候选数量", min_value=5, max_value=20, value=TOP_N_DEFAULT, step=1)
-
-    st.success(
-        "第一层：A选股核心\n\n"
-        "KD20低位金叉\n"
-        "+ 前5日跌≥3%\n"
-        "+ ATR≥4%\n\n"
-        "前5日跌≥5% = 强反弹候选"
-    )
-
-    st.markdown("**恐慌释放排序（不做硬过滤）**")
-    st.write("强：3–4分")
-    st.write("中：2分")
-    st.write("弱：0–1分")
-    st.caption("正式A仍只有：KD20低位金叉 + 前5日跌≥3% + ATR≥4%。")
-    st.caption("恐慌释放只用于候选排序和解释，不会减少候选数量。")
-    st.caption("股票池：当前 S&P 500 + 原自选池；A程序是盘后选股，不是盘中买入信号。")
-
-st.info(
-    "A正式核心：KD20低位金叉 + 前5日跌≥3% + ATR≥4%。"
-    "前5日跌≥5%可标记为强反弹候选；恐慌释放仅做排序，不做硬过滤。"
-)
-
-scan_clicked = st.button("🚀 运行 CMS A 核心扫描扫描", type="primary", use_container_width=True)
+st.subheader("🔥 今日扫描")
+st.caption("正式选股规则保持不变；网站只负责把结果显示得更简单。")
+scan_clicked = st.button("🚀 运行今日扫描", type="primary", use_container_width=True)
 
 if scan_clicked:
     try:
@@ -2349,116 +2328,58 @@ if scan_clicked:
 
 def render_results(top_df, all_df):
     if top_df is None or top_df.empty:
-        st.warning("今天没有出现严格 KD20 低位金叉信号。")
-        # 即使没有买入，也显示全市场出现的高位80死叉，便于已有持仓检查卖点。
-        if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
-            sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
-            if not sells.empty:
-                st.subheader('🔴 KD 高位80死叉 — 卖出检查')
-                cols = [c for c in ['Ticker','Company','Price','KDJ_K','KDJ_D','KDJ_J','KD交易动作'] if c in sells.columns]
-                show = sells[cols].rename(columns={'Ticker':'股票代码','Company':'公司','Price':'当前价格','KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD交易动作':'动作'})
-                st.dataframe(show.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
+        st.warning("今天没有出现买入候选。")
+        sells = pd.DataFrame()
+        if all_df is not None and not all_df.empty and "KD高位死叉80" in all_df.columns:
+            sells = all_df[all_df["KD高位死叉80"].eq("是")].copy()
+        if not sells.empty:
+            st.subheader("🔴 卖出检查")
+            cols = [c for c in ["Ticker", "Price", "KDJ_K", "KDJ_D"] if c in sells.columns]
+            st.dataframe(
+                sells[cols].rename(columns={"Ticker":"股票","Price":"价格","KDJ_K":"K","KDJ_D":"D"}),
+                hide_index=True, use_container_width=True
+            )
         return
 
-    formal_n = int((top_df.get("A正式候选") == "是").sum()) if "A正式候选" in top_df.columns else 0
-    strong_n = int((top_df.get("A候选等级") == "🔥 强反弹候选").sum()) if "A候选等级" in top_df.columns else 0
-    preferred_n = int((top_df.get("A候选等级") == "✅ 优选候选").sum()) if "A候选等级" in top_df.columns else 0
+    formal = top_df[top_df.get("A正式候选", pd.Series(index=top_df.index, dtype=str)).eq("是")].copy()
+    strong = top_df[top_df.get("A候选等级", pd.Series(index=top_df.index, dtype=str)).eq("🔥 强反弹候选")].copy()
 
-    st.success(
-        f"✅ A扫描完成：KD20信号 {len(top_df)} 只；"
-        f"正式优选 {formal_n} 只（其中强反弹 {strong_n} 只）。"
-    )
-    st.caption(
-        "A核心：KD20金叉是入口；前5日跌≥3%且ATR≥4%进入正式优选；"
-        "前5日跌≥5%且ATR≥4%标记为强反弹候选。"
-        "恐慌释放只用于排序，不作为过滤条件，所以不会减少候选数量。"
-    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("今日候选", len(top_df))
+    c2.metric("正式优选", len(formal))
+    c3.metric("强反弹", len(strong))
 
-    display_cols = [c for c in [
-        'Rank','Ticker','Company','Price',
-        'A候选等级','A动作','A核心原因',
-        '恐慌释放强弱','恐慌释放分','恐慌释放解释',
-        'KDJ_K','KDJ_D','KDJ_J',
-        '5D Return','ATR%','ATR14',
-        'RSI14_新','RVOL','Up/Down Volume Ratio','OBV Trend',
-        'Dollar Volume'
-    ] if c in top_df.columns]
+    st.subheader("⭐ 今日重点")
+    focus = formal if not formal.empty else top_df
+    focus = focus.head(5).copy()
+    cols = [c for c in ["Ticker","Price","A候选等级","5D Return","ATR%","恐慌释放强弱"] if c in focus.columns]
+    show = focus[cols].rename(columns={
+        "Ticker":"股票", "Price":"价格", "A候选等级":"等级",
+        "5D Return":"前5日", "ATR%":"ATR", "恐慌释放强弱":"恐慌释放"
+    })
+    fmt = {}
+    if "价格" in show.columns: fmt["价格"] = "{:.2f}"
+    if "前5日" in show.columns: fmt["前5日"] = "{:+.1%}"
+    if "ATR" in show.columns: fmt["ATR"] = "{:.1%}"
+    st.dataframe(show.style.format(fmt, na_rep=""), hide_index=True, use_container_width=True)
 
-    rename = {
-        'Rank':'排名','Ticker':'股票代码','Company':'公司','Price':'当前价格',
-        'A候选等级':'A等级','A动作':'决定','A核心原因':'核心原因',
-        '恐慌释放强弱':'恐慌释放',
-        '恐慌释放分':'恐慌分',
-        '恐慌释放解释':'恐慌释放明细',
-        'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
-        '5D Return':'前5日涨跌','ATR%':'ATR%','ATR14':'ATR14',
-        'RSI14_新':'RSI14','RVOL':'量比',
-        'Up/Down Volume Ratio':'上涨/下跌量比','OBV Trend':'OBV趋势',
-        'Dollar Volume':'成交额'
-    }
-
-    show = top_df[display_cols].rename(columns=rename)
-
-    st.subheader('🟢 CMS A — KD20 超跌反弹候选')
-    st.dataframe(
-        show.style.format({
-            '当前价格':'{:.2f}',
-            'K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
-            '前5日涨跌':'{:+.1%}',
-            'ATR%':'{:.1%}',
-            'ATR14':'{:.2f}',
-            'RSI14':'{:.1f}',
-            '量比':'{:.2f}',
-            '上涨/下跌量比':'{:.2f}',
-            '成交额':'{:,.0f}',
-        }, na_rep=''),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    if formal_n > 0:
-        formal = top_df[top_df["A正式候选"].eq("是")].copy()
-        st.subheader('⭐ 今日 A 正式优选')
-        fcols = [c for c in [
-            'Ticker','Company','Price','A候选等级','A动作',
-            '资金积累总分','OBV改善分','下跌缩量分',
-            '上涨放量分','量价背离分','资金积累解释',
-            '5D Return','ATR%','KDJ_K','KDJ_D','KDJ_J',
-            'RVOL','OBV Trend'
-        ] if c in formal.columns]
-        fshow = formal[fcols].rename(columns={
-            'Ticker':'股票代码','Company':'公司','Price':'当前价格',
-            'A候选等级':'A等级','A动作':'决定',
-            '资金积累总分':'资金积累',
-            'OBV改善分':'OBV改善',
-            '下跌缩量分':'下跌缩量',
-            '上涨放量分':'上涨放量',
-            '量价背离分':'量价背离/卖压衰竭',
-            '资金积累解释':'资金积累明细',
-            '5D Return':'前5日涨跌','ATR%':'ATR%',
-            'KDJ_K':'K','KDJ_D':'D','KDJ_J':'J',
-            'RVOL':'量比','OBV Trend':'OBV趋势'
+    with st.expander("查看全部候选"):
+        cols = [c for c in ["Rank","Ticker","Price","A候选等级","A核心原因","5D Return","ATR%"] if c in top_df.columns]
+        show_all = top_df[cols].rename(columns={
+            "Rank":"排名","Ticker":"股票","Price":"价格","A候选等级":"等级",
+            "A核心原因":"原因","5D Return":"前5日","ATR%":"ATR"
         })
-        st.dataframe(
-            fshow.style.format({
-                '当前价格':'{:.2f}',
-                '前5日涨跌':'{:+.1%}',
-                'ATR%':'{:.1%}',
-                'K':'{:.1f}','D':'{:.1f}','J':'{:.1f}',
-                '量比':'{:.2f}',
-            }, na_rep=''),
-            hide_index=True,
-            use_container_width=True
-        )
+        st.dataframe(show_all, hide_index=True, use_container_width=True)
 
-    if all_df is not None and not all_df.empty and 'KD高位死叉80' in all_df.columns:
-        sells = all_df[all_df['KD高位死叉80'].eq('是')].copy()
+    if all_df is not None and not all_df.empty and "KD高位死叉80" in all_df.columns:
+        sells = all_df[all_df["KD高位死叉80"].eq("是")].copy()
         if not sells.empty:
-            st.subheader('🔴 KD 高位80死叉 — 卖出检查')
-            cols = [c for c in ['Ticker','Company','Price','KDJ_K','KDJ_D','KDJ_J','KD卖出区值','KD交易动作'] if c in sells.columns]
-            sh = sells[cols].rename(columns={'Ticker':'股票代码','Company':'公司','Price':'当前价格','KDJ_K':'K','KDJ_D':'D','KDJ_J':'J','KD卖出区值':'交叉区值','KD交易动作':'动作'})
-            st.dataframe(sh.style.format({'当前价格':'{:.2f}','K':'{:.1f}','D':'{:.1f}','J':'{:.1f}','交叉区值':'{:.1f}'}, na_rep=''), hide_index=True, use_container_width=True)
-
+            st.subheader("🔴 卖出检查")
+            cols = [c for c in ["Ticker","Price","KDJ_K","KDJ_D","KD交易动作"] if c in sells.columns]
+            st.dataframe(
+                sells[cols].rename(columns={"Ticker":"股票","Price":"价格","KDJ_K":"K","KDJ_D":"D","KD交易动作":"动作"}),
+                hide_index=True, use_container_width=True
+            )
 
 
 if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
