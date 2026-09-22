@@ -46,7 +46,7 @@ REQUEST_BATCH = 100
 DB_BATCH = 500
 
 # Be deliberately gentle with Business Quant.
-REQUEST_PAUSE_SECONDS = 4.0
+REQUEST_PAUSE_SECONDS = 10.0
 
 # 429 backoff. Retry-After header is honored when present.
 MAX_RETRIES = 2
@@ -300,12 +300,12 @@ def fetch_batch_incremental(api_key, batch, from_date, till_date):
 
                 # Keep resume jobs moving even if the provider sends a very long
                 # Retry-After value.
-                wait_s = min(server_wait, BACKOFF_SECONDS[attempt - 1])
+                wait_s = max(server_wait, BACKOFF_SECONDS[attempt - 1])
 
                 print(
                     f"  ⚠️ 429 Too Many Requests. "
                     f"等待 {wait_s} 秒后短暂重试 ({attempt}/{MAX_RETRIES})；"
-                    f"若仍 429 将跳过本批并继续..."
+                    f"若仍 429 将继续按退避时间重试..."
                 )
                 time.sleep(wait_s)
                 continue
