@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parent
-DAILY_UPDATER = ROOT / "load_stock_daily_529.py"
+DAILY_UPDATER = ROOT / "load_stock_daily.py"
 ADJUSTER = ROOT / "adjust_stock_daily.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "a_daily_pipeline.yml"
 
@@ -147,11 +147,11 @@ def main():
     # 3) Guard itself must execute before daily updater
     # ---------------------------------------------------------
     guard_pos = workflow.find("guard_no_historical_fetch.py")
-    updater_pos = workflow.find("load_stock_daily_529.py")
+    updater_pos = workflow.find("load_stock_daily.py")
     if guard_pos < 0:
         errors.append("workflow does not run guard_no_historical_fetch.py")
     elif updater_pos >= 0 and guard_pos > updater_pos:
-        errors.append("safety guard must run before load_stock_daily_529.py")
+        errors.append("safety guard must run before load_stock_daily.py")
 
     if errors:
         fail(errors)
