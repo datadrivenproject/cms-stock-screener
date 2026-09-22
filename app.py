@@ -2135,6 +2135,77 @@ def load_saved_candidates():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_sheet_tab(tab_name):
+    """读取同一 Google Sheet 中的指定结果页。"""
+    try:
+        if gspread is None or Credentials is None:
+            return pd.DataFrame()
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+        book = gspread.authorize(creds).open(st.secrets["tracker"]["sheet_name"])
+        rows = book.worksheet(tab_name).get_all_records()
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_marketbeat_signals():
+    """读取 MarketBeat tracker 的公开结果 CSV；只取最近一次抓取。"""
+    try:
+        url = "https://raw.githubusercontent.com/datadrivenproject/stock-signal-tracker/main/data/signals.csv"
+        d = pd.read_csv(url)
+        if d.empty:
+            return d
+        d["first_seen_utc"] = pd.to_datetime(d["first_seen_utc"], errors="coerce", utc=True)
+        latest_day = d["first_seen_utc"].dt.date.max()
+        d = d[d["first_seen_utc"].dt.date.eq(latest_day)].copy()
+        d["price"] = pd.to_numeric(d["price"], errors="coerce")
+        d["target_price"] = pd.to_numeric(d["target_price"], errors="coerce")
+        d["潜在空间"] = d["target_price"] / d["price"] - 1
+        return d[d["潜在空间"].ge(0.10)].sort_values("潜在空间", ascending=False).head(5)
+    except Exception:
+        return pd.DataFrame()
+
+
+def render_three_systems():
+    st.subheader("📋 三套选股结果")
+
+    cms = load_saved_candidates()
+    q = load_sheet_tab("Q_Candidates")
+    mb = load_marketbeat_signals()
+
+    st.markdown("#### 🟢 CMS/CRM")
+    if cms.empty:
+        st.caption("暂无已保存结果")
+    else:
+        t = "Ticker" if "Ticker" in cms.columns else ("股票代码" if "股票代码" in cms.columns else None)
+        p = "Price" if "Price" in cms.columns else ("价格" if "价格" in cms.columns else None)
+        lv = "A候选等级" if "A候选等级" in cms.columns else ("A等级" if "A等级" in cms.columns else None)
+        cols = [c for c in [t,p,lv] if c]
+        show = cms[cols].head(10).rename(columns={t:"股票",p:"价格",lv:"信号"})
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+    st.markdown("#### 🔵 Quant")
+    if q.empty:
+        st.caption("暂无已保存结果")
+    else:
+        if "记录日期" in q.columns:
+            latest = q["记录日期"].astype(str).max()
+            q = q[q["记录日期"].astype(str).eq(latest)].copy()
+        cols = [c for c in ["股票","收盘价","交易说明"] if c in q.columns]
+        st.dataframe(q[cols].head(10), hide_index=True, use_container_width=True)
+
+    st.markdown("#### 🟠 MarketBeat")
+    if mb.empty:
+        st.caption("今日暂无符合条件的新信号")
+    else:
+        show = mb[["ticker","price","target_price","潜在空间"]].rename(columns={
+            "ticker":"股票","price":"价格","target_price":"目标价","潜在空间":"潜在空间"
+        })
+        st.dataframe(show.style.format({"价格":"{:.2f}","目标价":"{:.2f}","潜在空间":"{:+.1%}"}), hide_index=True, use_container_width=True)
+
 def save_daily_candidates(df):
     """
     安全写入 A_Candidates：
@@ -2423,7 +2494,7 @@ def render_results(top_df, all_df):
             )
 
 
-if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
+render_three_systems()\n\nst.divider()\n\nif "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
     st.caption("点击上方按钮运行 CMS A：KD20 + 前5日跌幅 + ATR% 扫描。")
