@@ -2171,15 +2171,24 @@ def load_marketbeat_signals():
 
 def render_three_systems():
     st.subheader("📋 三套选股结果")
+    today = datetime.now().strftime("%Y-%m-%d")
 
     cms = load_saved_candidates()
     q = load_sheet_tab("Q_Candidates")
     mb = load_marketbeat_signals()
 
+    # CMS/CRM：A_Candidates 是当前最近一次正式扫描结果。
     st.markdown("#### 🟢 CMS/CRM")
     if cms.empty:
         st.caption("暂无已保存结果")
     else:
+        cms_date = ""
+        for dc in ["最后数据日期", "记录日期", "Date", "date"]:
+            if dc in cms.columns and cms[dc].astype(str).str.strip().ne("").any():
+                cms_date = cms.loc[cms[dc].astype(str).str.strip().ne(""), dc].astype(str).max()[:10]
+                break
+        if cms_date:
+            st.caption(("今日结果 · " if cms_date == today else "最近结果 · ") + cms_date)
         t = "Ticker" if "Ticker" in cms.columns else ("股票代码" if "股票代码" in cms.columns else None)
         p = "Price" if "Price" in cms.columns else ("价格" if "价格" in cms.columns else None)
         lv = "A候选等级" if "A候选等级" in cms.columns else ("A等级" if "A等级" in cms.columns else None)
@@ -2187,24 +2196,38 @@ def render_three_systems():
         show = cms[cols].head(10).rename(columns={t:"股票",p:"价格",lv:"信号"})
         st.dataframe(show, hide_index=True, use_container_width=True)
 
+    # Quant：只显示 Q_Candidates 中最新一个交易日。
     st.markdown("#### 🔵 Quant")
     if q.empty:
         st.caption("暂无已保存结果")
     else:
+        q_date = ""
         if "记录日期" in q.columns:
-            latest = q["记录日期"].astype(str).max()
-            q = q[q["记录日期"].astype(str).eq(latest)].copy()
+            q_dates = q["记录日期"].astype(str).str[:10]
+            q_date = q_dates.max()
+            q = q[q_dates.eq(q_date)].copy()
+        if q_date:
+            st.caption(("今日结果 · " if q_date == today else "最近结果 · ") + q_date)
         cols = [c for c in ["股票","收盘价","交易说明"] if c in q.columns]
         st.dataframe(q[cols].head(10), hide_index=True, use_container_width=True)
 
+    # MarketBeat：signals.csv 只显示最新抓取日，并保留潜在空间 >=10% 的重点信号。
     st.markdown("#### 🟠 MarketBeat")
     if mb.empty:
-        st.caption("今日暂无符合条件的新信号")
+        st.caption("最新抓取日暂无符合条件的新信号")
     else:
+        mb_date = ""
+        if "first_seen_utc" in mb.columns:
+            dates = pd.to_datetime(mb["first_seen_utc"], errors="coerce", utc=True)
+            if dates.notna().any():
+                mb_date = str(dates.dt.date.max())
+        if mb_date:
+            st.caption(("今日结果 · " if mb_date == today else "最近结果 · ") + mb_date)
         show = mb[["ticker","price","target_price","潜在空间"]].rename(columns={
             "ticker":"股票","price":"价格","target_price":"目标价","潜在空间":"潜在空间"
         })
         st.dataframe(show.style.format({"价格":"{:.2f}","目标价":"{:.2f}","潜在空间":"{:+.1%}"}), hide_index=True, use_container_width=True)
+
 
 def save_daily_candidates(df):
     """
