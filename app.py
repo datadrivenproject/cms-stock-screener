@@ -2494,7 +2494,11 @@ def render_results(top_df, all_df):
             )
 
 
-render_three_systems()\n\nst.divider()\n\nif "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
+render_three_systems()
+
+st.divider()
+
+if "v43a_top_df" in st.session_state and "v43a_all_df" in st.session_state:
     render_results(st.session_state["v43a_top_df"], st.session_state["v43a_all_df"])
 else:
     st.caption("点击上方按钮运行 CMS A：KD20 + 前5日跌幅 + ATR% 扫描。")
