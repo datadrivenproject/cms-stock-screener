@@ -19,7 +19,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 DAILY_UPDATER = ROOT / "load_stock_daily_529.py"
-ADJUSTER = ROOT / "adjust_stock_daily_529.py"
+ADJUSTER = ROOT / "adjust_stock_daily.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "a_daily_pipeline.yml"
 
 
