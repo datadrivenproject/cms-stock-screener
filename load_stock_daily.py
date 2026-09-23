@@ -178,13 +178,18 @@ def sb_headers(key):
 
 def get_existing_status(base_url, key, tickers):
     """
-    Stable Supabase precheck.
-    HARD RULE: query ticker status in batches of 100, not per-ticker requests.
-    This keeps request count low and avoids overwhelming Supabase.
+    Lightweight daily status check.
+    HARD RULE: never scan 1-year history here.
+    Only read recent rows, in 100-ticker batches, to determine each ticker's
+    latest stored trade_date. Historical bootstrap is handled separately.
     """
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
     counts = Counter()
     latest = {}
+
+    # Daily pipeline only needs the newest stored date. A short recent window
+    # avoids downloading hundreds of historical rows per ticker.
+    recent_from = (datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=14)).isoformat()
 
     for bno, batch in enumerate(chunks(tickers, 100), 1):
         filt = "in.(" + ",".join(batch) + ")"
@@ -199,7 +204,8 @@ def get_existing_status(base_url, key, tickers):
                 params={
                     "select": "ticker,trade_date",
                     "ticker": filt,
-                    "order": "ticker.asc,trade_date.desc",
+                    "trade_date": f"gte.{recent_from}",
+                    "order": "trade_date.desc",
                 },
                 headers=headers,
                 timeout=120,
@@ -219,7 +225,7 @@ def get_existing_status(base_url, key, tickers):
                 break
             start += page_size
 
-        print(f"Supabase status batch {bno}: {len(batch)} tickers")
+        print(f"Supabase recent-status batch {bno}: {len(batch)} tickers")
 
     return counts, latest
 
