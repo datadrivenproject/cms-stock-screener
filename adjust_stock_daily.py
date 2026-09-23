@@ -21,7 +21,8 @@ This script is intentionally compatible with the production safety guard.
 import math
 import os
 import sys
-from collections import defaultdict\nfrom datetime import date, timedelta
+from collections import defaultdict
+from datetime import date, timedelta
 
 import requests
 
