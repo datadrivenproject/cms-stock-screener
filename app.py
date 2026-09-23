@@ -108,6 +108,7 @@ MAX_RETRIES = 3
 RETRY_WAIT = [5, 15, 30]
 BATCH_PAUSE = 1.5
 TOP_N_DEFAULT = 10
+DAILY_WORKSHEET = "A_Candidates"
 
 # V4.3A five-module weights — frozen first implementation.
 WEIGHTS = {
