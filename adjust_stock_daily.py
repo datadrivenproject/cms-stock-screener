@@ -97,7 +97,7 @@ def read_missing_adjusted_rows(base, key):
     """
     cols = "ticker,trade_date,open,high,low,close,adj_open,adj_high,adj_low,adj_close"
     rows = []
-    cutoff = (date.today() - timedelta(days=370)).isoformat()
+    cutoff = (date.today() - timedelta(days=3)).isoformat()
     start = 0
     while True:
         headers = dict(sb_headers(key))
@@ -263,7 +263,7 @@ def main():
 
     tickers = sorted(grouped)
     print(f"Missing adjusted rows: {len(missing_rows)} across {len(tickers)} affected tickers")
-    print("REPAIR MODE: scan up to 370 days so A retains >=210 adjusted bars per ticker.")
+    print("FAST MODE: only affected tickers are processed; full-history scan is skipped.")
 
     total_updates = 0
     pending_updates = []
