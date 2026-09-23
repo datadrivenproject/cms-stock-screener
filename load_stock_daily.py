@@ -177,60 +177,42 @@ def sb_headers(key):
 
 
 def get_existing_status(base_url, key, tickers):
-    """
-    Read existing Supabase status for each ticker:
-      counts[ticker] = number of stored rows
-      latest[ticker] = latest stored trade_date
-    """
+    """Fast status read: fetch only the newest stored row per ticker."""
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
-
     counts = Counter()
     latest = {}
 
-    for bno, batch in enumerate(chunks(tickers, 25), 1):
-        filt = "in.(" + ",".join(batch) + ")"
-        start = 0
-        page_size = 1000
+    # One lightweight query per ticker.  No full 1-year history scan.
+    # Parallel I/O keeps ~1500 status checks fast without increasing BQ usage.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        while True:
-            headers = dict(sb_headers(key))
-            headers["Range"] = f"{start}-{start + page_size - 1}"
+    def one(t):
+        r = requests.get(
+            url,
+            params={
+                "select": "ticker,trade_date",
+                "ticker": f"eq.{t}",
+                "order": "trade_date.desc",
+                "limit": "1",
+            },
+            headers=sb_headers(key),
+            timeout=30,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return t, (str(rows[0].get("trade_date", ""))[:10] if rows else None)
 
-            r = requests.get(
-                url,
-                params={
-                    "select": "ticker,trade_date",
-                    "ticker": filt,
-                    "order": "ticker.asc,trade_date.asc",
-                },
-                headers=headers,
-                timeout=120,
-            )
-
-            if not r.ok:
-                print(r.text[:1500])
-                r.raise_for_status()
-
-            page = r.json()
-
-            for row in page:
-                t = str(row.get("ticker", "")).upper()
-                d = str(row.get("trade_date", ""))[:10]
-
-                if t:
-                    counts[t] += 1
-                    if d and (t not in latest or d > latest[t]):
-                        latest[t] = d
-
-            if len(page) < page_size:
-                break
-
-            start += page_size
-
-        print(f"Supabase status batch {bno}: {len(batch)} tickers")
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        futures = [ex.submit(one, t) for t in tickers]
+        for n, fut in enumerate(as_completed(futures), 1):
+            t, d = fut.result()
+            if d:
+                latest[t] = d
+                counts[t] = 1
+            if n % 250 == 0:
+                print(f"Supabase latest-date check: {n}/{len(tickers)}")
 
     return counts, latest
-
 
 def next_calendar_day(yyyy_mm_dd):
     d = datetime.strptime(yyyy_mm_dd, "%Y-%m-%d").date()
