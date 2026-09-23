@@ -28,7 +28,7 @@ class FakeSession:
     def delete(self, url, headers, params, timeout):
         self.deletions.append((url, params))
         if not self.delete_error:
-            self.oldest = params["and"].split("trade_date.lt.")[1].split(")")[0]
+            self.oldest = params[1][1].split("lt.")[1]
         return Response(error=self.delete_error)
 
 
@@ -40,7 +40,7 @@ class RetentionTests(unittest.TestCase):
         prune(fake, "https://example.supabase.co", "test-key", date(2026, 9, 22))
         self.assertEqual(fake.deletions, [(
             "https://example.supabase.co/rest/v1/stock_daily",
-            {"trade_date": "gte.2025-09-20", "and": "(trade_date.lt.2025-09-22)"},
+            [("trade_date", "gte.2025-09-20"), ("trade_date", "lt.2025-09-22")],
         )])
 
     def test_stale_data_never_triggers_deletion(self):
