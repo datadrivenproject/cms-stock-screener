@@ -60,3 +60,7 @@ jobs:
       - name: 3 - Run KD-Core daily selection and Telegram summary
         run: |
           python -u a_daily_runner.py
+
+      - name: 4 - Delete stock_daily bars older than 365 days
+        run: |
+          python -u prune_stock_daily.py
