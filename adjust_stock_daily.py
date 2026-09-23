@@ -97,7 +97,7 @@ def read_missing_adjusted_rows(base, key):
     """
     cols = "ticker,trade_date,open,high,low,close,adj_open,adj_high,adj_low,adj_close"
     rows = []
-    cutoff = (date.today() - timedelta(days=14)).isoformat()
+    cutoff = (date.today() - timedelta(days=3)).isoformat()
     start = 0
     while True:
         headers = dict(sb_headers(key))
@@ -266,16 +266,20 @@ def main():
     print("FAST MODE: only affected tickers are processed; full-history scan is skipped.")
 
     total_updates = 0
+    pending_updates = []
     no_prior_adjustment = []
     for i, ticker in enumerate(tickers, 1):
         factor, factor_date = read_latest_factor(base, key, ticker)
         updates = build_missing_adjusted_rows(ticker, grouped[ticker], factor, factor_date)
         if factor_date is None and updates:
             no_prior_adjustment.append(ticker)
-        written = upsert_adjusted(base, key, updates)
-        total_updates += written
+        pending_updates.extend(updates)
         src = factor_date if factor_date else "无历史factor→1.0"
-        print(f"[{i:03d}/{len(tickers)}] {ticker}: 补 {written} rows | factor={factor:.8f} | source={src}")
+        if i % 100 == 0 or i == len(tickers):
+            print(f"[{i:03d}/{len(tickers)}] factors prepared | pending rows={len(pending_updates)}")
+
+    # One batched write phase instead of one POST per ticker.
+    total_updates = upsert_adjusted(base, key, pending_updates)
 
     print("\n========== ADJUSTED MAINTENANCE SUMMARY ==========")
     print(f"写入/补齐 adjusted rows: {total_updates}")
