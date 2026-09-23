@@ -3,9 +3,9 @@ name: A Daily Production Pipeline
 on:
   workflow_dispatch:
   schedule:
-    # 22:30 UTC = 18:30 EDT / 17:30 EST
-    # Monday-Friday after US market close
-    - cron: "30 22 * * 1-5"
+    # Monday-Friday at 18:30 Toronto local time (DST-aware)
+    - cron: "30 18 * * 1-5"
+      timezone: "America/Toronto"
 
 concurrency:
   group: cms-a-daily-production
