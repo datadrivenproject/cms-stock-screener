@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from universe_1500 import build_universe as build_composite_universe
 
 # =========================================================
@@ -245,9 +246,19 @@ def today_iso():
     US market holidays are harmless here: EOD mode simply returns no bar
     for a non-trading weekday.
     """
-    d = date.today()
+    # GitHub runners use UTC.  CMS EOD dates must follow the US market,
+    # otherwise an evening ET run can accidentally request tomorrow's bar.
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    d = now_et.date()
+
+    # Before the regular US close, today's EOD bar is not settled yet.
+    if now_et.hour < 16:
+        d -= timedelta(days=1)
+
     while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
         d -= timedelta(days=1)
+
+    # BQ till_date is kept exclusive by the existing updater contract.
     return (d + timedelta(days=1)).isoformat()
 
 
