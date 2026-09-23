@@ -1993,14 +1993,14 @@ def analyze_daily_candidate(ticker, df, benchmarks):
         row["催化剂分"] = safe_num(row.get("Catalyst Score", np.nan))
 
         # A6 V3 research fields: calculated strictly as-of the replay date.
-        row.update(calc_v3_pivot_room_fields(df))
-        row["空间等级"], row["空间优先级"] = calc_room_quality(row)
+
+
 
         # FINAL priority is ranking information only.
-        level, pscore, preason = calc_a6_final_priority(row)
-        row["A6优先级"] = level
-        row["A6优先分"] = pscore
-        row["A6优先原因"] = preason
+
+
+
+
 
         row["次日决策"] = daily_candidate_status(row) if (ok and q_status == "✅ 通过") else ("🟡 观察候选" if ok and q_status == "⚠️ 观察" else f"⚪ 暂缓：{q_reason}")
         row["Confidence"] = final_confidence(row)
