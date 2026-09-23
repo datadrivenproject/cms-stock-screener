@@ -48,10 +48,10 @@ def prune(session, base_url: str, key: str, today: date) -> int:
     windows = 0
     cutoff = today - timedelta(days=RETENTION_DAYS)
     for start, stop in range_to_delete(oldest, today):
-        response = session.delete(endpoint, headers=headers(key), params={
-            "trade_date": f"gte.{start.isoformat()}",
-            "and": f"(trade_date.lt.{stop.isoformat()})",
-        }, timeout=120)
+        response = session.delete(endpoint, headers=headers(key), params=[
+            ("trade_date", f"gte.{start.isoformat()}"),
+            ("trade_date", f"lt.{stop.isoformat()}"),
+        ], timeout=120)
         response.raise_for_status()
         windows += 1
     if windows:
