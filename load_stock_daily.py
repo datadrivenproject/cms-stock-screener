@@ -178,54 +178,48 @@ def sb_headers(key):
 
 def get_existing_status(base_url, key, tickers):
     """
-    Lightweight daily status check.
-    HARD RULE: never scan 1-year history here.
-    Only read the last 5 calendar days, in 100-ticker batches, to determine each ticker's
-    latest stored trade_date. Historical bootstrap is handled separately.
+    Fast daily status check.
+    HARD RULES:
+      - never scan historical data here;
+      - 100 tickers per request;
+      - fetch only the single latest stored trade_date for each ticker.
     """
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
     counts = Counter()
     latest = {}
 
-    # Daily pipeline only needs the newest stored date. A short recent window
-    # avoids downloading hundreds of historical rows per ticker.
-    recent_from = (datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=5)).isoformat()
+    # PostgREST cannot express "latest row per ticker" cheaply on the raw table.
+    # For the daily job, query only today's/recent dates one day at a time,
+    # newest first. Once a ticker is found, it is removed from later checks.
+    now_et = datetime.now(ZoneInfo("America/New_York")).date()
+    check_dates = [(now_et - timedelta(days=i)).isoformat() for i in range(0, 5)]
+    remaining = set(tickers)
 
-    for bno, batch in enumerate(chunks(tickers, 100), 1):
-        filt = "in.(" + ",".join(batch) + ")"
-        start = 0
-        page_size = 1000
-
-        while True:
-            headers = dict(sb_headers(key))
-            headers["Range"] = f"{start}-{start + page_size - 1}"
+    for d in check_dates:
+        if not remaining:
+            break
+        remaining_list = [t for t in tickers if t in remaining]
+        for bno, batch in enumerate(chunks(remaining_list, 100), 1):
+            filt = "in.(" + ",".join(batch) + ")"
             r = requests.get(
                 url,
                 params={
                     "select": "ticker,trade_date",
                     "ticker": filt,
-                    "trade_date": f"gte.{recent_from}",
-                    "order": "trade_date.desc",
+                    "trade_date": f"eq.{d}",
                 },
-                headers=headers,
-                timeout=120,
+                headers=sb_headers(key),
+                timeout=30,
             )
             r.raise_for_status()
-            page = r.json()
-
-            for row in page:
+            for row in r.json():
                 t = str(row.get("ticker", "")).upper()
-                d = str(row.get("trade_date", ""))[:10]
-                if t:
-                    counts[t] += 1
-                    if d and (t not in latest or d > latest[t]):
-                        latest[t] = d
+                if t and t in remaining:
+                    latest[t] = d
+                    counts[t] = 1
+                    remaining.discard(t)
 
-            if len(page) < page_size:
-                break
-            start += page_size
-
-        print(f"Supabase recent-status batch {bno}: {len(batch)} tickers")
+        print(f"Supabase latest-date check {d}: found={len(latest)}, remaining={len(remaining)}")
 
     return counts, latest
 
