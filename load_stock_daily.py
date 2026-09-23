@@ -180,7 +180,7 @@ def get_existing_status(base_url, key, tickers):
     """
     Lightweight daily status check.
     HARD RULE: never scan 1-year history here.
-    Only read recent rows, in 100-ticker batches, to determine each ticker's
+    Only read the last 5 calendar days, in 100-ticker batches, to determine each ticker's
     latest stored trade_date. Historical bootstrap is handled separately.
     """
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
@@ -189,7 +189,7 @@ def get_existing_status(base_url, key, tickers):
 
     # Daily pipeline only needs the newest stored date. A short recent window
     # avoids downloading hundreds of historical rows per ticker.
-    recent_from = (datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=14)).isoformat()
+    recent_from = (datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=5)).isoformat()
 
     for bno, batch in enumerate(chunks(tickers, 100), 1):
         filt = "in.(" + ",".join(batch) + ")"
