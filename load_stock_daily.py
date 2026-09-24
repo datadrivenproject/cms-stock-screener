@@ -656,6 +656,22 @@ def main():
 
     _, _, final_latest = verify(sb_url, sb_key, tickers)
 
+    # Freshness warning: a successful HTTP/API run is not the same as fresh EOD data.
+    # today_iso() is exclusive, so the expected latest settled trading date is
+    # the calendar day immediately before till_date. Weekends are already handled
+    # inside today_iso(); a weekday market holiday may produce a harmless warning.
+    expected_latest = (
+        datetime.strptime(till_date, "%Y-%m-%d").date() - timedelta(days=1)
+    ).isoformat()
+    if final_latest != "未知" and final_latest < expected_latest:
+        print("\n" + "!" * 78)
+        print(
+            f"⚠️ 数据源尚未发布预期的最新 EOD 数据："
+            f"预期交易日 {expected_latest}，数据库最新仅到 {final_latest}。"
+        )
+        print("⚠️ 本次 Pipeline 虽执行成功，但数据新鲜度未通过；请稍后重新运行增量更新。")
+        print("!" * 78)
+
     print("\n" + "=" * 78)
     print(f"✅ Daily incremental update 完成")
     print(f"Supabase stock_daily 最新交易日：{final_latest}")
