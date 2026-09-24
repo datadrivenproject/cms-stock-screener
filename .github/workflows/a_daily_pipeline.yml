@@ -3,8 +3,9 @@ name: A Daily Production Pipeline
 on:
   workflow_dispatch:
   schedule:
-    # Monday-Friday at 18:30 Toronto local time (DST-aware)
-    - cron: "30 18 * * 1-5"
+    # Monday-Friday at 18:37 Toronto local time (DST-aware).
+    # Use an off-peak minute to reduce GitHub scheduled-run delay/drop risk.
+    - cron: "37 18 * * 1-5"
       timezone: "America/Toronto"
 
 concurrency:
@@ -35,9 +36,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # HARD SAFETY GATE — MUST RUN BEFORE ANY MARKET-DATA REQUEST.
-      # Blocks production if period=1y/history loading is reintroduced or if
-      # adjust_stock_daily.py ever contains BusinessQuant access again.
       - name: 0 - Safety guard - forbid historical BusinessQuant fetch
         run: |
           python -u guard_no_historical_fetch.py
@@ -47,12 +45,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy requests lxml gspread google-auth
 
-      - name: 1 - TRUE incremental update of ~1500 raw EOD
+      - name: 1 - TRUE incremental update of raw EOD
         run: |
           python -u load_stock_daily.py
 
-      # IMPORTANT: this program must be Supabase-only.
-      # guard_no_historical_fetch.py blocks the pipeline if BQ access appears here.
       - name: 2 - Supabase-only adjusted OHLC maintenance
         run: |
           python -u adjust_stock_daily.py
