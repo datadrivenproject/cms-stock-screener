@@ -9,6 +9,7 @@ from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from universe_1500 import build_universe as build_composite_universe
+from telegram_notify import send_telegram
 
 # =========================================================
 # CMS DAILY DATA ENGINE — TRUE INCREMENTAL ONLY
@@ -670,6 +671,17 @@ def main():
             f"预期交易日 {expected_latest}，数据库最新仅到 {final_latest}。"
         )
         print("⚠️ 本次 Pipeline 虽执行成功，但数据新鲜度未通过；请稍后重新运行增量更新。")
+        alert = (
+            "⚠️ 股票数据更新异常\\n"
+            f"应更新至：{expected_latest}\\n"
+            f"当前数据库：{final_latest}\\n"
+            "数据源可能尚未发布最新日线，请稍后重跑。"
+        )
+        try:
+            send_telegram(alert)
+            print("📲 已发送 Telegram 数据新鲜度提醒。")
+        except Exception as e:
+            print(f"⚠️ Telegram 数据新鲜度提醒发送失败: {e}")
         print("!" * 78)
 
     print("\n" + "=" * 78)
