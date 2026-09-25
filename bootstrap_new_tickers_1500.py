@@ -17,10 +17,9 @@ from load_stock_daily import (
 
 REQUEST_BATCH = 100
 REQUEST_PAUSE_SECONDS = 10.0
-MAX_429_RETRIES = 4
-BACKOFF_429_SECONDS = [30, 60, 120, 180]
 
 def fetch_history(api_key, batch, start, end):
+    """One request for one batch (max 100). Never fall back to per-ticker retries."""
     params = {
         "ticker": ",".join(batch),
         "mode": "daily",
@@ -30,24 +29,14 @@ def fetch_history(api_key, batch, start, end):
         "page": 1,
         "api_key": api_key,
     }
-    for attempt in range(MAX_429_RETRIES + 1):
-        r = requests.get(BQ_URL, params=params, timeout=180)
-        print(f"BQ HTTP {r.status_code} | {start}->{end} | {len(batch)} tickers")
-        if r.status_code != 429:
-            r.raise_for_status()
-            return normalize_multi_ticker_result(r.json(), batch)
-        if attempt >= MAX_429_RETRIES:
-            raise RuntimeError(f"BQ 429 persisted after {MAX_429_RETRIES} retries")
-        wait_s = BACKOFF_429_SECONDS[attempt]
+    r = requests.get(BQ_URL, params=params, timeout=180)
+    print(f"BQ HTTP {r.status_code} | {start}->{end} | {len(batch)} tickers")
+    if r.status_code == 429:
         retry_after = r.headers.get("Retry-After")
-        try:
-            if retry_after:
-                wait_s = max(wait_s, int(float(retry_after)))
-        except Exception:
-            pass
-        print(f"429 rate limit: wait {wait_s}s, then retry SAME batch ({attempt + 1}/{MAX_429_RETRIES})")
-        time.sleep(wait_s)
-    raise RuntimeError("BQ history request failed")
+        extra = f" Retry-After={retry_after}" if retry_after else ""
+        raise RuntimeError("BQ_RATE_LIMIT_STOP:" + extra)
+    r.raise_for_status()
+    return normalize_multi_ticker_result(r.json(), batch)
 
 def main():
     print("=" * 78)
@@ -91,9 +80,10 @@ def main():
         try:
             result = fetch_history(bq, batch, start, end)
         except Exception as e:
-            print(f"SKIP batch after controlled retries: {e}")
-            print("Tickers:", ", ".join(batch))
-            continue
+            print(f"STOP bootstrap: {e}")
+            print("Unprocessed batch:", ", ".join(batch))
+            print("No per-ticker fallback; preserving request quota.")
+            raise
 
         rows = []
         for t in batch:
@@ -102,7 +92,8 @@ def main():
             upsert(sb, key, rows)
         time.sleep(REQUEST_PAUSE_SECONDS)
 
-    print("Bootstrap finished. Daily updater remains incremental-only.")
+    # Success means every truly-new ticker batch completed without a rate-limit/error.
+    print("Bootstrap finished successfully. Daily updater remains incremental-only.")
 
 if __name__ == "__main__":
     main()
