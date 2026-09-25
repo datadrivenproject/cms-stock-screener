@@ -8,7 +8,7 @@ import pandas as pd
 from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from universe_1500 import build_universe as build_composite_universe
+from universe_2500 import build_universe as build_composite_universe
 from telegram_notify import send_telegram
 
 # =========================================================
@@ -159,15 +159,9 @@ def get_sp500_tickers():
 
 
 def build_universe():
-    sp500 = get_sp500_tickers()
-    universe = list(dict.fromkeys(sp500 + CORE_UNIVERSE))
-
-    print(f"当前 S&P500 ticker: {len(sp500)}")
-    print(f"CMS Core/watchlist: {len(CORE_UNIVERSE)}")
+    universe = build_composite_universe(verbose=True)
     print(f"去重后目标股票池: {len(universe)}")
-
     return universe
-
 
 def sb_headers(key):
     return {
