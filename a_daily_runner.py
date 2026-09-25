@@ -174,8 +174,6 @@ def main():
     print(f"Universe: {len(tickers)} stocks", flush=True)
     data = ns["supabase_batch_download"](tuple(tickers)); benchmarks = ns["get_benchmark_returns"]()
     missing = [t for t in tickers if t not in data or data[t] is None or data[t].empty]
-    if missing and len(missing) > MAX_MISSING_TICKERS:
-        raise RuntimeError(f"A scan blocked: adjusted Supabase data missing for {len(missing)} tickers: " + ", ".join(missing[:40]))
     if missing: print(f"⚠️ Missing adjusted data skipped ({len(missing)}): " + ", ".join(missing), flush=True)
     dated = {t: ticker_latest_date(data.get(t)) for t in tickers if t not in missing}; dated = {t:d for t,d in dated.items() if d is not None}
     if not dated: raise RuntimeError("A scan blocked: no usable dated adjusted Supabase data")
