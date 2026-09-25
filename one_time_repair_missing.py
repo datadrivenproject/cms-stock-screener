@@ -66,11 +66,16 @@ def main():
     for start, names in sorted(groups.items()):
         if start>till: continue
         for batch in chunks(names,25):
-            res=fetch(bq,batch,start,till); rows=[]
+            # Repair individually: one unsupported ticker must never abort the rest.
             for t in batch:
-                rows.extend([x for x in clean(t,res.get(t)) if x["trade_date"]>exact[t]])
-            if rows: upsert(sb,key,rows)
-            time.sleep(4)
+                try:
+                    res=fetch(bq,[t],start,till)
+                except Exception as e:
+                    print(f"SKIP stale ticker {t}: {e}")
+                    continue
+                rows=[x for x in clean(t,res.get(t)) if x["trade_date"]>exact[t]]
+                if rows: upsert(sb,key,rows)
+                time.sleep(1)
 
     # Final exact check only for repaired candidates.
     unresolved=[]
