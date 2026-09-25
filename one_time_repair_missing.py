@@ -48,7 +48,13 @@ def main():
 
     # Bootstrap only genuinely empty tickers, in small batches.
     for batch in chunks(no_history,25):
-        res=fetch(bq,batch,history=True); rows=[]
+        try:
+            res=fetch(bq,batch,history=True)
+        except Exception as e:
+            print(f"SKIP bootstrap batch (provider returned no supported history): {e}")
+            print("Bootstrap tickers:", ", ".join(batch))
+            continue
+        rows=[]
         for t in batch: rows.extend(clean(t,res.get(t)))
         if rows: upsert(sb,key,rows)
         time.sleep(4)
