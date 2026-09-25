@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 import requests
 
-from universe_1500 import build_universe
+from universe_2500 import build_universe
 from load_stock_daily import (
     BQ_URL, chunks, clean, env, fail, get_existing_status,
     normalize_multi_ticker_result, upsert, today_iso,
