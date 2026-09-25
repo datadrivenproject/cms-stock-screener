@@ -5,7 +5,7 @@ import requests
 import io
 import time
 from datetime import datetime, timezone
-from universe_1500 import build_universe as build_composite_universe
+from universe_2500 import build_universe as build_composite_universe
 from a_selection_core import classify_current_a
 
 try:
