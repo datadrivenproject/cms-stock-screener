@@ -13,7 +13,48 @@ import io
 import pandas as pd
 import requests
 
-from universe_1500 import build_universe as build_base_universe, normalize_ticker, USER_AGENT
+import io as _io
+
+WIKIMEDIA_API = "https://en.wikipedia.org/w/api.php"
+USER_AGENT = "CMSStockScreener/1.0 (github.com/datadrivenproject/cms-stock-screener)"
+INDEX_PAGES = {
+    "S&P 500": ("List_of_S&P_500_companies", 450),
+    "S&P 400": ("List_of_S&P_400_companies", 380),
+    "S&P 600": ("List_of_S&P_600_companies", 570),
+}
+CORE_UNIVERSE = [
+    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AVGO","AMD","NFLX","ORCL","IBM","DELL","HPE","SMCI",
+    "CRM","ADBE","NOW","PLTR","PATH","CRWD","PANW","FTNT","DDOG","NET","SNOW","MDB","ZS","OKTA","TEAM",
+    "QCOM","MU","INTC","ARM","MRVL","AMAT","LRCX","KLAC","ON","MCHP","JPM","BAC","WFC","GS","MS","V","MA","AXP",
+    "PYPL","COIN","HOOD","SOFI","XYZ","NU","IBKR","LLY","UNH","ABBV","MRK","AMGN","JNJ","PFE","GILD","ISRG","TMO",
+    "TEM","VEEV","REGN","VRTX","DXCM","XOM","CVX","COP","CAT","GE","BA","RTX","LMT","ETN","VRT","PLUG","FCX","SLB",
+    "FSLR","CEG","WMT","COST","HD","DIS","UBER","ABNB","DASH","BKNG","SHOP","MELI","RBLX","SPOT","ROKU","DUOL","RDDT",
+    "CRCL","APP","RKLB","ASTS","IONQ","RGTI","SOUN","HIMS","CAVA","CVNA"
+]
+def normalize_ticker(value):
+    ticker=str(value).upper().strip().replace(".","-")
+    return ticker if ticker and ticker!="NAN" else ""
+def _extract(tables, minimum):
+    for df in tables:
+        col=next((c for c in df.columns if str(c).strip().lower() in {"symbol","ticker","tickers"}),None)
+        if col is not None:
+            xs=list(dict.fromkeys(normalize_ticker(x) for x in df[col].tolist()))
+            xs=[x for x in xs if x]
+            if len(xs)>=minimum: return xs
+    return []
+def _index(name):
+    page,minimum=INDEX_PAGES[name]
+    r=requests.get(WIKIMEDIA_API,params={"action":"parse","page":page,"prop":"text","format":"json","formatversion":2},
+                   headers={"User-Agent":USER_AGENT},timeout=60)
+    r.raise_for_status()
+    xs=_extract(pd.read_html(_io.StringIO(r.json()["parse"]["text"])),minimum)
+    if len(xs)<minimum: raise RuntimeError(f"Invalid {name} list: {len(xs)}")
+    return xs
+def build_base_universe(verbose=False):
+    lists={n:_index(n) for n in ("S&P 500","S&P 400","S&P 600")}
+    base=list(dict.fromkeys(lists["S&P 500"]+lists["S&P 400"]+lists["S&P 600"]+CORE_UNIVERSE))
+    if len(base)<1450: raise RuntimeError(f"Base universe unexpectedly small: {len(base)}")
+    return base
 
 IWV_HOLDINGS_CSV = (
     "https://www.blackrock.com/us/individual/products/239714/"
