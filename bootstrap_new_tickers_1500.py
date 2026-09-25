@@ -15,7 +15,7 @@ from load_stock_daily import (
     normalize_multi_ticker_result, upsert, today_iso,
 )
 
-REQUEST_BATCH = 25
+REQUEST_BATCH = 100
 REQUEST_PAUSE_SECONDS = 10.0
 MAX_429_RETRIES = 4
 BACKOFF_429_SECONDS = [30, 60, 120, 180]
