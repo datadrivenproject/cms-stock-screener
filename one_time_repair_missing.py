@@ -23,7 +23,7 @@ def fetch(api_key, tickers, start=None, end=None, history=False):
     if history: p["period"]="1y"
     else: p.update({"from_date":start,"till_date":end})
     r=requests.get(BQ_URL,params=p,timeout=180)
-    print(f"BQ HTTP {r.status_code}: {len(tickers)} tickers | "+("1y bootstrap" if history else f"{start}->{end}"))
+    print(f"BQ HTTP {r.status_code}: {len(tickers)} tickers | "+(f"{start}->{end} bootstrap" if history else f"{start}->{end}"))
     r.raise_for_status()
     return normalize_multi_ticker_result(r.json(),tickers)
 
