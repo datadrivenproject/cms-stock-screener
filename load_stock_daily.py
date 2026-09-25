@@ -250,8 +250,9 @@ def today_iso():
     while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
         d -= timedelta(days=1)
 
-    # BQ till_date is kept exclusive by the existing updater contract.
-    return (d + timedelta(days=1)).isoformat()
+    # BQ till_date is the inclusive end date. After the US close,
+    # request through the current settled trading date itself.
+    return d.isoformat()
 
 
 def fetch_batch_incremental(api_key, batch, from_date, till_date):
@@ -658,12 +659,8 @@ def main():
     _, _, final_latest = verify(sb_url, sb_key, tickers)
 
     # Freshness warning: a successful HTTP/API run is not the same as fresh EOD data.
-    # today_iso() is exclusive, so the expected latest settled trading date is
-    # the calendar day immediately before till_date. Weekends are already handled
-    # inside today_iso(); a weekday market holiday may produce a harmless warning.
-    expected_latest = (
-        datetime.strptime(till_date, "%Y-%m-%d").date() - timedelta(days=1)
-    ).isoformat()
+    # till_date is the inclusive expected latest settled trading date.
+    expected_latest = till_date
     if final_latest != "未知" and final_latest < expected_latest:
         print("\n" + "!" * 78)
         print(
