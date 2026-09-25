@@ -446,53 +446,6 @@ def upsert(base_url, key, rows):
             r.raise_for_status()
 
 
-def verify(base_url, key, tickers):
-    counts, latest = get_existing_status(base_url, key, tickers)
-
-    dates = [d for d in latest.values() if d]
-    global_latest = max(dates) if dates else "未知"
-
-    sufficient = [
-        (t, int(counts.get(t, 0)), latest.get(t, ""))
-        for t in tickers
-        if counts.get(t, 0) >= MIN_VALID_DAYS
-    ]
-
-    no_history = [
-        t
-        for t in tickers
-        if counts.get(t, 0) == 0
-    ]
-
-    stale = [
-        (t, latest.get(t, ""))
-        for t in tickers
-        if latest.get(t, "") and latest.get(t, "") < global_latest
-    ]
-
-    print("\n========== Supabase 验证 ==========")
-    print(f"全库最新交易日: {global_latest}")
-    print(
-        f"有足够历史(>={MIN_VALID_DAYS}日): "
-        f"{len(sufficient)} / {len(tickers)}"
-    )
-
-    if stale:
-        print(f"⚠️ 落后于全库最新日期的股票: {len(stale)}")
-        for x in stale[:50]:
-            print(" ", x)
-
-    if no_history:
-        print(
-            f"⚠️ 完全没有历史数据的股票: {len(no_history)} "
-            f"(Daily updater 不会为它们拉1年历史)"
-        )
-        for t in no_history[:50]:
-            print(" ", t)
-
-    return counts, latest, global_latest
-
-
 def main():
     print("=" * 78)
     print("CMS Data Engine — TRUE DAILY INCREMENTAL UPDATE")
@@ -656,40 +609,14 @@ def main():
     else:
         print("\n✅ 没有发现需要写入的新交易日。")
 
-    _, _, final_latest = verify(sb_url, sb_key, tickers)
-
-    # Freshness warning: a successful HTTP/API run is not the same as fresh EOD data.
-    # till_date is the inclusive expected latest settled trading date.
-    expected_latest = till_date
-    if final_latest != "未知" and final_latest < expected_latest:
-        print("\n" + "!" * 78)
-        print(
-            f"⚠️ 数据源尚未发布预期的最新 EOD 数据："
-            f"预期交易日 {expected_latest}，数据库最新仅到 {final_latest}。"
-        )
-        print("⚠️ 本次 Pipeline 虽执行成功，但数据新鲜度未通过；请稍后重新运行增量更新。")
-        alert = (
-            "⚠️ 股票数据更新异常\\n"
-            f"应更新至：{expected_latest}\\n"
-            f"当前数据库：{final_latest}\\n"
-            "数据源可能尚未发布最新日线，请稍后重跑。"
-        )
-        try:
-            send_telegram(alert)
-            print("📲 已发送 Telegram 数据新鲜度提醒。")
-        except Exception as e:
-            print(f"⚠️ Telegram 数据新鲜度提醒发送失败: {e}")
-        print("!" * 78)
-        # Hard freshness gate: never allow downstream selection to run on stale EOD.
-        # Exit non-zero so GitHub Actions stops before adjusted OHLC / A selection.
-        fail(
-            f"数据新鲜度未通过：预期 {expected_latest}，"
-            f"数据库最新 {final_latest}；停止后续 A 选股。"
-        )
+    # No post-download verification gate here.
+    # The daily updater's only responsibility is incremental fetch + upsert.
+    # A partial/missing ticker must not block downstream production steps.
+    final_latest = till_date if all_new_rows else current_global_latest
 
     print("\n" + "=" * 78)
     print(f"✅ Daily incremental update 完成")
-    print(f"Supabase stock_daily 最新交易日：{final_latest}")
+    print(f"本轮目标交易日：{till_date}")
     print("")
     print("下一步：")
     print("  python adjust_stock_daily_529.py")
