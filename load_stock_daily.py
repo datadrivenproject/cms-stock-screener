@@ -315,7 +315,23 @@ def fetch_batch_incremental(api_key, batch, from_date, till_date):
                 continue
 
             r.raise_for_status()
-            return r.json()
+            payload = r.json()
+
+            # TEMP DEBUG: inspect one successful BQ response shape.
+            # Remove immediately after diagnosing the empty EOD result.
+            if batch:
+                print("  [TEMP BQ DEBUG] response_type:", type(payload).__name__)
+                if isinstance(payload, dict):
+                    print("  [TEMP BQ DEBUG] top_keys:", list(payload.keys())[:10])
+                    sample = payload.get(batch[0]) or payload
+                    if isinstance(sample, dict):
+                        print("  [TEMP BQ DEBUG] sample_keys:", list(sample.keys())[:10])
+                        data = sample.get("data")
+                        print("  [TEMP BQ DEBUG] data_type:", type(data).__name__)
+                        if isinstance(data, list):
+                            print("  [TEMP BQ DEBUG] data_count:", len(data))
+                            print("  [TEMP BQ DEBUG] first_rows:", data[:2])
+            return payload
 
         except Exception as e:
             last_error = e
