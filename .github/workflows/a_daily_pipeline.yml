@@ -3,9 +3,9 @@ name: A Daily Production Pipeline
 on:
   workflow_dispatch:
   schedule:
-    # Monday-Friday at 18:37 Toronto local time (DST-aware).
+    # Monday-Friday at 20:00 Toronto local time (DST-aware).
     # Use an off-peak minute to reduce GitHub scheduled-run delay/drop risk.
-    - cron: "37 18 * * 1-5"
+    - cron: "00 20 * * 1-5"
       timezone: "America/Toronto"
 
 concurrency:
