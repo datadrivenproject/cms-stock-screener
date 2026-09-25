@@ -1,0 +1,22 @@
+name: ONE-TIME Repair Missing Stock Data
+
+on:
+  workflow_dispatch:
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TZ: America/New_York
+      BUSINESSQUANT_API_KEY: ${{ secrets.BUSINESSQUANT_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas numpy requests lxml
+      - name: Repair missing-history and stale tickers once
+        run: python -u one_time_repair_missing.py
