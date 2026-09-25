@@ -1,142 +1,102 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""Manual one-time bootstrap for NEW tickers only.
 
-"""ONE-TIME history bootstrap for new CMS universe members.
-
-This program is deliberately separate from daily production. It loads one year
-only for tickers that have fewer than MIN_VALID_DAYS in Supabase. The daily
-updater remains true-incremental and never calls this program.
+Daily production never calls this file. It finds current-universe tickers with
+no Supabase history and seeds only those names with an explicit 365-day range.
+Unsupported tickers are skipped without blocking the rest.
 """
-
 import time
-
+from datetime import datetime, timedelta
 import requests
 
-from universe_2500 import build_universe
-from load_stock_daily_529 import (
-    BQ_URL,
-    MIN_VALID_DAYS,
-    chunks,
-    clean,
-    env,
-    fail,
-    get_existing_status,
-    normalize_multi_ticker_result,
-    upsert,
-    verify,
+from universe_1500 import build_universe
+from load_stock_daily import (
+    BQ_URL, chunks, clean, env, fail, get_existing_status,
+    normalize_multi_ticker_result, upsert, today_iso,
 )
 
-
-HISTORY_PERIOD = "1y"
-REQUEST_BATCH = 100
-MAX_TICKERS_PER_RUN = 200
-AUTO_MAX_BATCHES = 5
+REQUEST_BATCH = 25
 REQUEST_PAUSE_SECONDS = 4.0
-MAX_RETRIES = 3
 
-
-def fetch_history_batch(api_key, batch):
+def fetch_history(api_key, batch, start, end):
     params = {
         "ticker": ",".join(batch),
-        "mode": "eod",
-        "period": HISTORY_PERIOD,
+        "mode": "daily",
+        "from_date": start,
+        "till_date": end,
         "limit": 500,
         "page": 1,
         "api_key": api_key,
     }
-    last_error = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = requests.get(BQ_URL, params=params, timeout=180)
-            print(
-                f"  Business Quant HTTP {response.status_code} | "
-                f"history bootstrap | {len(batch)} tickers"
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            last_error = exc
-            print(f"  WARNING: bootstrap attempt {attempt} failed: {exc}")
-            if attempt < MAX_RETRIES:
-                time.sleep(15 * attempt)
-    raise last_error
-
+    r = requests.get(BQ_URL, params=params, timeout=180)
+    print(f"BQ HTTP {r.status_code} | {start}->{end} | {len(batch)} tickers")
+    r.raise_for_status()
+    return normalize_multi_ticker_result(r.json(), batch)
 
 def main():
-    print("=" * 88)
-    print("CMS ONE-TIME HISTORY BOOTSTRAP — EXPANDED 2500 UNIVERSE")
-    print("Auto mode: up to 200 incomplete tickers per batch; repeats until complete.")
-    print("=" * 88)
+    print("=" * 78)
+    print("CMS MANUAL BOOTSTRAP — NEW TICKERS ONLY")
+    print("Daily production is unchanged; this script is manual only.")
+    print("=" * 78)
 
-    bq_key = env("BUSINESSQUANT_API_KEY")
-    sb_url = env("SUPABASE_URL")
-    sb_key = env("SUPABASE_SERVICE_ROLE_KEY")
-    if "/rest/v1" in sb_url:
-        fail("SUPABASE_URL must be the project base URL, without /rest/v1")
+    bq = env("BUSINESSQUANT_API_KEY")
+    sb = env("SUPABASE_URL")
+    key = env("SUPABASE_SERVICE_ROLE_KEY")
+    if "/rest/v1" in sb:
+        fail("SUPABASE_URL must be project base URL without /rest/v1")
 
     tickers = build_universe(verbose=True)
+    _, latest = get_existing_status(sb, key, tickers)
+    new_tickers = [t for t in tickers if not latest.get(t)]
 
-    for auto_batch in range(1, AUTO_MAX_BATCHES + 1):
-        counts, _ = get_existing_status(sb_url, sb_key, tickers)
-        complete = [t for t in tickers if counts.get(t, 0) >= MIN_VALID_DAYS]
-        all_need_history = [t for t in tickers if counts.get(t, 0) < MIN_VALID_DAYS]
-        need_history = all_need_history[:MAX_TICKERS_PER_RUN]
+    end = today_iso()
+    start = (datetime.strptime(end, "%Y-%m-%d").date() - timedelta(days=365)).isoformat()
+    print(f"Current universe: {len(tickers)}")
+    print(f"Candidates absent from recent-status lookup: {len(new_tickers)}")
+    print(f"Bootstrap window: {start} -> {end}")
 
-        print(f"\n========== AUTO BATCH {auto_batch}/{AUTO_MAX_BATCHES} ==========")
-        print(f"Target universe: {len(tickers)}")
-        print(f"Already complete (>={MIN_VALID_DAYS} days): {len(complete)}")
-        print(f"Still needing history: {len(all_need_history)}")
-        print(f"This batch: {len(need_history)}/{MAX_TICKERS_PER_RUN}")
+    # Confirm exact absence before any historical request.
+    url = f"{sb.rstrip('/')}/rest/v1/stock_daily"
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"}
+    truly_new = []
+    for t in new_tickers:
+        r = requests.get(url, params={"select":"trade_date","ticker":f"eq.{t}","order":"trade_date.desc","limit":1},
+                         headers=headers, timeout=30)
+        r.raise_for_status()
+        if not r.json():
+            truly_new.append(t)
 
-        if not need_history:
-            print("All universe tickers already have sufficient history. Nothing fetched.")
-            break
+    print(f"Truly new/no-history tickers: {len(truly_new)}")
+    if not truly_new:
+        print("Nothing to bootstrap.")
+        return
 
-        failed = []
-        batches = list(chunks(need_history, REQUEST_BATCH))
-        for batch_number, batch in enumerate(batches, 1):
-            print(f"\nHistory request {batch_number}/{len(batches)} ({len(batch)} tickers): {', '.join(batch)}")
-            try:
-                result = fetch_history_batch(bq_key, batch)
-            except Exception as exc:
-                print(f"ERROR: history request failed: {exc}")
-                failed.extend(batch)
-                continue
+    for batch in chunks(truly_new, REQUEST_BATCH):
+        try:
+            result = fetch_history(bq, batch, start, end)
+        except Exception as e:
+            print(f"Batch failed; retrying individually: {e}")
+            for t in batch:
+                try:
+                    one = fetch_history(bq, [t], start, end)
+                    rows = clean(t, one.get(t))
+                    if rows:
+                        upsert(sb, key, rows)
+                    else:
+                        print(f"SKIP {t}: no valid history returned")
+                except Exception as one_e:
+                    print(f"SKIP {t}: {one_e}")
+                time.sleep(1)
+            continue
 
-            result = normalize_multi_ticker_result(result, batch)
-            batch_rows = []
-            for ticker in batch:
-                rows = clean(ticker, result.get(ticker))
-                if rows:
-                    batch_rows.extend(rows)
-                else:
-                    failed.append(ticker)
-                    print(f"    WARNING: {ticker}: no valid history returned")
-
-            keys = [(row["ticker"], row["trade_date"]) for row in batch_rows]
-            if len(keys) != len(set(keys)):
-                fail("Duplicate ticker + trade_date generated during bootstrap")
-            if batch_rows:
-                print(f"Writing {len(batch_rows)} history rows for this request...")
-                upsert(sb_url, sb_key, batch_rows)
-            if batch_number < len(batches):
-                time.sleep(REQUEST_PAUSE_SECONDS)
-
-        if failed:
-            print(f"No data/request failure in auto batch {auto_batch} ({len(set(failed))}):")
-            print(", ".join(sorted(set(failed))))
-
-        # Re-check Supabase before selecting the next 200. Completed names are never fetched again.
-        final_counts, _, _ = verify(sb_url, sb_key, tickers)
-        sufficient = sum(final_counts.get(t, 0) >= MIN_VALID_DAYS for t in tickers)
-        print(f"After auto batch {auto_batch}: sufficient history {sufficient}/{len(tickers)}")
-        if sufficient >= len(tickers):
-            print("Expanded universe bootstrap complete.")
-            break
+        rows = []
+        for t in batch:
+            rows.extend(clean(t, result.get(t)))
+        if rows:
+            upsert(sb, key, rows)
         time.sleep(REQUEST_PAUSE_SECONDS)
 
-    print("\nBootstrap auto-run finished. Daily updater remains true-incremental only.")
-
+    print("Bootstrap finished. Daily updater remains incremental-only.")
 
 if __name__ == "__main__":
     main()
