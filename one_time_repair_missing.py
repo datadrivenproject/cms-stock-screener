@@ -19,13 +19,16 @@ def latest_one(sb_url, sb_key, ticker):
     return str(x[0]["trade_date"])[:10] if x else None
 
 def fetch(api_key, tickers, start=None, end=None, history=False):
-    p={"ticker":",".join(tickers),"mode":"daily","limit":500,"page":1,"api_key":api_key}
-    if history: p["period"]="1y"
-    else: p.update({"from_date":start,"till_date":end})
-    r=requests.get(BQ_URL,params=p,timeout=180)
-    print(f"BQ HTTP {r.status_code}: {len(tickers)} tickers | "+(f"{start}->{end} bootstrap" if history else f"{start}->{end}"))
+    p = {"ticker": ",".join(tickers), "mode": "daily", "limit": 500, "page": 1, "api_key": api_key}
+    if history:
+        end = today_iso()
+        start = (datetime.strptime(end, "%Y-%m-%d").date() - timedelta(days=365)).isoformat()
+    p.update({"from_date": start, "till_date": end})
+    r = requests.get(BQ_URL, params=p, timeout=180)
+    label = f"{start}->{end}" + (" bootstrap" if history else "")
+    print(f"BQ HTTP {r.status_code}: {len(tickers)} tickers | {label}")
     r.raise_for_status()
-    return normalize_multi_ticker_result(r.json(),tickers)
+    return normalize_multi_ticker_result(r.json(), tickers)
 
 def main():
     bq=env("BUSINESSQUANT_API_KEY"); sb=env("SUPABASE_URL"); key=env("SUPABASE_SERVICE_ROLE_KEY")
