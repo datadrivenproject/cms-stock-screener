@@ -231,11 +231,11 @@ def next_calendar_day(yyyy_mm_dd):
 
 def today_iso():
     """
-    Upper bound for settled EOD data.
+    Upper bound for the latest completed daily bar.
 
     On Saturday/Sunday, use the most recent weekday instead of today's
     calendar date. This avoids asking Business Quant for weekend dates.
-    US market holidays are harmless here: EOD mode simply returns no bar
+    US market holidays are harmless here: daily mode simply returns no bar
     for a non-trading weekday.
     """
     # GitHub runners use UTC.  CMS EOD dates must follow the US market,
@@ -261,13 +261,13 @@ def fetch_batch_incremental(api_key, batch, from_date, till_date):
     IMPORTANT: no `period` parameter anywhere in this function.
 
     Business Quant docs support:
-      mode=eod
+      mode=daily
       from_date=YYYY-MM-DD
       till_date=YYYY-MM-DD
     """
     params = {
         "ticker": ",".join(batch),
-        "mode": "eod",
+        "mode": "daily",
         "from_date": from_date,
         "till_date": till_date,
         "limit": 100,
