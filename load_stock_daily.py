@@ -680,6 +680,12 @@ def main():
         except Exception as e:
             print(f"⚠️ Telegram 数据新鲜度提醒发送失败: {e}")
         print("!" * 78)
+        # Hard freshness gate: never allow downstream selection to run on stale EOD.
+        # Exit non-zero so GitHub Actions stops before adjusted OHLC / A selection.
+        fail(
+            f"数据新鲜度未通过：预期 {expected_latest}，"
+            f"数据库最新 {final_latest}；停止后续 A 选股。"
+        )
 
     print("\n" + "=" * 78)
     print(f"✅ Daily incremental update 完成")
