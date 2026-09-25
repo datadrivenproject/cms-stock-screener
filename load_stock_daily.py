@@ -173,19 +173,15 @@ def sb_headers(key):
 
 def get_existing_status(base_url, key, tickers):
     """
-    Fast daily status check.
-    HARD RULES:
-      - never scan historical data here;
-      - 100 tickers per request;
-      - fetch only the single latest stored trade_date for each ticker.
+    Fast daily status check:
+      1) search the most recent 5 calendar days in 100-ticker batches;
+      2) only for tickers still missing, fetch their exact latest DB row;
+      3) truly empty tickers remain absent and are handled by bootstrap.
+    This reads DB metadata only; it never downloads historical market data.
     """
     url = f"{base_url.rstrip('/')}/rest/v1/stock_daily"
     counts = Counter()
     latest = {}
-
-    # PostgREST cannot express "latest row per ticker" cheaply on the raw table.
-    # For the daily job, query only today's/recent dates one day at a time,
-    # newest first. Once a ticker is found, it is removed from later checks.
     now_et = datetime.now(ZoneInfo("America/New_York")).date()
     check_dates = [(now_et - timedelta(days=i)).isoformat() for i in range(0, 5)]
     remaining = set(tickers)
@@ -194,17 +190,12 @@ def get_existing_status(base_url, key, tickers):
         if not remaining:
             break
         remaining_list = [t for t in tickers if t in remaining]
-        for bno, batch in enumerate(chunks(remaining_list, 100), 1):
+        for batch in chunks(remaining_list, 100):
             filt = "in.(" + ",".join(batch) + ")"
             r = requests.get(
                 url,
-                params={
-                    "select": "ticker,trade_date",
-                    "ticker": filt,
-                    "trade_date": f"eq.{d}",
-                },
-                headers=sb_headers(key),
-                timeout=30,
+                params={"select":"ticker,trade_date","ticker":filt,"trade_date":f"eq.{d}"},
+                headers=sb_headers(key), timeout=30,
             )
             r.raise_for_status()
             for row in r.json():
@@ -213,8 +204,28 @@ def get_existing_status(base_url, key, tickers):
                     latest[t] = d
                     counts[t] = 1
                     remaining.discard(t)
+        print(f"Supabase recent-date check {d}: found={len(latest)}, remaining={len(remaining)}")
 
-        print(f"Supabase latest-date check {d}: found={len(latest)}, remaining={len(remaining)}")
+    # Fallback only for names not seen in the recent 5-day window.
+    # Exact one-row lookup prevents stale/halted names from being misclassified
+    # as brand-new tickers and keeps the subsequent market-data fetch incremental.
+    if remaining:
+        print(f"Exact latest-row fallback for {len(remaining)} tickers...")
+    for i, t in enumerate([x for x in tickers if x in remaining], 1):
+        r = requests.get(
+            url,
+            params={"select":"trade_date","ticker":f"eq.{t}","order":"trade_date.desc","limit":1},
+            headers=sb_headers(key), timeout=30,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        if rows:
+            d = str(rows[0].get("trade_date", ""))[:10]
+            if d:
+                latest[t] = d
+                counts[t] = 1
+        if i % 100 == 0:
+            print(f"  exact fallback checked {i}/{len(remaining)}")
 
     return counts, latest
 
