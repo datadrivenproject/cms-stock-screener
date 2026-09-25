@@ -24,9 +24,9 @@ from a_selection_core import rank_current_a
 
 APP_FILE = Path(__file__).with_name("app.py")
 MAX_CANDIDATES = 20
-# Roughly 2% of the 1500-stock universe may be temporarily unavailable
-# without blocking every healthy ticker. A missing bootstrap still blocks.
-MAX_MISSING_TICKERS = 30
+# A few symbols can be unavailable or unsupported by the data source.
+# Do not block the whole production scan; skip them and keep the freshness gate.
+MAX_MISSING_TICKERS = None
 
 
 def env(name):
