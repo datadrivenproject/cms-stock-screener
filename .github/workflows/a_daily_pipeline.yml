@@ -3,9 +3,9 @@ name: A Daily Production Pipeline
 on:
   workflow_dispatch:
   schedule:
-    # Monday-Friday at 18:30 Toronto time during EDT (22:30 UTC).
-    # GitHub Actions schedule is defined in UTC.
-    - cron: "30 22 * * 1-5"
+    # Monday-Friday at 19:00 Toronto local time (DST-aware).
+    - cron: "00 19 * * 1-5"
+      timezone: "America/Toronto"
 
 concurrency:
   group: cms-a-daily-production
