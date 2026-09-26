@@ -2083,9 +2083,35 @@ def load_sheet_tab(tab_name):
 
 
 def render_three_systems():
-    """首页只读取同一个 Google Sheet 的三张结果表；不运行任何选股。"""
-    st.subheader("📋 三套选股结果")
+    """首页只读取 Google Sheet 展示结果；不运行或修改任何选股逻辑。"""
     today = datetime.now().strftime("%Y-%m-%d")
+
+    # AI Final Review 放在首页最上方，作为 A/Q（以后可含 M）候选的最终复核展示。
+    st.subheader("🤖 AI 最终复核")
+    ai = load_sheet_tab("Final_Review")
+    if ai.empty:
+        st.caption("暂无 AI 最终复核结果")
+    else:
+        if "记录日期" in ai.columns:
+            dates = ai["记录日期"].astype(str).str[:10]
+            valid = dates[dates.str.strip().ne("")]
+            if not valid.empty:
+                latest = valid.max()
+                ai = ai[dates.eq(latest)].copy()
+                st.caption(("今日结果 · " if latest == today else "最近结果 · ") + latest)
+        ai_cols = [x for x in [
+            "最终排名","股票","来源","最终结论","AI信心分",
+            "Bull观点","Bear观点","风险复核","新闻催化"
+        ] if x in ai.columns]
+        if ai_cols:
+            if "最终排名" in ai.columns:
+                ai = ai.sort_values("最终排名", ascending=True)
+            st.dataframe(ai[ai_cols], hide_index=True, use_container_width=True)
+        else:
+            st.caption("Final_Review 字段暂不可识别")
+
+    st.divider()
+    st.subheader("📋 各系统候选")
 
     def show_latest(tab, title, date_col, cols, rename):
         st.markdown(title)
