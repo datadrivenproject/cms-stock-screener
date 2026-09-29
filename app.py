@@ -1220,7 +1220,7 @@ def calc_explainable_accumulation(df):
     }
 
     try:
-        d = _norm_daily_index(df).copy()
+        d = df.copy()
         if len(d) < 25:
             out["资金积累解释"] = "历史不足25日"
             return out
@@ -1797,7 +1797,7 @@ def calc_panic_release_label(df):
     """
     out = {"恐慌释放分": 0, "恐慌释放强弱": "弱", "恐慌释放解释": ""}
     try:
-        d = _norm_daily_index(df).copy()
+        d = df.copy()
         if len(d) < 25:
             out["恐慌释放解释"] = "历史不足25日"
             return out
@@ -1828,9 +1828,9 @@ def calc_panic_release_label(df):
 
         # 3. 前5日明显超跌
         ret5 = pct_return(close, 5)
-        if pd.notna(ret5) and ret5 <= -5.0:
+        if pd.notna(ret5) and ret5 <= -0.05:
             score += 1
-            reasons.append(f"前5日跌 {abs(ret5):.1f}%")
+            reasons.append(f"前5日跌 {abs(ret5) * 100:.1f}%")
 
         # 4. 金叉日放量
         if pd.notna(vol_ma20) and vol_ma20 > 0:
