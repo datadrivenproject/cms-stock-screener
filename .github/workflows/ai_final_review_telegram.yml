@@ -1,0 +1,35 @@
+name: AI Final Review Telegram
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Primary + backup. UTC windows cover late Toronto evening and avoid
+    # depending on timezone-aware cron behavior.
+    - cron: "00 03 * * 2-6"
+    - cron: "30 03 * * 2-6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-final-review-telegram
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+      TRACKER_SHEET_NAME: ${{ secrets.TRACKER_SHEET_NAME }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight dependencies
+        run: pip install requests gspread google-auth
+      - name: Send latest AI Final Review once
+        run: python -u ai_review_telegram.py
