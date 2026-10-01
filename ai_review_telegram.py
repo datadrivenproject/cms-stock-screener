@@ -7,6 +7,7 @@ Notification-only: does not modify A/Q/M selection logic.
 
 import json
 import os
+import tomllib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -25,8 +26,16 @@ def main():
     if not raw or not book_name:
         raise RuntimeError("Missing Google Sheet secrets")
 
+    try:
+        service_account = json.loads(raw)
+    except Exception:
+        parsed = tomllib.loads(raw)
+        service_account = parsed.get("gcp_service_account", parsed)
+    if not isinstance(service_account, dict) or "client_email" not in service_account:
+        raise RuntimeError("Invalid Google service-account secret format")
+
     creds = Credentials.from_service_account_info(
-        json.loads(raw),
+        service_account,
         scopes=[
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
