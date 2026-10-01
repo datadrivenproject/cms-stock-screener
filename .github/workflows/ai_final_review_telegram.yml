@@ -2,6 +2,8 @@ name: AI Final Review Telegram
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     # Primary + backup. UTC windows cover late Toronto evening and avoid
     # depending on timezone-aware cron behavior.
