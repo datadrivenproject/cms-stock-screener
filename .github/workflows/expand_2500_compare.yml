@@ -1,9 +1,6 @@
 name: Expand 2500 and Compare Candidates
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/expand_2500_compare.yml]
 permissions:
   contents: read
 concurrency:
