@@ -5,7 +5,7 @@ import requests
 import io
 import time
 from datetime import datetime, timezone
-from universe_2500 import build_base_universe as build_composite_universe
+from universe_2500 import build_universe as build_composite_universe
 from a_selection_core import classify_current_a
 
 try:
@@ -217,7 +217,7 @@ NEGATIVE_CATALYST = {
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_universe():
-    """Current S&P Composite 1500 plus the preserved CMS core/watchlist."""
+    """Shared production universe: exactly 2,500 distinct tickers."""
     return build_composite_universe(verbose=False)
 
 # =========================================================

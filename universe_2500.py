@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Expanded CMS universe for one-time bootstrap.
+"""Shared 2,500-ticker universe for production and one-time bootstrap.
 
-Keeps the locked production S&P Composite 1500 + CMS core intact and appends
-current U.S. equity holdings from iShares Russell 3000 ETF (IWV), in fund
-weight order. This module is intentionally used by bootstrap first; production
-A logic is not changed.
+Index constituents and the CMS watchlist are kept first, then U.S. equities
+from IWV fill the remaining places. No smaller production entrypoint exists.
 """
 
 import io
@@ -50,7 +48,7 @@ def _index(name):
     xs=_extract(pd.read_html(_io.StringIO(r.json()["parse"]["text"])),minimum)
     if len(xs)<minimum: raise RuntimeError(f"Invalid {name} list: {len(xs)}")
     return xs
-def build_base_universe(verbose=False):
+def _build_index_seed(verbose=False):
     lists={n:_index(n) for n in ("S&P 500","S&P 400","S&P 600")}
     base=list(dict.fromkeys(lists["S&P 500"]+lists["S&P 400"]+lists["S&P 600"]+CORE_UNIVERSE))
     if len(base)<1450: raise RuntimeError(f"Base universe unexpectedly small: {len(base)}")
@@ -86,7 +84,7 @@ def get_iwv_equity_tickers():
 
 
 def build_universe(verbose=False):
-    base = build_base_universe(verbose=False)
+    base = _build_index_seed(verbose=False)
     iwv = get_iwv_equity_tickers()
     universe = list(base)
     for ticker in iwv:
@@ -94,11 +92,11 @@ def build_universe(verbose=False):
             universe.append(ticker)
         if len(universe) >= TARGET_UNIVERSE_SIZE:
             break
-    if len(universe) < TARGET_UNIVERSE_SIZE:
+    if len(universe) != TARGET_UNIVERSE_SIZE or len(set(universe)) != TARGET_UNIVERSE_SIZE:
         raise RuntimeError(f"Expanded universe unexpectedly small: {len(universe)}")
     if verbose:
-        print(f"Locked base universe: {len(base)}")
+        print(f"Index/watchlist seed: {len(base)}")
         print(f"Current IWV U.S. equity holdings available: {len(iwv)}")
-        print(f"Expanded bootstrap universe: {len(universe)}")
+        print(f"Shared production universe: {len(universe)}")
         print(f"New names appended: {len(universe) - len(base)}")
     return universe

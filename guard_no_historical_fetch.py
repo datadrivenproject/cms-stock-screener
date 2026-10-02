@@ -105,6 +105,20 @@ def main():
     adjust_text, adjust_tree = parse(ADJUSTER)
     workflow = read(WORKFLOW)
 
+    # Production and bootstrap must share the expanded universe entrypoint.
+    for filename in ("load_stock_daily.py", "app.py", "bootstrap_new_tickers.py"):
+        _, tree = parse(ROOT / filename)
+        imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "universe_2500"
+        ]
+        imported_names = [alias.name for node in imports for alias in node.names]
+        if imported_names != ["build_universe"]:
+            errors.append(f"{filename} must import only universe_2500.build_universe")
+    _, universe_tree = parse(ROOT / "universe_2500.py")
+    if assigned_constant(universe_tree, "TARGET_UNIVERSE_SIZE") != [2500]:
+        errors.append("shared universe must target exactly 2500 tickers")
+
     # ---------------------------------------------------------
     # 1) Daily updater: executable code must be true-incremental
     # ---------------------------------------------------------

@@ -8,7 +8,7 @@ import pandas as pd
 from collections import defaultdict, Counter
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from universe_2500 import build_base_universe as build_composite_universe
+from universe_2500 import build_universe as build_composite_universe
 from telegram_notify import send_telegram
 
 # =========================================================
