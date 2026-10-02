@@ -48,11 +48,6 @@ def _index(name):
     xs=_extract(pd.read_html(_io.StringIO(r.json()["parse"]["text"])),minimum)
     if len(xs)<minimum: raise RuntimeError(f"Invalid {name} list: {len(xs)}")
     return xs
-def _build_index_seed(verbose=False):
-    lists={n:_index(n) for n in ("S&P 500","S&P 400","S&P 600")}
-    base=list(dict.fromkeys(lists["S&P 500"]+lists["S&P 400"]+lists["S&P 600"]+CORE_UNIVERSE))
-    if len(base)<1450: raise RuntimeError(f"Base universe unexpectedly small: {len(base)}")
-    return base
 
 IWV_HOLDINGS_CSV = (
     "https://www.blackrock.com/us/individual/products/239714/"
@@ -84,7 +79,12 @@ def get_iwv_equity_tickers():
 
 
 def build_universe(verbose=False):
-    base = _build_index_seed(verbose=False)
+    lists = {name: _index(name) for name in INDEX_PAGES}
+    base = list(dict.fromkeys(
+        lists["S&P 500"] + lists["S&P 400"] + lists["S&P 600"] + CORE_UNIVERSE
+    ))
+    if len(base) < 1450:
+        raise RuntimeError(f"Index/watchlist inputs unexpectedly small: {len(base)}")
     iwv = get_iwv_equity_tickers()
     universe = list(base)
     for ticker in iwv:

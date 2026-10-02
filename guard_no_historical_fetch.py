@@ -105,6 +105,11 @@ def main():
     adjust_text, adjust_tree = parse(ADJUSTER)
     workflow = read(WORKFLOW)
 
+    # Retired smaller-scope comparison entrypoints must never return.
+    for retired in ("compare_universe_candidates.py", ".github/workflows/expand_2500_compare.yml"):
+        if (ROOT / retired).exists():
+            errors.append(f"Retired universe entrypoint must be removed: {retired}")
+
     # Production and bootstrap must share the expanded universe entrypoint.
     for filename in ("load_stock_daily.py", "app.py", "bootstrap_new_tickers.py"):
         _, tree = parse(ROOT / filename)
@@ -116,6 +121,9 @@ def main():
         if imported_names != ["build_universe"]:
             errors.append(f"{filename} must import only universe_2500.build_universe")
     _, universe_tree = parse(ROOT / "universe_2500.py")
+    if any(isinstance(node, ast.FunctionDef) and node.name == "_build_index_seed"
+           for node in ast.walk(universe_tree)):
+        errors.append("shared universe must not expose the retired smaller-scope builder")
     if assigned_constant(universe_tree, "TARGET_UNIVERSE_SIZE") != [2500]:
         errors.append("shared universe must target exactly 2500 tickers")
 
