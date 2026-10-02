@@ -1,0 +1,41 @@
+name: Expand 2500 and Compare Candidates
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/expand_2500_compare.yml]
+permissions:
+  contents: read
+concurrency:
+  group: cms-a-daily-production
+  cancel-in-progress: false
+jobs:
+  expand-and-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      TZ: America/New_York
+      BUSINESSQUANT_API_KEY: ${{ secrets.BUSINESSQUANT_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+      TRACKER_SHEET_NAME: ${{ secrets.TRACKER_SHEET_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python guard_no_historical_fetch.py
+      - run: pip install pandas numpy requests lxml gspread google-auth
+      - name: Seed only tickers without any existing history
+        run: python -u bootstrap_new_tickers.py
+      - name: Update only missing trading days
+        run: python -u load_stock_daily.py
+      - name: Maintain adjusted bars from Supabase
+        run: python -u adjust_stock_daily.py
+      - name: Compare former scope and full 2500 with identical A rules
+        run: python -u compare_universe_candidates.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: universe-comparison
+          path: universe_comparison/
